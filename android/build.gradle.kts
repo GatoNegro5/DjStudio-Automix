@@ -23,7 +23,7 @@ subprojects {
                 if (namespace == null) {
                     namespace = project.group.toString()
                 }
-                compileSdkVersion(34)
+                compileSdkVersion(35)
             }
         }
     }
