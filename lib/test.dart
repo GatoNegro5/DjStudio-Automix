@@ -1,213 +1,406 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:qr_flutter/qr_flutter.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:media_kit/media_kit.dart';
 
-void main() => runApp(const MaterialApp(home: QrServerSandbox()));
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  MediaKit.ensureInitialized();
 
-class QrServerSandbox extends StatefulWidget {
-  const QrServerSandbox({super.key});
-
-  @override
-  State<QrServerSandbox> createState() => _QrServerSandboxState();
+  runApp(const ProviderScope(child: EqualizerSandboxApp()));
 }
 
-class _QrServerSandboxState extends State<QrServerSandbox> {
-  HttpServer? _server;
-  String _serverUrl = "Iniciando servidor...";
-  String _log = "Aplicando políticas de Firewall y levantando servidor...";
+class EqualizerPreset {
+  final String name;
+  final double preamp;
+  final List<double> gains;
 
-  @override
-  void initState() {
-    super.initState();
-    _bootSequence();
-  }
+  const EqualizerPreset({
+    required this.name,
+    required this.preamp,
+    required this.gains,
+  });
 
-  @override
-  void dispose() {
-    _server?.close(force: true);
-    super.dispose();
-  }
+  static const List<EqualizerPreset> defaultPresets = [
+    EqualizerPreset(
+      name: 'Spotify Signature',
+      preamp: -1.5,
+      gains: [3.5, 2.5, 1.0, -0.5, -1.0, 0.0, 1.5, 2.5, 3.5, 4.0],
+    ),
+    EqualizerPreset(
+      name: 'Flat / Studio',
+      preamp: 0.0,
+      gains: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    ),
+    EqualizerPreset(
+      name: 'Club DJ Punch',
+      preamp: -2.0,
+      gains: [5.0, 4.0, 2.0, 0.0, -1.0, -1.0, 0.0, 2.0, 3.5, 4.5],
+    ),
+    EqualizerPreset(
+      name: 'Bass Master',
+      preamp: -3.0,
+      gains: [6.5, 5.5, 3.5, 1.0, 0.0, -1.5, -1.0, 0.0, 1.0, 1.5],
+    ),
+    EqualizerPreset(
+      name: 'Vocal & Acoustic',
+      preamp: -1.0,
+      gains: [-2.0, -1.0, 0.0, 1.5, 3.0, 3.5, 2.5, 1.0, 0.5, 0.0],
+    ),
+  ];
+}
 
-  Future<void> _bootSequence() async {
-    await _ensureWindowsFirewallRule();
-    await _startHttpServer();
-  }
+class AudioEqualizerService {
+  final Player player;
 
-  // 🛠️ MOTOR DE AUTO-SETUP: ESCALADA DE PRIVILEGIOS Y BYPASS DE FIREWALL
-  Future<void> _ensureWindowsFirewallRule() async {
-    if (!Platform.isWindows) return;
-    try {
-      setState(() => _log = "⚙️ Auditando Windows Defender Firewall...");
+  static const List<int> bandFrequencies = [
+    31,
+    62,
+    125,
+    250,
+    500,
+    1000,
+    2000,
+    4000,
+    8000,
+    16000,
+  ];
 
-      final checkCmd = await Process.run('powershell', [
-        '-Command',
-        'Get-NetFirewallRule -DisplayName "DjStudio Web Server" -ErrorAction SilentlyContinue',
-      ]);
+  AudioEqualizerService(this.player);
 
-      if (checkCmd.stdout.toString().contains("DjStudio Web Server")) {
-        setState(() => _log += "\n✅ Regla de Firewall ya existe.");
-        return;
-      }
+  Future<void> applyEqualizer({
+    required double preamp,
+    required List<double> gains,
+    required bool enabled,
+  }) async {
+    if (gains.length != 10) return;
 
-      setState(
-        () => _log +=
-            "\n⚠️ Regla ausente. Solicitando escalada de privilegios (Acepte el popup UAC)...",
-      );
-
-      final addCmd = '''
-      Start-Process powershell -Verb runAs -WindowStyle Hidden -ArgumentList "-Command New-NetFirewallRule -DisplayName 'DjStudio Web Server' -Direction Inbound -LocalPort 8080 -Protocol TCP -Action Allow"
-      ''';
-
-      await Process.run('powershell', ['-Command', addCmd]);
-
-      // Delay táctico para que el Kernel de Windows registre la regla antes del bind
-      await Future.delayed(const Duration(seconds: 2));
-      setState(
-        () => _log += "\n✅ Excepción de Firewall inyectada exitosamente.",
-      );
-    } catch (e) {
-      setState(() => _log += "\n🔴 Fallo inyectando regla de firewall: $e");
+    if (!enabled) {
+      await (player.platform as dynamic)?.setProperty('af', '');
+      return;
     }
-  }
 
-  Future<void> _startHttpServer() async {
-    try {
-      final interfaces = await NetworkInterface.list(
-        type: InternetAddressType.IPv4,
-      );
-      String localIp = "127.0.0.1";
-      for (var interface in interfaces) {
-        if (!interface.name.toLowerCase().contains('virtual') &&
-            interface.name != 'lo') {
-          localIp = interface.addresses.first.address;
-          break;
-        }
-      }
+    final List<String> filters = [];
 
-      _server = await HttpServer.bind(InternetAddress.anyIPv4, 8080);
-      setState(() {
-        _serverUrl = "http://$localIp:8080";
-        _log +=
-            "\n✅ Servidor Web corriendo en $_serverUrl\nEscanea el QR desde el celular en el WiFi.";
-      });
-
-      _server!.listen((HttpRequest request) {
-        setState(
-          () => _log += "\n➡️ Solicitud: ${request.method} ${request.uri.path}",
-        );
-
-        if (request.uri.path == '/') {
-          _serveWebApp(request);
-        } else if (request.uri.path == '/download') {
-          _serveDummyMp3(request);
-        } else {
-          request.response
-            ..statusCode = HttpStatus.notFound
-            ..write("404 Not Found")
-            ..close();
-        }
-      });
-    } catch (e) {
-      setState(() => _log += "\n🔴 ERROR LEVANTANDO SERVIDOR: $e");
+    if (preamp != 0.0) {
+      filters.add('volume=volume=${preamp.toStringAsFixed(1)}dB');
     }
+
+    for (int i = 0; i < bandFrequencies.length; i++) {
+      final freq = bandFrequencies[i];
+      final gain = gains[i].clamp(-12.0, 12.0);
+      filters.add(
+        'equalizer=f=$freq:width_type=o:w=1:g=${gain.toStringAsFixed(1)}',
+      );
+    }
+
+    final String afString = filters.join(',');
+    await (player.platform as dynamic)?.setProperty('af', afString);
+  }
+}
+
+class EqualizerState {
+  final bool enabled;
+  final double preamp;
+  final List<double> gains;
+  final String currentPresetName;
+
+  EqualizerState({
+    required this.enabled,
+    required this.preamp,
+    required this.gains,
+    required this.currentPresetName,
+  });
+
+  EqualizerState copyWith({
+    bool? enabled,
+    double? preamp,
+    List<double>? gains,
+    String? currentPresetName,
+  }) {
+    return EqualizerState(
+      enabled: enabled ?? this.enabled,
+      preamp: preamp ?? this.preamp,
+      gains: gains ?? List.from(this.gains),
+      currentPresetName: currentPresetName ?? this.currentPresetName,
+    );
+  }
+}
+
+class EqualizerNotifier extends StateNotifier<EqualizerState> {
+  final AudioEqualizerService _service;
+
+  EqualizerNotifier(this._service)
+    : super(
+        EqualizerState(
+          enabled: true,
+          preamp: EqualizerPreset.defaultPresets[0].preamp,
+          gains: List.from(EqualizerPreset.defaultPresets[0].gains),
+          currentPresetName: EqualizerPreset.defaultPresets[0].name,
+        ),
+      ) {
+    _sync();
   }
 
-  void _serveWebApp(HttpRequest request) {
-    final html =
-        '''
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>DjStudio Web Transfer</title>
-        <style>
-          body { background: #121212; color: #fff; font-family: sans-serif; text-align: center; padding: 20px; }
-          .btn { display: block; width: 100%; padding: 15px; margin: 10px 0; background: #39FF14; color: #000; text-decoration: none; font-weight: bold; border-radius: 8px; }
-          .btn-blue { background: #00FFFF; }
-        </style>
-      </head>
-      <body>
-        <h2>DjStudio LAN Hub</h2>
-        <p>Conectado a $_serverUrl</p>
-        <a href="/download" class="btn">⬇️ Descargar MP3 de Prueba</a>
-        <button class="btn btn-blue" onclick="alert('En el código final, esto abrirá el explorador del celular para enviarte el MP3.')">⬆️ Enviar MP3 a Gabriel</button>
-      </body>
-      </html>
-    ''';
-
-    request.response
-      ..headers.contentType = ContentType.html
-      ..write(html)
-      ..close();
+  void toggleEnabled(bool value) {
+    state = state.copyWith(enabled: value);
+    _sync();
   }
 
-  // 🛠️ FIX API DART: Header inyectado crudo como string
-  void _serveDummyMp3(HttpRequest request) {
-    final dummyData = List.filled(1024 * 1024 * 2, 0);
-    request.response
-      ..headers.contentType = ContentType('audio', 'mpeg')
-      ..headers.add(
-        'content-disposition',
-        'attachment; filename="Pista_De_Prueba.mp3"',
-      )
-      ..add(dummyData)
-      ..close();
-
-    setState(() => _log += "\n✅ Archivo descargado por el cliente.");
+  void setPreamp(double value) {
+    state = state.copyWith(preamp: value, currentPresetName: 'Custom');
+    _sync();
   }
+
+  void setBandGain(int index, double gain) {
+    final newGains = List<double>.from(state.gains);
+    newGains[index] = gain;
+    state = state.copyWith(gains: newGains, currentPresetName: 'Custom');
+    _sync();
+  }
+
+  void applyPreset(EqualizerPreset preset) {
+    state = state.copyWith(
+      preamp: preset.preamp,
+      gains: List.from(preset.gains),
+      currentPresetName: preset.name,
+    );
+    _sync();
+  }
+
+  void _sync() {
+    _service.applyEqualizer(
+      preamp: state.preamp,
+      gains: state.gains,
+      enabled: state.enabled,
+    );
+  }
+}
+
+final playerProvider = Provider<Player>((ref) {
+  final player = Player();
+  ref.onDispose(() {
+    player.dispose();
+  });
+  return player;
+});
+
+final equalizerServiceProvider = Provider<AudioEqualizerService>((ref) {
+  final player = ref.watch(playerProvider);
+  return AudioEqualizerService(player);
+});
+
+final equalizerProvider =
+    StateNotifierProvider<EqualizerNotifier, EqualizerState>((ref) {
+      final service = ref.watch(equalizerServiceProvider);
+      return EqualizerNotifier(service);
+    });
+
+class EqualizerSandboxApp extends StatelessWidget {
+  const EqualizerSandboxApp({super.key});
 
   @override
   Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      title: 'DSP Equalizer Sandbox',
+      theme: ThemeData.dark(),
+      home: const EqualizerTestPage(),
+    );
+  }
+}
+
+class EqualizerTestPage extends ConsumerWidget {
+  const EqualizerTestPage({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final eqState = ref.watch(equalizerProvider);
+    final eqNotifier = ref.read(equalizerProvider.notifier);
+    final player = ref.watch(playerProvider);
+
     return Scaffold(
       backgroundColor: const Color(0xFF121212),
       appBar: AppBar(
-        title: const Text(
-          "Sandbox 1: Web Server + QR",
-          style: TextStyle(color: Color(0xFF39FF14)),
-        ),
+        title: const Text('DSP Sandbox: 10-Band EQ'),
+        backgroundColor: Colors.black,
+        actions: [
+          Switch(
+            value: eqState.enabled,
+            onChanged: (val) => eqNotifier.toggleEnabled(val),
+            activeColor: Colors.greenAccent,
+          ),
+        ],
       ),
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            if (_serverUrl.startsWith("http"))
-              Container(
-                color: Colors.white,
-                padding: const EdgeInsets.all(10),
-                child: QrImageView(
-                  data: _serverUrl,
-                  version: QrVersions.auto,
-                  size: 250.0,
-                ),
-              ),
-            const SizedBox(height: 20),
-            Text(
-              _serverUrl,
-              style: const TextStyle(
-                color: Color(0xFF00FFFF),
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            const SizedBox(height: 30),
-            Container(
-              padding: const EdgeInsets.all(15),
-              color: Colors.black,
-              width: 600,
-              height: 200,
-              child: SingleChildScrollView(
-                child: Text(
-                  _log,
-                  style: const TextStyle(
-                    color: Colors.white70,
-                    fontFamily: 'Consolas',
+      body: Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(12),
+            color: Colors.black45,
+            child: Row(
+              children: [
+                ElevatedButton.icon(
+                  onPressed: () async {
+                    await player.open(
+                      Media(
+                        'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
+                      ),
+                    );
+                  },
+                  icon: const Icon(Icons.play_arrow),
+                  label: const Text('Reproducir Audio Test (Demo Stream)'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.green,
                   ),
                 ),
+                const SizedBox(width: 12),
+                ElevatedButton.icon(
+                  onPressed: () async {
+                    await player.pause();
+                  },
+                  icon: const Icon(Icons.pause),
+                  label: const Text('Pausar'),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: IgnorePointer(
+              ignoring: !eqState.enabled,
+              child: Opacity(
+                opacity: eqState.enabled ? 1.0 : 0.4,
+                child: Column(
+                  children: [
+                    _buildPresetSelector(eqState, eqNotifier),
+                    const Divider(color: Colors.white24),
+                    _buildPreampControl(eqState, eqNotifier),
+                    const Divider(color: Colors.white24),
+                    Expanded(child: _buildEqBands(eqState, eqNotifier)),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPresetSelector(
+    EqualizerState state,
+    EqualizerNotifier notifier,
+  ) {
+    return Padding(
+      padding: const EdgeInsets.all(16.0),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          const Text(
+            'Preset:',
+            style: TextStyle(color: Colors.white, fontSize: 16),
+          ),
+          DropdownButton<EqualizerPreset>(
+            dropdownColor: Colors.grey[900],
+            value:
+                EqualizerPreset.defaultPresets.any(
+                  (p) => p.name == state.currentPresetName,
+                )
+                ? EqualizerPreset.defaultPresets.firstWhere(
+                    (p) => p.name == state.currentPresetName,
+                  )
+                : null,
+            hint: Text(
+              state.currentPresetName,
+              style: const TextStyle(color: Colors.greenAccent),
+            ),
+            items: EqualizerPreset.defaultPresets.map((preset) {
+              return DropdownMenuItem(
+                value: preset,
+                child: Text(
+                  preset.name,
+                  style: const TextStyle(color: Colors.white),
+                ),
+              );
+            }).toList(),
+            onChanged: (preset) {
+              if (preset != null) notifier.applyPreset(preset);
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPreampControl(EqualizerState state, EqualizerNotifier notifier) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+      child: Row(
+        children: [
+          const Text('Preamp', style: TextStyle(color: Colors.white70)),
+          Expanded(
+            child: Slider(
+              min: -12.0,
+              max: 12.0,
+              value: state.preamp,
+              activeColor: Colors.greenAccent,
+              inactiveColor: Colors.white24,
+              onChanged: (val) => notifier.setPreamp(val),
+            ),
+          ),
+          Text(
+            '${state.preamp.toStringAsFixed(1)} dB',
+            style: const TextStyle(color: Colors.white),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEqBands(EqualizerState state, EqualizerNotifier notifier) {
+    const labels = [
+      '31',
+      '62',
+      '125',
+      '250',
+      '500',
+      '1k',
+      '2k',
+      '4k',
+      '8k',
+      '16k',
+    ];
+
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      children: List.generate(10, (index) {
+        return Column(
+          children: [
+            Text(
+              state.gains[index].toStringAsFixed(1),
+              style: const TextStyle(color: Colors.white70, fontSize: 12),
+            ),
+            Expanded(
+              child: RotatedBox(
+                quarterTurns: 3,
+                child: Slider(
+                  min: -12.0,
+                  max: 12.0,
+                  value: state.gains[index],
+                  activeColor: Colors.greenAccent,
+                  inactiveColor: Colors.white24,
+                  onChanged: (val) => notifier.setBandGain(index, val),
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 16.0, top: 8.0),
+              child: Text(
+                labels[index],
+                style: const TextStyle(color: Colors.white54, fontSize: 12),
               ),
             ),
           ],
-        ),
-      ),
+        );
+      }),
     );
   }
 }
