@@ -47,9 +47,11 @@ jobs:
       - name: Build Platform
         run: ${{ matrix.build_cmd }}
 
-      - name: Zip Windows Build
+      - name: Compile Windows Installer
         if: matrix.target == 'windows'
-        run: Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath DjStudio-Windows.zip
+        run: |
+          "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" windows_setup.iss
+        shell: cmd
 
       - name: Zip MacOS Build
         if: matrix.target == 'macos'
@@ -61,7 +63,7 @@ jobs:
           name: ${{ matrix.asset_name }}
           path: |
             ${{ matrix.target == 'apk' && 'build/app/outputs/flutter-apk/app-release.apk' || '' }}
-            ${{ matrix.target == 'windows' && 'DjStudio-Windows.zip' || '' }}
+            ${{ matrix.target == 'windows' && 'DjStudio-Installer.exe' || '' }}
             ${{ matrix.target == 'macos' && 'DjStudio-MacOS.zip' || '' }}
 
   release:
@@ -82,7 +84,7 @@ jobs:
         with:
           files: |
             artifacts/app-release.apk
-            artifacts/DjStudio-Windows.zip
+            artifacts/DjStudio-Installer.exe
             artifacts/DjStudio-MacOS.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
