@@ -18,12 +18,12 @@ subprojects {
 
 subprojects {
     afterEvaluate {
-        if (hasProperty("android")) {
+        if (hasProperty("android") && project.name == "isar_flutter_libs") {
             configure<com.android.build.gradle.BaseExtension> {
                 if (namespace == null) {
-                    namespace = project.group.toString()
+                    namespace = "dev.isar.isar_flutter_libs"
                 }
-                compileSdkVersion(35)
+                compileSdkVersion(34)
             }
         }
     }

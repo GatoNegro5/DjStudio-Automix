@@ -45,7 +45,7 @@ dependencies:
   http: ^1.6.0
   isar: ^3.1.0
   isar_flutter_libs: ^3.1.0  
-  permission_handler: ^13.0.1
+  permission_handler: 13.0.0
   rust_lib_djstudio_player:
     path: rust_builder
   flutter_rust_bridge: 2.12.0
