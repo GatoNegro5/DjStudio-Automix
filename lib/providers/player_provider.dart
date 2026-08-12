@@ -107,15 +107,14 @@ class PlayerNotifier extends Notifier<PlayerState> {
     _playerA = Player();
     _playerB = Player();
 
-    // 🛠️ INYECCIÓN DSP HEADLESS (Loudnorm -14 LUFS + Compresor de Rango Dinámico)
-    // Se inyecta en ambos puentes nativos (Deck A y Deck B) para mantener la masterización durante el Crossfade.
+    // 🛠️ INYECCIÓN DSP: MODO RADIO FM (LRA=5, Ratio=4.0)
     (_playerA.platform as dynamic)?.setProperty(
       'af',
-      'loudnorm=I=-14:LRA=11:TP=-1.0,acompressor=threshold=-12dB:ratio=2.5:attack=5:release=50:makeup=1.5',
+      'loudnorm=I=-14:LRA=5:TP=-1.0,acompressor=threshold=-15dB:ratio=4.0:attack=2:release=50:makeup=2.5',
     );
     (_playerB.platform as dynamic)?.setProperty(
       'af',
-      'loudnorm=I=-14:LRA=11:TP=-1.0,acompressor=threshold=-12dB:ratio=2.5:attack=5:release=50:makeup=1.5',
+      'loudnorm=I=-14:LRA=5:TP=-1.0,acompressor=threshold=-15dB:ratio=4.0:attack=2:release=50:makeup=2.5',
     );
 
     _attachListeners(_playerA);

@@ -227,7 +227,7 @@ class EqualizerTestPage extends ConsumerWidget {
           Switch(
             value: eqState.enabled,
             onChanged: (val) => eqNotifier.toggleEnabled(val),
-            activeColor: Colors.greenAccent,
+            activeThumbColor: Colors.greenAccent,
           ),
         ],
       ),
