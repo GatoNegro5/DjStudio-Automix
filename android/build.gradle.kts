@@ -17,6 +17,16 @@ subprojects {
 }
 subprojects {
     project.evaluationDependsOn(":app")
+
+    afterEvaluate {
+        if (hasProperty("android")) {
+            configure<com.android.build.gradle.BaseExtension> {
+                if (namespace == null) {
+                    namespace = project.group.toString()
+                }
+            }
+        }
+    }
 }
 
 tasks.register<Delete>("clean") {
