@@ -1,0 +1,88 @@
+name: Build and Release CI
+
+on:
+  push:
+    tags:
+      - 'v*' # El pipeline solo se disparará cuando envíes un tag (ej. v1.0.0)
+
+jobs:
+  build:
+    name: Build Artifacts
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: apk
+            build_cmd: flutter build apk --release
+            asset_name: app-release.apk
+          - os: windows-latest
+            target: windows
+            build_cmd: flutter build windows --release
+            asset_name: DjStudio-Windows.zip
+          - os: macos-latest
+            target: macos
+            build_cmd: flutter build macos --release
+            asset_name: DjStudio-MacOS.zip
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java (Android)
+        if: matrix.target == 'apk'
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+
+      - name: Install Dependencies
+        run: flutter pub get
+
+      - name: Build Platform
+        run: ${{ matrix.build_cmd }}
+
+      - name: Zip Windows Build
+        if: matrix.target == 'windows'
+        run: Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath DjStudio-Windows.zip
+
+      - name: Zip MacOS Build
+        if: matrix.target == 'macos'
+        run: ditto -c -k --sequesterRsrc --keepParent build/macos/Build/Products/Release/*.app DjStudio-MacOS.zip
+
+      - name: Upload Artifacts to Job
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: |
+            ${{ matrix.target == 'apk' && 'build/app/outputs/flutter-apk/app-release.apk' || '' }}
+            ${{ matrix.target == 'windows' && 'DjStudio-Windows.zip' || '' }}
+            ${{ matrix.target == 'macos' && 'DjStudio-MacOS.zip' || '' }}
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          merge-multiple: true
+
+      - name: Deploy to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/app-release.apk
+            artifacts/DjStudio-Windows.zip
+            artifacts/DjStudio-MacOS.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
