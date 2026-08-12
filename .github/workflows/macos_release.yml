@@ -1,0 +1,60 @@
+name: macOS Native Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_tag:
+        description: 'Tag de versión (ej. v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  build_mac:
+    name: Build & Package macOS
+    runs-on: macos-latest
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          
+      - name: Install Dependencies
+        run: flutter pub get
+        
+      - name: Build macOS Release
+        run: flutter build macos --release
+        
+      - name: Zip Application Bundle
+        run: |
+          cd build/macos/Build/Products/Release
+          zip -ry macos-release.zip *.app
+          
+      - name: Generar Tag Dinámico de Release
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" == "push" ]; then
+            echo "RELEASE_TAG=autobuild-${GITHUB_SHA::7}" >> $GITHUB_ENV
+          else
+            echo "RELEASE_TAG=${{ github.event.inputs.version_tag }}" >> $GITHUB_ENV
+          fi
+          
+      - name: Publish to GitHub Releases
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: DjStudio Release ${{ env.RELEASE_TAG }}
+          files: build/macos/Build/Products/Release/macos-release.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
