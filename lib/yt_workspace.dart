@@ -203,7 +203,6 @@ class _YoutubeSearchAndDownloadWorkspaceState
   }
 
   void _initDefaultPath() {
-    // Busca esta lógica en tu yt_workspace.dart y reemplázala:
     String baseMusicPath = '';
     if (Platform.isWindows) {
       final userProfile = Platform.environment['USERPROFILE'];
@@ -216,7 +215,6 @@ class _YoutubeSearchAndDownloadWorkspaceState
       baseMusicPath = '/storage/emulated/0/Music/Descargas';
     }
 
-    // 🛠️ FIX: Uso de la nomenclatura correcta (baseDir) que espera el estado de la UI
     final baseDir = Directory(baseMusicPath);
     if (!baseDir.existsSync()) {
       baseDir.createSync(recursive: true);
@@ -227,100 +225,74 @@ class _YoutubeSearchAndDownloadWorkspaceState
     });
   }
 
-  // 🛠️ ÁRBOL DE CARPETAS (Modal Jerárquico)
-  void _showFolderSelectionDialog() {
-    String baseMusicPath = '';
-    if (Platform.isWindows) {
-      final userProfile = Platform.environment['USERPROFILE'];
-      baseMusicPath = userProfile != null ? '$userProfile\\Music' : 'C:\\Music';
-    } else if (Platform.isMacOS || Platform.isLinux) {
-      baseMusicPath = '${Platform.environment['HOME']}/Music';
+  // 🛠️ ARQUITECTURA HÍBRIDA: Explorador Nativo (Desktop) vs Árbol Manual (Móvil)
+  Future<void> _showFolderSelectionDialog() async {
+    if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
+      try {
+        String? selectedDirectory = await FilePicker.platform.getDirectoryPath(
+          dialogTitle: 'Selecciona la carpeta de destino',
+        );
+        if (selectedDirectory != null) {
+          setState(() => _selectedFolderPath = selectedDirectory);
+        }
+      } catch (e) {
+        debugPrint("🔴 Error FilePicker Desktop: $e");
+      }
     } else {
-      baseMusicPath = '/storage/emulated/0/Music';
-    }
+      // Fallback estricto para Android/iOS (Scoped Storage Bypass)
+      String baseMusicPath = '/storage/emulated/0/Music';
+      final baseDir = Directory(baseMusicPath);
 
-    final baseDir = Directory(baseMusicPath);
-
-    showDialog(
-      context: context,
-      builder: (ctx) {
-        return AlertDialog(
-          backgroundColor: const Color(0xFF121212),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(8),
-            side: const BorderSide(color: Color(0xFF00FFFF)),
-          ),
-          title: const Row(
-            children: [
-              Icon(Icons.folder_special, color: Color(0xFF00FFFF)),
-              SizedBox(width: 10),
-              Text(
-                "Selección de Carpeta Destino",
-                style: TextStyle(
-                  color: Color(0xFF00FFFF),
-                  fontWeight: FontWeight.bold,
-                  fontSize: 16,
+      showDialog(
+        context: context,
+        builder: (ctx) {
+          return AlertDialog(
+            backgroundColor: const Color(0xFF121212),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8),
+              side: const BorderSide(color: Color(0xFF00FFFF)),
+            ),
+            title: const Row(
+              children: [
+                Icon(Icons.folder_special, color: Color(0xFF00FFFF)),
+                SizedBox(width: 10),
+                Text(
+                  "Selección de Carpeta Destino",
+                  style: TextStyle(
+                    color: Color(0xFF00FFFF),
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                  ),
+                ),
+              ],
+            ),
+            content: SizedBox(
+              width: 550,
+              height: 450,
+              child: SingleChildScrollView(
+                child: FolderTreeView(
+                  directory: baseDir,
+                  selectedPath: _selectedFolderPath,
+                  isRoot: true,
+                  onSelected: (newPath) {
+                    setState(() => _selectedFolderPath = newPath);
+                    Navigator.pop(ctx);
+                  },
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text(
+                  "Cancelar",
+                  style: TextStyle(color: Colors.white54),
                 ),
               ),
             ],
-          ),
-          content: SizedBox(
-            width: 550,
-            height: 450,
-            child: SingleChildScrollView(
-              child: FolderTreeView(
-                directory: baseDir,
-                selectedPath: _selectedFolderPath,
-                isRoot: true,
-                onSelected: (newPath) {
-                  setState(() {
-                    _selectedFolderPath = newPath;
-                  });
-                  Navigator.pop(ctx);
-                },
-              ),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text(
-                "Cancelar",
-                style: TextStyle(color: Colors.white54),
-              ),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  Future<void> _handleInput(String input) async {
-    if (input.isEmpty) return;
-    if (input.startsWith('http')) {
-      await _executeDirectDownload(input);
-    } else {
-      await _executeSearch(input);
-    }
-  }
-
-  Future<void> _executeSearch(String query) async {
-    setState(() {
-      _isProcessing = true;
-      _statusText = "Buscando '$query' en los servidores de YouTube...";
-      _results.clear();
-    });
-
-    try {
-      final searchResult = await _yt.search.search('$query official audio');
-      setState(() {
-        _results = searchResult.take(15).toList();
-        _statusText = "Resultados listos. Clic en 'Ingestar' para descargar.";
-      });
-    } catch (e) {
-      setState(() => _statusText = "🔴 ERROR de Búsqueda: $e");
-    } finally {
-      setState(() => _isProcessing = false);
+          );
+        },
+      );
     }
   }
 
@@ -372,10 +344,8 @@ class _YoutubeSearchAndDownloadWorkspaceState
           int ms = int.parse(match.group(3)!);
           if (match.group(3)!.length == 2) ms *= 10;
 
-          // Convertir a MS absolutos y restar el delta del Trim C++
           int totalMs = (min * 60000) + (sec * 1000) + ms - trimmedMs;
-          if (totalMs < 0)
-            totalMs = 0; // Clamping preventivo (no timestamps negativos)
+          if (totalMs < 0) totalMs = 0;
 
           final newMin = (totalMs ~/ 60000).toString().padLeft(2, '0');
           final newSec = ((totalMs % 60000) ~/ 1000).toString().padLeft(2, '0');
@@ -387,7 +357,6 @@ class _YoutubeSearchAndDownloadWorkspaceState
           newLines.add(line);
         }
       }
-      // Sobrescribe atómicamente el LRC realineado
       await file.writeAsString(newLines.join('\n'));
       debugPrint("✅ Vector LRC compensado en -$trimmedMs ms.");
     } catch (e) {
@@ -395,37 +364,55 @@ class _YoutubeSearchAndDownloadWorkspaceState
     }
   }
 
-  // ---------------------------------------------------------
-  // 🛠️ REEMPLAZO DEL PIPELINE SINGLE TRACK
-  // ---------------------------------------------------------
+  Future<void> _handleInput(String input) async {
+    if (input.isEmpty) return;
+    if (input.startsWith('http')) {
+      await _executeDirectDownload(input);
+    } else {
+      await _executeSearch(input);
+    }
+  }
+
+  Future<void> _executeSearch(String query) async {
+    setState(() {
+      _isProcessing = true;
+      _statusText = "Buscando '$query' en los servidores de YouTube...";
+      _results.clear();
+    });
+
+    try {
+      final searchResult = await _yt.search.search('$query official audio');
+      setState(() {
+        _results = searchResult.take(15).toList();
+        _statusText = "Resultados listos. Clic en 'Ingestar' para descargar.";
+      });
+    } catch (e) {
+      setState(() => _statusText = "🔴 ERROR de Búsqueda: $e");
+    } finally {
+      setState(() => _isProcessing = false);
+    }
+  }
+
   Future<void> _runSingleTrackPipeline(String initialPath) async {
     String currentPath = initialPath;
 
     try {
-      setState(() => _statusText = "⚙️ Auto-Master: Limpieza de metadatos...");
+      setState(() => _statusText = "⚙️ Limpieza de metadatos...");
       currentPath = await ref
           .read(metadataWorkerProvider)
           .processSingleFile(currentPath);
 
-      setState(
-        () => _statusText = "🔊 Auto-Master: Renderizando LUFS y Trim (C++)...",
-      );
+      setState(() => _statusText = "🔊 Aplicando DSP (C++) & Trim...");
 
-      // 1. Telemetría Pre-Trim
+      // 🛠️ INYECCIÓN: Telemetría de Compensación
       final durationBeforeMs = await _getAudioDurationMs(currentPath);
-
-      // 2. Ejecución del motor C++ (Destrucción de silencios)
       await ref.read(dspWorkerProvider).processSingleFile(currentPath);
-
-      // 3. Telemetría Post-Trim y Cálculo de Delta
       final durationAfterMs = await _getAudioDurationMs(currentPath);
       final trimmedMs = durationBeforeMs - durationAfterMs;
 
-      // 4. Compensación Vectorial del LRC (Si FFmpeg eliminó más de 50ms de silencio)
       if (trimmedMs > 50) {
         setState(
-          () => _statusText =
-              "⏱️ Auto-Master: Realineando subtítulos (-$trimmedMs ms)...",
+          () => _statusText = "⏱️ Realineando subtítulos (-$trimmedMs ms)...",
         );
         final lrcPath = currentPath.replaceAll(
           RegExp(r'\.mp3$|\.webm$', caseSensitive: false),
@@ -434,17 +421,13 @@ class _YoutubeSearchAndDownloadWorkspaceState
         await _offsetLrcTimeline(lrcPath, trimmedMs);
       }
 
-      setState(
-        () => _statusText = "🔐 Auto-Master: Inyectando Sello Watermark...",
-      );
+      setState(() => _statusText = "🔐 Inyectando Sello Watermark...");
       await rust_dsp.injectWatermark(inputPath: currentPath);
 
-      setState(
-        () => _statusText = "📝 Auto-Master: Scraping de Letras (NLP)...",
-      );
+      setState(() => _statusText = "📝 Scraping de Letras (NLP)...");
       await ref.read(nlpWorkerProvider).processSingleFile(currentPath);
 
-      setState(() => _statusText = "🎛️ Auto-Master: Asignando Curvas ISAR...");
+      setState(() => _statusText = "🎛️ Asignando Curvas ISAR...");
       final rawGenre = await rust_dsp.readAudioGenre(inputPath: currentPath);
 
       String assignedProfile = 'constant_power';
@@ -472,7 +455,7 @@ class _YoutubeSearchAndDownloadWorkspaceState
         }
       }
 
-      setState(() => _statusText = "🎯 Auto-Master: Calculando Cues...");
+      setState(() => _statusText = "🎯 Calculando Cues...");
       final existingMeta = await ref
           .read(dbServiceProvider)
           .getTrackMetadata(currentPath);
@@ -546,7 +529,7 @@ class _YoutubeSearchAndDownloadWorkspaceState
             mixOutMs: existingMeta?.mixOutMs ?? calculatedMixOut,
           );
 
-      setState(() => _statusText = "🥁 Auto-Master: Indexando Caché...");
+      setState(() => _statusText = "🥁 Indexando Caché...");
       await ref
           .read(dspWorkerProvider)
           .generateStaticBpmCache(Directory(currentPath).parent.path);
@@ -556,6 +539,87 @@ class _YoutubeSearchAndDownloadWorkspaceState
       setState(
         () => _statusText = "⚠️ Descargado, pero falló el Auto-Master: $e",
       );
+    }
+  }
+
+  Future<void> _extractLyricsFromYoutube(
+    String videoUrl,
+    String mp3Path,
+  ) async {
+    try {
+      setState(
+        () => _statusText = "Interceptando manifiesto de subtítulos nativos...",
+      );
+      final videoId = VideoId(videoUrl);
+      final manifest = await _yt.videos.closedCaptions.getManifest(videoId);
+
+      if (manifest.tracks.isEmpty) {
+        debugPrint(
+          "⚠️ VETO: El stream de YouTube no contiene pista de subtítulos.",
+        );
+        return;
+      }
+
+      ClosedCaptionTrackInfo? selectedTrack;
+      final langs = ['es', 'en'];
+
+      for (var lang in langs) {
+        try {
+          selectedTrack = manifest.tracks.firstWhere(
+            (t) =>
+                t.language.code.toLowerCase().contains(lang) &&
+                !t.isAutoGenerated,
+          );
+          break;
+        } catch (_) {}
+      }
+      if (selectedTrack == null) {
+        for (var lang in langs) {
+          try {
+            selectedTrack = manifest.tracks.firstWhere(
+              (t) => t.language.code.toLowerCase().contains(lang),
+            );
+            break;
+          } catch (_) {}
+        }
+      }
+      selectedTrack ??= manifest.tracks.first;
+
+      final track = await _yt.videos.closedCaptions.get(selectedTrack);
+      if (track.captions.isEmpty) return;
+
+      final lrcBuffer = StringBuffer();
+      for (var caption in track.captions) {
+        final start = caption.offset;
+        final min = start.inMinutes.toString().padLeft(2, '0');
+        final sec = (start.inSeconds % 60).toString().padLeft(2, '0');
+        final ms = ((start.inMilliseconds % 1000) ~/ 10).toString().padLeft(
+          2,
+          '0',
+        );
+        final text = caption.text
+            .replaceAll('\n', ' ')
+            .replaceAll(RegExp(r'<[^>]*>'), '')
+            .trim();
+
+        if (text.isNotEmpty) {
+          lrcBuffer.writeln('[$min:$sec.$ms]$text');
+        }
+      }
+
+      if (lrcBuffer.isNotEmpty) {
+        final lrcPath = mp3Path.replaceAll(
+          RegExp(r'\.mp3$', caseSensitive: false),
+          '.lrc',
+        );
+        await File(lrcPath).writeAsString(lrcBuffer.toString());
+        setState(
+          () =>
+              _statusText = "✅ Letra sincronizada (.lrc) inyectada con éxito.",
+        );
+      }
+    } catch (e) {
+      debugPrint("🔴 [I/O Scraper Error]: $e");
     }
   }
 
@@ -630,11 +694,8 @@ class _YoutubeSearchAndDownloadWorkspaceState
 
       if (exitCode == 0) {
         _searchController.clear();
-
         if (extractedMp3Path != null && File(extractedMp3Path!).existsSync()) {
-          // 🛠️ PIPELINE: Intercepta subtítulos de YT ANTES de Masterizar
           await _extractLyricsFromYoutube(targetUrl, extractedMp3Path!);
-
           if (_autoMasterize) {
             await _runSingleTrackPipeline(extractedMp3Path!);
           } else {
@@ -662,10 +723,8 @@ class _YoutubeSearchAndDownloadWorkspaceState
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        // 🛠️ SENSOR DE HARDWARE (Protección Desktop vs Móvil Landscape)
         final bool isMobileLandscape = constraints.maxHeight < 500;
 
-        // 1. Encapsulamiento del Config Bar (Destino & Auto-Master)
         final Widget configBar = Container(
           padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 12),
           decoration: BoxDecoration(
@@ -755,9 +814,7 @@ class _YoutubeSearchAndDownloadWorkspaceState
                       inactiveTrackColor: Colors.white10,
                       onChanged: _isProcessing
                           ? null
-                          : (val) {
-                              setState(() => _autoMasterize = val);
-                            },
+                          : (val) => setState(() => _autoMasterize = val),
                     ),
                   ],
                 ),
@@ -766,7 +823,6 @@ class _YoutubeSearchAndDownloadWorkspaceState
           ),
         );
 
-        // 2. Encapsulamiento del Input de Búsqueda
         final Widget searchBar = Row(
           children: [
             Expanded(
@@ -799,7 +855,6 @@ class _YoutubeSearchAndDownloadWorkspaceState
           ],
         );
 
-        // 3. Encapsulamiento del Status Bar
         final Widget statusBar = Container(
           width: double.infinity,
           padding: const EdgeInsets.all(15),
@@ -822,7 +877,6 @@ class _YoutubeSearchAndDownloadWorkspaceState
           ),
         );
 
-        // 4. Encapsulamiento del ListView de Resultados
         final Widget resultsList = ListView.builder(
           itemCount: _results.length,
           itemBuilder: (context, index) {
@@ -870,7 +924,6 @@ class _YoutubeSearchAndDownloadWorkspaceState
           },
         );
 
-        // 🛠️ MODO MÓVIL: Evita asfixia activando BouncingScrollPhysics
         if (isMobileLandscape) {
           return SingleChildScrollView(
             physics: const BouncingScrollPhysics(),
@@ -881,7 +934,7 @@ class _YoutubeSearchAndDownloadWorkspaceState
                 const Text(
                   "Buscador Global & Extracción",
                   style: TextStyle(
-                    fontSize: 20, // Ajuste óptico a pantalla móvil
+                    fontSize: 20,
                     fontWeight: FontWeight.bold,
                     color: Color(0xFF00FFFF),
                   ),
@@ -899,17 +952,12 @@ class _YoutubeSearchAndDownloadWorkspaceState
                 statusBar,
                 const SizedBox(height: 15),
                 if (_results.isNotEmpty)
-                  SizedBox(
-                    height:
-                        250, // Altura de seguridad para contener el Expanded interno
-                    child: resultsList,
-                  ),
+                  SizedBox(height: 250, child: resultsList),
               ],
             ),
           );
         }
 
-        // 🛠️ MODO ESCRITORIO: Renderizado original 100% intacto
         return Padding(
           padding: const EdgeInsets.all(30.0),
           child: Column(
@@ -941,97 +989,5 @@ class _YoutubeSearchAndDownloadWorkspaceState
         );
       },
     );
-  }
-
-  // 🛠️ INYECCIÓN DSP: Extractor Nativo de Closed Captions (Subtítulos a .LRC)
-  Future<void> _extractLyricsFromYoutube(
-    String videoUrl,
-    String mp3Path,
-  ) async {
-    try {
-      setState(
-        () => _statusText = "Interceptando manifiesto de subtítulos nativos...",
-      );
-      final videoId = VideoId(videoUrl);
-      final manifest = await _yt.videos.closedCaptions.getManifest(videoId);
-
-      if (manifest.tracks.isEmpty) {
-        debugPrint(
-          "⚠️ VETO: El stream de YouTube no contiene pista de subtítulos.",
-        );
-        return;
-      }
-
-      ClosedCaptionTrackInfo? selectedTrack;
-      final langs = ['es', 'en'];
-
-      // Prioridad 1: Subtítulos creados por humanos (Alta precisión)
-      for (var lang in langs) {
-        try {
-          selectedTrack = manifest.tracks.firstWhere(
-            // 🛠️ FIX API v3: .language.code
-            (t) =>
-                t.language.code.toLowerCase().contains(lang) &&
-                !t.isAutoGenerated,
-          );
-          break;
-        } catch (_) {}
-      }
-
-      // Prioridad 2: Fallback a subtítulos Auto-generados por IA de YT
-      if (selectedTrack == null) {
-        for (var lang in langs) {
-          try {
-            selectedTrack = manifest.tracks.firstWhere(
-              // 🛠️ FIX API v3: .language.code
-              (t) => t.language.code.toLowerCase().contains(lang),
-            );
-            break;
-          } catch (_) {}
-        }
-      }
-
-      // Prioridad 3: Force Fetch (Acapara la primera pista disponible si falla el idioma)
-      selectedTrack ??= manifest.tracks.first;
-
-      final track = await _yt.videos.closedCaptions.get(selectedTrack);
-      if (track.captions.isEmpty) return;
-
-      final lrcBuffer = StringBuffer();
-      for (var caption in track.captions) {
-        // 🛠️ FIX API v3: .offset en lugar de .start
-        final start = caption.offset;
-        final min = start.inMinutes.toString().padLeft(2, '0');
-        final sec = (start.inSeconds % 60).toString().padLeft(2, '0');
-        final ms = ((start.inMilliseconds % 1000) ~/ 10).toString().padLeft(
-          2,
-          '0',
-        );
-
-        // Limpieza de metadatos del VTT (colores, posiciones y saltos de línea crudos)
-        final text = caption.text
-            .replaceAll('\n', ' ')
-            .replaceAll(RegExp(r'<[^>]*>'), '')
-            .trim();
-
-        if (text.isNotEmpty) {
-          lrcBuffer.writeln('[$min:$sec.$ms]$text');
-        }
-      }
-
-      if (lrcBuffer.isNotEmpty) {
-        final lrcPath = mp3Path.replaceAll(
-          RegExp(r'\.mp3$', caseSensitive: false),
-          '.lrc',
-        );
-        await File(lrcPath).writeAsString(lrcBuffer.toString());
-        setState(
-          () =>
-              _statusText = "✅ Letra sincronizada (.lrc) inyectada con éxito.",
-        );
-      }
-    } catch (e) {
-      debugPrint("🔴 [I/O Scraper Error]: $e");
-    }
   }
 }
