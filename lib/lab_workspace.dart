@@ -484,8 +484,6 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
       final ytdlpPath = Platform.isWindows
           ? '${tempDir.path}${Platform.pathSeparator}yt-dlp.exe'
           : 'yt-dlp';
-      final tempMp3 =
-          '${tempDir.path}${Platform.pathSeparator}lab_rescue_temp.mp3';
 
       if (Platform.isWindows && !File(ytdlpPath).existsSync()) {
         statusNotifier.value = "Descargando motor extractor yt-dlp...";
@@ -496,7 +494,8 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
         await File(ytdlpPath).writeAsBytes(response.bodyBytes);
       }
 
-      statusNotifier.value = "1/6. Descargando audio crudo (320kbps)...";
+      statusNotifier.value =
+          "1/5. Descargando audio crudo directamente al Laboratorio...";
       final process = await Process.start(ytdlpPath, [
         '-f',
         'bestaudio',
@@ -507,20 +506,28 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
         '320K',
         '--force-overwrites',
         '-o',
-        tempMp3,
+        targetOriginalPath,
         url,
       ]);
+
+      // 🔴 PREVENCIÓN DE DEADLOCKS I/O
       process.stdout.listen((_) {});
       process.stderr.listen((_) {});
+
       final exitCode = await process.exitCode;
 
-      if (exitCode == 0 && File(tempMp3).existsSync()) {
-        statusNotifier.value = "2/6. Extrayendo subtítulos VTT...";
+      if (exitCode == 0 && File(targetOriginalPath).existsSync()) {
+        statusNotifier.value =
+            "2/5. Extrayendo y purificando subtítulos VTT...";
         final yt = YoutubeExplode();
         final videoId = VideoId(url);
         final manifest = await yt.videos.closedCaptions.getManifest(videoId);
 
-        String? tempLrcPath;
+        final targetLrcPath = targetOriginalPath.replaceAll(
+          RegExp(r'\.mp3$|\.webm$', caseSensitive: false),
+          '.lrc',
+        );
+
         if (manifest.tracks.isNotEmpty) {
           ClosedCaptionTrackInfo? selectedTrack;
           for (var lang in ['es', 'en']) {
@@ -549,40 +556,41 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
               2,
               '0',
             );
+
+            // 🛠️ NLP GARBAGE FILTER
             final text = caption.text
                 .replaceAll('\n', ' ')
                 .replaceAll(RegExp(r'<[^>]*>'), '')
                 .trim();
-            if (text.isNotEmpty) lrcBuffer.writeln('[$min:$sec.$ms]$text');
+            final lowerText = text.toLowerCase();
+            bool isGarbage = false;
+
+            if (text.length <= 2) isGarbage = true;
+            if (lowerText.contains(
+              RegExp(
+                r'\[música\]|\(música\)|\[aplausos\]|\(aplausos\)|instrumental|♪|🎵',
+                caseSensitive: false,
+              ),
+            ))
+              isGarbage = true;
+            if (lowerText.startsWith('[') && lowerText.endsWith(']'))
+              isGarbage = true;
+            if (lowerText.startsWith('(') && lowerText.endsWith(')'))
+              isGarbage = true;
+
+            if (!isGarbage && text.isNotEmpty) {
+              lrcBuffer.writeln('[$min:$sec.$ms]$text');
+            }
           }
           if (lrcBuffer.isNotEmpty) {
-            tempLrcPath = tempMp3.replaceAll('.mp3', '.lrc');
-            await File(tempLrcPath).writeAsString(lrcBuffer.toString());
+            await File(targetLrcPath).writeAsString(lrcBuffer.toString());
           }
         }
         yt.close();
 
-        statusNotifier.value = "3/6. Ejecutando reemplazo I/O físico...";
-        final oldFile = File(targetOriginalPath);
-        final oldLrcFile = File(
-          targetOriginalPath.replaceAll(
-            RegExp(r'\.mp3$|\.webm$', caseSensitive: false),
-            '.lrc',
-          ),
-        );
-
-        await File(tempMp3).copy(oldFile.path);
-        await File(tempMp3).delete();
-
-        if (tempLrcPath != null && File(tempLrcPath).existsSync()) {
-          await File(tempLrcPath).copy(oldLrcFile.path);
-          await File(tempLrcPath).delete();
-        }
-
-        String finalPath = oldFile.path;
-
         statusNotifier.value =
-            "4/6. Aplicando Auto-Trim C++ (Cortando silencios)...";
+            "3/5. Aplicando Auto-Trim C++ (Cortando silencios)...";
+        String finalPath = targetOriginalPath;
         finalPath = await ref
             .read(metadataWorkerProvider)
             .processSingleFile(finalPath);
@@ -591,7 +599,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
         final durationAfterMs = await _getAudioDurationMs(finalPath);
 
         statusNotifier.value =
-            "5/6. Compensación del Vector de Tiempo (LRC)...";
+            "4/5. Compensación del Vector de Tiempo (LRC)...";
         final trimmedMs = durationBeforeMs - durationAfterMs;
         if (trimmedMs > 50) {
           final lrcToPatch = finalPath.replaceAll(
@@ -601,7 +609,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
           await _offsetLrcTimeline(lrcToPatch, trimmedMs);
         }
 
-        statusNotifier.value = "6/6. Indexando en Base de Datos ISAR...";
+        statusNotifier.value = "5/5. Indexando en Base de Datos ISAR...";
         await rust_dsp.injectWatermark(inputPath: finalPath);
         final rawGenre = await rust_dsp.readAudioGenre(inputPath: finalPath);
         await ref
@@ -629,7 +637,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text(
-                '✅ Rescate atómico completado. La nueva letra está en el editor.',
+                '✅ Rescate atómico completado. Letra purificada inyectada.',
               ),
               backgroundColor: Color(0xFF39FF14),
             ),

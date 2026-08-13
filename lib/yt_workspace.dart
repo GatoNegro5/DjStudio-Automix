@@ -595,12 +595,29 @@ class _YoutubeSearchAndDownloadWorkspaceState
           2,
           '0',
         );
+
+        // 🛠️ NLP GARBAGE FILTER INYECTADO (Homologado con el Laboratorio)
         final text = caption.text
             .replaceAll('\n', ' ')
             .replaceAll(RegExp(r'<[^>]*>'), '')
             .trim();
+        final lowerText = text.toLowerCase();
+        bool isGarbage = false;
 
-        if (text.isNotEmpty) {
+        if (text.length <= 2) isGarbage = true;
+        if (lowerText.contains(
+          RegExp(
+            r'\[música\]|\(música\)|\[aplausos\]|\(aplausos\)|instrumental|♪|🎵',
+            caseSensitive: false,
+          ),
+        ))
+          isGarbage = true;
+        if (lowerText.startsWith('[') && lowerText.endsWith(']'))
+          isGarbage = true;
+        if (lowerText.startsWith('(') && lowerText.endsWith(')'))
+          isGarbage = true;
+
+        if (!isGarbage && text.isNotEmpty) {
           lrcBuffer.writeln('[$min:$sec.$ms]$text');
         }
       }
@@ -612,8 +629,7 @@ class _YoutubeSearchAndDownloadWorkspaceState
         );
         await File(lrcPath).writeAsString(lrcBuffer.toString());
         setState(
-          () =>
-              _statusText = "✅ Letra sincronizada (.lrc) inyectada con éxito.",
+          () => _statusText = "✅ Letra purificada (.lrc) inyectada con éxito.",
         );
       }
     } catch (e) {
