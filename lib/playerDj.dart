@@ -2003,7 +2003,137 @@ class LyricsSyncPanel extends ConsumerStatefulWidget {
 class _LyricsSyncPanelState extends ConsumerState<LyricsSyncPanel> {
   bool isArmed = false;
 
-  // 🛠️ NUEVO MÓDULO: MODO TEATRO PARA LETRAS (FULLSCREEN)
+  // 🛠️ MÓDULO: DESENGANCHE Y HOT-SWAP AL LABORATORIO
+  Future<void> _sendCurrentTrackToLab(
+    String trackPath,
+    BuildContext context,
+    WidgetRef ref,
+  ) async {
+    if (trackPath.isEmpty) return;
+
+    final file = File(trackPath);
+    if (!file.existsSync()) return;
+
+    final playerState = ref.read(playerProvider);
+    final playerNotifier = ref.read(playerProvider.notifier);
+    final automixNotifier = ref.read(automixProvider.notifier);
+
+    int nextIndex = playerState.currentIndex + 1;
+    bool hasNext = nextIndex < playerState.playlist.length;
+
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            playerState.isPlaying
+                ? "🧪 Iniciando Hot-Swap. Aislando en Laboratorio al terminar crossfade..."
+                : "🧪 Desenganchando pista y aislando en Laboratorio...",
+            style: const TextStyle(
+              fontWeight: FontWeight.bold,
+              color: Colors.black,
+            ),
+          ),
+          backgroundColor: Colors.orangeAccent,
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    }
+
+    if (playerState.isPlaying) {
+      if (hasNext) {
+        playerNotifier.forceTransition(nextIndex);
+      } else {
+        await playerNotifier.stopAndRelease();
+      }
+    } else {
+      await playerNotifier.stopAndRelease();
+    }
+
+    String baseMusicPath = Platform.isWindows
+        ? '${Platform.environment['USERPROFILE'] ?? 'C:'}\\Music'
+        : '${Platform.environment['HOME'] ?? '/storage/emulated/0'}/Music';
+
+    final labDir = Directory(
+      '$baseMusicPath${Platform.pathSeparator}DjStudio_LAB',
+    );
+    if (!labDir.existsSync()) labDir.createSync(recursive: true);
+
+    final registryFile = File(
+      '${labDir.path}${Platform.pathSeparator}quarantine_registry.json',
+    );
+    Map<String, dynamic> registry = {};
+    if (registryFile.existsSync()) {
+      try {
+        registry = jsonDecode(registryFile.readAsStringSync());
+      } catch (_) {}
+    }
+
+    final fileName = file.uri.pathSegments.last;
+    final newPath = '${labDir.path}${Platform.pathSeparator}$fileName';
+
+    bool moved = false;
+    int attempts = 0;
+
+    while (!moved && attempts < 20) {
+      try {
+        file.renameSync(newPath);
+        moved = true;
+      } catch (e) {
+        await Future.delayed(const Duration(milliseconds: 500));
+        attempts++;
+      }
+    }
+
+    if (!moved) {
+      debugPrint("🔴 VETO TÉCNICO: libmpv no liberó el handle.");
+      return;
+    }
+
+    try {
+      registry[fileName] = trackPath;
+      final lrcFile = File(
+        trackPath.replaceAll(
+          RegExp(r'\.mp3$|\.webm$', caseSensitive: false),
+          '.lrc',
+        ),
+      );
+      if (lrcFile.existsSync()) {
+        lrcFile.renameSync(
+          '${labDir.path}${Platform.pathSeparator}${fileName.replaceAll(RegExp(r'\.mp3$|\.webm$', caseSensitive: false), '.lrc')}',
+        );
+      }
+      registryFile.writeAsStringSync(jsonEncode(registry));
+
+      automixNotifier.removeTrack(trackPath);
+
+      if (!playerState.isPlaying && hasNext) {
+        final newPlaylist = List<String>.from(playerState.playlist)
+          ..remove(trackPath);
+        int loadIndex = playerState.currentIndex;
+        if (loadIndex >= newPlaylist.length) loadIndex = 0;
+
+        if (newPlaylist.isNotEmpty) {
+          await playerNotifier.loadContextAndPlay(newPlaylist, loadIndex);
+          await playerNotifier.pause();
+        }
+      }
+
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("✅ I/O Liberado: Pista extraída al Laboratorio."),
+            backgroundColor: Color(0xFF39FF14),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint("🔴 Error de I/O consolidando el Laboratorio: $e");
+    }
+  }
+
+  // 🛠️ MÓDULO: MODO TEATRO PARA LETRAS (FULLSCREEN)
   void _openFullscreenLyrics() {
     final playerState = ref.read(playerProvider);
     final lyrics = playerState.lyrics;
