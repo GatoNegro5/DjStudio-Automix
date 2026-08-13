@@ -27,6 +27,8 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
   String? _selectedFileForEdit;
   final TextEditingController _lrcController = TextEditingController();
   final TextEditingController _searchQueryController = TextEditingController();
+  final TextEditingController _ytUrlController =
+      TextEditingController(); // 🛠️ NUEVO: Controlador exclusivo para YT
 
   @override
   void initState() {
@@ -38,6 +40,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
   void dispose() {
     _lrcController.dispose();
     _searchQueryController.dispose();
+    _ytUrlController.dispose();
     super.dispose();
   }
 
@@ -105,6 +108,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
     _searchQueryController.text = fileName
         .replaceAll(RegExp(r'\.mp3$|\.webm$', caseSensitive: false), '')
         .trim();
+    _ytUrlController.clear(); // Limpiamos YT al cambiar de archivo
 
     setState(() {
       _selectedFileForEdit = fileName;
@@ -134,7 +138,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
         final targetDir = Directory(File(originalPath).parent.path);
         if (!targetDir.existsSync()) targetDir.createSync(recursive: true);
 
-        file.renameSync(originalPath); // Restauración física atómica
+        file.renameSync(originalPath);
 
         final lrcFile = File(
           '$_labPath${Platform.pathSeparator}${fileName.replaceAll(RegExp(r'\.mp3$|\.webm$', caseSensitive: false), '.lrc')}',
@@ -308,9 +312,6 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
                             style: ElevatedButton.styleFrom(
                               backgroundColor: Colors.white10,
                               foregroundColor: Colors.orangeAccent,
-                              padding: isMobile
-                                  ? const EdgeInsets.symmetric(horizontal: 8)
-                                  : null,
                             ),
                             child: Text(
                               "IMPORTAR",
@@ -324,7 +325,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
                               ScaffoldMessenger.of(context).showSnackBar(
                                 const SnackBar(
                                   content: Text(
-                                    "Letra importada al editor. No olvides Guardar.",
+                                    "Letra importada al editor. Dale a 'Guardar en Disco'.",
                                   ),
                                   backgroundColor: Colors.orangeAccent,
                                 ),
@@ -353,7 +354,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
   }
 
   // ---------------------------------------------------------
-  // 🛠️ MÓDULO DE TELEMETRÍA Y COMPENSACIÓN VECTORIAL (LABORATORIO)
+  // 🛠️ MÓDULO DE TELEMETRÍA Y COMPENSACIÓN VECTORIAL
   // ---------------------------------------------------------
   String _getFfprobePath() {
     if (Platform.isAndroid || Platform.isIOS) return 'ffprobe';
@@ -424,19 +425,53 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
     String url,
     String targetOriginalPath,
   ) async {
+    final ValueNotifier<String> statusNotifier = ValueNotifier<String>(
+      "Iniciando conexión...",
+    );
+
+    // 1. FAIL-FAST: Bloqueo de I/O
+    try {
+      final testFile = File(targetOriginalPath);
+      if (testFile.existsSync()) {
+        final raf = testFile.openSync(mode: FileMode.append);
+        raf.closeSync();
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            "🔴 ERROR I/O: El archivo está reproduciéndose. Libéralo del reproductor primero.",
+          ),
+          backgroundColor: Colors.redAccent,
+        ),
+      );
+      return;
+    }
+
     showDialog(
       context: context,
       barrierDismissible: false,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF121212),
+        shape: RoundedRectangleBorder(
+          side: const BorderSide(color: Colors.redAccent),
+          borderRadius: BorderRadius.circular(8),
+        ),
         content: Row(
-          children: const [
-            CircularProgressIndicator(color: Colors.redAccent),
-            SizedBox(width: 20),
+          children: [
+            const CircularProgressIndicator(color: Colors.redAccent),
+            const SizedBox(width: 20),
             Expanded(
-              child: Text(
-                "Ejecutando Rescate Atómico y Masterización...",
-                style: TextStyle(color: Colors.white),
+              child: ValueListenableBuilder<String>(
+                valueListenable: statusNotifier,
+                builder: (context, value, child) => Text(
+                  value,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 13,
+                    fontFamily: 'Consolas',
+                  ),
+                ),
               ),
             ),
           ],
@@ -453,6 +488,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
           '${tempDir.path}${Platform.pathSeparator}lab_rescue_temp.mp3';
 
       if (Platform.isWindows && !File(ytdlpPath).existsSync()) {
+        statusNotifier.value = "Descargando motor extractor yt-dlp...";
         final dlUrl = Uri.parse(
           'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe',
         );
@@ -460,7 +496,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
         await File(ytdlpPath).writeAsBytes(response.bodyBytes);
       }
 
-      // 1. Descarga del MP3 de Rescate a Búfer Temporal
+      statusNotifier.value = "1/6. Descargando audio crudo (320kbps)...";
       final process = await Process.start(ytdlpPath, [
         '-f',
         'bestaudio',
@@ -474,19 +510,16 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
         tempMp3,
         url,
       ]);
-
-      // 🔴 PREVENCIÓN DE DEADLOCKS I/O
       process.stdout.listen((_) {});
       process.stderr.listen((_) {});
-
       final exitCode = await process.exitCode;
 
       if (exitCode == 0 && File(tempMp3).existsSync()) {
+        statusNotifier.value = "2/6. Extrayendo subtítulos VTT...";
         final yt = YoutubeExplode();
         final videoId = VideoId(url);
         final manifest = await yt.videos.closedCaptions.getManifest(videoId);
 
-        // 2. Extracción de Closed Captions
         String? tempLrcPath;
         if (manifest.tracks.isNotEmpty) {
           ClosedCaptionTrackInfo? selectedTrack;
@@ -529,7 +562,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
         }
         yt.close();
 
-        // 3. I/O ATÓMICO: Sobrescritura Física en el Laboratorio
+        statusNotifier.value = "3/6. Ejecutando reemplazo I/O físico...";
         final oldFile = File(targetOriginalPath);
         final oldLrcFile = File(
           targetOriginalPath.replaceAll(
@@ -538,30 +571,27 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
           ),
         );
 
-        await File(tempMp3).copy(oldFile.path); // Reemplaza el MP3 defectuoso
+        await File(tempMp3).copy(oldFile.path);
         await File(tempMp3).delete();
 
         if (tempLrcPath != null && File(tempLrcPath).existsSync()) {
-          await File(tempLrcPath).copy(oldLrcFile.path); // Escribe el nuevo LRC
+          await File(tempLrcPath).copy(oldLrcFile.path);
           await File(tempLrcPath).delete();
         }
 
-        // =========================================================
-        // 4. PIPELINE POST-REEMPLAZO (Sin duplicar NLP)
-        // =========================================================
         String finalPath = oldFile.path;
 
-        // Metadata
+        statusNotifier.value =
+            "4/6. Aplicando Auto-Trim C++ (Cortando silencios)...";
         finalPath = await ref
             .read(metadataWorkerProvider)
             .processSingleFile(finalPath);
-
-        // DSP Trim & Master
         final durationBeforeMs = await _getAudioDurationMs(finalPath);
         await ref.read(dspWorkerProvider).processSingleFile(finalPath);
         final durationAfterMs = await _getAudioDurationMs(finalPath);
 
-        // Compensación Vectorial de la nueva letra
+        statusNotifier.value =
+            "5/6. Compensación del Vector de Tiempo (LRC)...";
         final trimmedMs = durationBeforeMs - durationAfterMs;
         if (trimmedMs > 50) {
           final lrcToPatch = finalPath.replaceAll(
@@ -571,7 +601,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
           await _offsetLrcTimeline(lrcToPatch, trimmedMs);
         }
 
-        // Sellado y DB
+        statusNotifier.value = "6/6. Indexando en Base de Datos ISAR...";
         await rust_dsp.injectWatermark(inputPath: finalPath);
         final rawGenre = await rust_dsp.readAudioGenre(inputPath: finalPath);
         await ref
@@ -588,21 +618,25 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
             .read(dspWorkerProvider)
             .generateStaticBpmCache(Directory(finalPath).parent.path);
 
-        // 5. Refrescar UI del Laboratorio
+        // 🛠️ AUTO-INYECCIÓN EN EL EDITOR
         _loadRegistry();
-        _loadLrcForEdit(finalPath.split(Platform.pathSeparator).last);
+        final finalFileName = finalPath.split(Platform.pathSeparator).last;
+        _loadLrcForEdit(finalFileName);
 
         if (mounted) {
-          Navigator.pop(context); // Cierra el loading
+          Navigator.pop(context); // Cierra loading
+          _ytUrlController.clear();
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text(
-                '✅ Rescate atómico completado. Pista y letra masterizadas.',
+                '✅ Rescate atómico completado. La nueva letra está en el editor.',
               ),
               backgroundColor: Color(0xFF39FF14),
             ),
           );
         }
+      } else {
+        throw Exception("Fallo en el binario CLI de extracción.");
       }
     } catch (e) {
       if (mounted) {
@@ -737,7 +771,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
 
     return Column(
       children: [
-        // BARRA DE HERRAMIENTAS DE BÚSQUEDA Y EXTRACCIÓN
+        // 🛠️ BARRA DE HERRAMIENTAS RE-ESTRUCTURADA EN 2 SECCIONES
         Container(
           padding: EdgeInsets.all(isMobile ? 10 : 15),
           decoration: BoxDecoration(
@@ -761,17 +795,12 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
                   fontSize: isMobile ? 11 : 12,
                 ),
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: 15),
 
-              // 🛠️ MOTOR FLEXIBLE PARA BUSCADOR Y BOTONES NATIVOS
-              Wrap(
-                spacing: 10,
-                runSpacing: 10,
-                alignment: WrapAlignment.start,
-                crossAxisAlignment: WrapCrossAlignment.center,
+              // SECCIÓN 1: LRCLIB / GENIUS
+              Row(
                 children: [
-                  SizedBox(
-                    width: isMobile ? double.infinity : 250,
+                  Expanded(
                     child: TextField(
                       controller: _searchQueryController,
                       style: const TextStyle(color: Colors.white, fontSize: 13),
@@ -779,39 +808,68 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
                         isDense: true,
                         filled: true,
                         fillColor: Colors.black,
-                        hintText: "Artista y Canción o URL YouTube...",
+                        hintText: "Nombre de canción para buscar letra...",
                         hintStyle: TextStyle(color: Colors.white38),
                         border: OutlineInputBorder(),
                       ),
                     ),
                   ),
+                  const SizedBox(width: 10),
                   ElevatedButton.icon(
                     onPressed: _searchInternalLrclib,
                     icon: const Icon(Icons.api, size: 16),
-                    label: const Text("LRCLIB (Nativo)"),
+                    label: const Text("Buscar LRCLIB"),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFF00FFFF),
                       foregroundColor: Colors.black,
                     ),
                   ),
+                ],
+              ),
+              const SizedBox(height: 10),
+
+              // SECCIÓN 2: YOUTUBE MASTERIZADO (NUEVA UI)
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _ytUrlController,
+                      style: const TextStyle(color: Colors.white, fontSize: 13),
+                      decoration: const InputDecoration(
+                        isDense: true,
+                        filled: true,
+                        fillColor: Color(0xFF2A0000),
+                        hintText:
+                            "Pega el link de YouTube aquí para descargar/sobrescribir...",
+                        hintStyle: TextStyle(color: Colors.white38),
+                        border: OutlineInputBorder(
+                          borderSide: BorderSide(color: Colors.redAccent),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderSide: BorderSide(color: Colors.redAccent),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
                   ElevatedButton.icon(
                     onPressed: () {
-                      final query = _searchQueryController.text.trim();
-                      if (query.startsWith('http')) {
-                        // 🛠️ INYECCIÓN: Llama al rescate atómico si es URL
+                      final url = _ytUrlController.text.trim();
+                      if (url.startsWith('http')) {
                         final targetPath =
                             '$_labPath${Platform.pathSeparator}$_selectedFileForEdit';
-                        _rescueLabTrackFromYoutube(query, targetPath);
+                        _rescueLabTrackFromYoutube(url, targetPath);
                       } else {
-                        // Comportamiento normal (abre navegador)
-                        final q = Uri.encodeComponent('$query official audio');
+                        final q = Uri.encodeComponent(
+                          '${_searchQueryController.text} official audio',
+                        );
                         _openWebBrowser(
                           'https://www.youtube.com/results?search_query=$q',
                         );
                       }
                     },
                     icon: const Icon(Icons.video_library, size: 16),
-                    label: const Text("YouTube MP3"),
+                    label: const Text("Reemplazo YouTube"),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.redAccent,
                       foregroundColor: Colors.white,
@@ -819,10 +877,9 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
                   ),
                 ],
               ),
+              const SizedBox(height: 15),
 
-              const SizedBox(height: 10),
-
-              // 🛠️ HERRAMIENTAS PESADAS PARA .LRC (AUTO-AJUSTABLES)
+              // HERRAMIENTAS MANUALES
               Wrap(
                 spacing: 5,
                 runSpacing: 5,
@@ -840,7 +897,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
                       size: 14,
                     ),
                     label: const Text(
-                      "Genius (Letra Plana)",
+                      "Genius",
                       style: TextStyle(
                         color: Colors.yellowAccent,
                         fontSize: 11,
@@ -848,33 +905,15 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
                     ),
                   ),
                   TextButton.icon(
-                    onPressed: () {
-                      _openWebBrowser('https://downsub.com/');
-                    },
-                    icon: const Icon(
-                      Icons.subtitles,
-                      color: Colors.lightBlueAccent,
-                      size: 14,
-                    ),
-                    label: const Text(
-                      "DownSub (Extraer de YT)",
-                      style: TextStyle(
-                        color: Colors.lightBlueAccent,
-                        fontSize: 11,
-                      ),
-                    ),
-                  ),
-                  TextButton.icon(
-                    onPressed: () {
-                      _openWebBrowser('https://lrc-maker.github.io/');
-                    },
+                    onPressed: () =>
+                        _openWebBrowser('https://lrc-maker.github.io/'),
                     icon: const Icon(
                       Icons.tap_and_play,
                       color: Color(0xFF39FF14),
                       size: 14,
                     ),
                     label: const Text(
-                      "LRC Maker (Sincronizar Manual)",
+                      "LRC Maker",
                       style: TextStyle(color: Color(0xFF39FF14), fontSize: 11),
                     ),
                   ),
@@ -899,18 +938,10 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
                   ),
                 ],
               ),
-              const SizedBox(height: 10),
-              const Text(
-                "💡 Workflow Automático: Pega un link de YouTube arriba y presiona 'YouTube MP3' para reemplazar pista y letra.",
-                style: TextStyle(
-                  color: Colors.white54,
-                  fontSize: 10,
-                  fontStyle: FontStyle.italic,
-                ),
-              ),
             ],
           ),
         ),
+
         // EDITOR LRC
         Expanded(
           child: Container(
@@ -939,7 +970,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    if (isMobile) // Botón de Volver exclusivo para móviles
+                    if (isMobile)
                       IconButton(
                         icon: const Icon(
                           Icons.arrow_back,
@@ -974,9 +1005,6 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.orangeAccent,
                         foregroundColor: Colors.black,
-                        padding: isMobile
-                            ? const EdgeInsets.symmetric(horizontal: 8)
-                            : null,
                       ),
                     ),
                   ],
@@ -1019,11 +1047,9 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        // 🛠️ DETECTOR DE HARDWARE (Móvil/Tablet/PC)
         final bool isMobile = constraints.maxWidth < 850;
-
         return Padding(
-          padding: EdgeInsets.all(isMobile ? 15.0 : 30.0), // Padding dinámico
+          padding: EdgeInsets.all(isMobile ? 15.0 : 30.0),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -1039,7 +1065,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
                     child: Text(
                       "Laboratorio de Cuarentena (DLQ)",
                       style: TextStyle(
-                        fontSize: isMobile ? 18 : 24, // Letra dinámica
+                        fontSize: isMobile ? 18 : 24,
                         fontWeight: FontWeight.bold,
                         color: Colors.orangeAccent,
                       ),
@@ -1081,11 +1107,9 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
               else
                 Expanded(
                   child: isMobile
-                      // 🛠️ MODO MASTER-DETAIL (MÓVILES): Muestra un panel a la vez
                       ? (_selectedFileForEdit == null
                             ? _buildLeftPanel(entries, isMobile)
                             : _buildRightPanel(isMobile))
-                      // 🛠️ MODO ESCRITORIO (PC/TABLET): Muestra ambos paneles contiguos
                       : Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
