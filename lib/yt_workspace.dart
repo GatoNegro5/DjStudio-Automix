@@ -225,75 +225,72 @@ class _YoutubeSearchAndDownloadWorkspaceState
     });
   }
 
-  // 🛠️ ARQUITECTURA HÍBRIDA: Explorador Nativo (Desktop) vs Árbol Manual (Móvil)
-  Future<void> _showFolderSelectionDialog() async {
-    if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
-      try {
-        String? selectedDirectory = await FilePicker.platform.getDirectoryPath(
-          dialogTitle: 'Selecciona la carpeta de destino',
-        );
-        if (selectedDirectory != null) {
-          setState(() => _selectedFolderPath = selectedDirectory);
-        }
-      } catch (e) {
-        debugPrint("🔴 Error FilePicker Desktop: $e");
-      }
+  // 🛠️ RESTAURADO: Explorador Jerárquico Personalizado (Cero dependencias externas)
+  void _showFolderSelectionDialog() {
+    String baseMusicPath = '';
+    if (Platform.isWindows) {
+      final userProfile = Platform.environment['USERPROFILE'];
+      baseMusicPath = userProfile != null ? '$userProfile\\Music' : 'C:\\Music';
+    } else if (Platform.isMacOS || Platform.isLinux) {
+      baseMusicPath = '${Platform.environment['HOME']}/Music';
     } else {
-      // Fallback estricto para Android/iOS (Scoped Storage Bypass)
-      String baseMusicPath = '/storage/emulated/0/Music';
-      final baseDir = Directory(baseMusicPath);
+      baseMusicPath = '/storage/emulated/0/Music';
+    }
 
-      showDialog(
-        context: context,
-        builder: (ctx) {
-          return AlertDialog(
-            backgroundColor: const Color(0xFF121212),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(8),
-              side: const BorderSide(color: Color(0xFF00FFFF)),
-            ),
-            title: const Row(
-              children: [
-                Icon(Icons.folder_special, color: Color(0xFF00FFFF)),
-                SizedBox(width: 10),
-                Text(
-                  "Selección de Carpeta Destino",
-                  style: TextStyle(
-                    color: Color(0xFF00FFFF),
-                    fontWeight: FontWeight.bold,
-                    fontSize: 16,
-                  ),
-                ),
-              ],
-            ),
-            content: SizedBox(
-              width: 550,
-              height: 450,
-              child: SingleChildScrollView(
-                child: FolderTreeView(
-                  directory: baseDir,
-                  selectedPath: _selectedFolderPath,
-                  isRoot: true,
-                  onSelected: (newPath) {
-                    setState(() => _selectedFolderPath = newPath);
-                    Navigator.pop(ctx);
-                  },
-                ),
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text(
-                  "Cancelar",
-                  style: TextStyle(color: Colors.white54),
+    final baseDir = Directory(baseMusicPath);
+
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF121212),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(8),
+            side: const BorderSide(color: Color(0xFF00FFFF)),
+          ),
+          title: const Row(
+            children: [
+              Icon(Icons.folder_special, color: Color(0xFF00FFFF)),
+              SizedBox(width: 10),
+              Text(
+                "Selección de Carpeta Destino",
+                style: TextStyle(
+                  color: Color(0xFF00FFFF),
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16,
                 ),
               ),
             ],
-          );
-        },
-      );
-    }
+          ),
+          content: SizedBox(
+            width: 550,
+            height: 450,
+            child: SingleChildScrollView(
+              child: FolderTreeView(
+                directory: baseDir,
+                selectedPath: _selectedFolderPath,
+                isRoot: true,
+                onSelected: (newPath) {
+                  setState(() {
+                    _selectedFolderPath = newPath;
+                  });
+                  Navigator.pop(ctx);
+                },
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text(
+                "Cancelar",
+                style: TextStyle(color: Colors.white54),
+              ),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   // ---------------------------------------------------------
