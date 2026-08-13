@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
@@ -667,29 +668,30 @@ class _YoutubeSearchAndDownloadWorkspaceState
         targetUrl,
       ]);
 
+      // 🔴 FIX ARCH: Drenaje pasivo de búferes OS para evitar el Deadlock
+      process.stdout.listen((_) {});
+      process.stderr.listen((_) {});
+
       String? extractedMp3Path;
 
-      process.stdout.transform(const SystemEncoding().decoder).listen((data) {
-        if (data.contains('[download]')) {
-          final cleanData = data
-              .replaceAll(RegExp(r'\x1b\[[0-9;]*m'), '')
-              .trim();
-          setState(() => _statusText = cleanData);
-        }
-        if (data.contains('Destination:') &&
-            data.toLowerCase().contains('.mp3')) {
-          final cleanPath = data
-              .split('Destination:')
-              .last
-              .replaceAll(RegExp(r'\x1b\[[0-9;]*m'), '')
-              .trim();
-          extractedMp3Path = cleanPath;
-        }
-      });
-
+      // Un escaneo de la ruta final a través de la carpeta de destino:
       final exitCode = await process.exitCode;
 
       if (exitCode == 0) {
+        // Dado que yt-dlp guarda la pista con un formato dinámico, escaneamos la carpeta
+        // buscando el archivo más reciente (el que acabamos de descargar).
+        final files = Directory(downloadPath)
+            .listSync()
+            .whereType<File>()
+            .where((f) => f.path.endsWith('.mp3'))
+            .toList();
+        if (files.isNotEmpty) {
+          files.sort(
+            (a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()),
+          );
+          extractedMp3Path = files.first.path;
+        }
+
         _searchController.clear();
         if (extractedMp3Path != null && File(extractedMp3Path!).existsSync()) {
           await _extractLyricsFromYoutube(targetUrl, extractedMp3Path!);

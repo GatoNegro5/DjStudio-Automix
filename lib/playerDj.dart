@@ -3,12 +3,16 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
+import 'package:youtube_explode_dart/youtube_explode_dart.dart'; // 🛠️ FIX: Faltaba esta dependencia
+import 'package:djstudio_player/src/rust/api/core_dsp.dart' as rust_dsp;
 
 import 'providers/directory_provider.dart';
 import 'providers/player_provider.dart';
 import 'providers/pipeline_provider.dart';
 import 'providers/dsp_provider.dart';
-import 'package:youtube_explode_dart/youtube_explode_dart.dart'; // 🛠️ FIX: Faltaba esta dependencia
+import 'providers/metadata_provider.dart';
+import 'providers/nlp_provider.dart';
+import 'providers/db_provider.dart';
 
 // =====================================================================
 // ROUTE 0: UNIFIED DJ WORKSPACE (IDE 3-PANEL REKORDBOX STYLE)
@@ -2694,15 +2698,7 @@ class _FixLyricsModalState extends ConsumerState<FixLyricsModal> {
           : 'yt-dlp';
       final tempMp3 = '${tempDir.path}${Platform.pathSeparator}rescue_temp.mp3';
 
-      if (Platform.isWindows && !File(ytdlpPath).existsSync()) {
-        final dlUrl = Uri.parse(
-          'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe',
-        );
-        final response = await http.get(dlUrl);
-        await File(ytdlpPath).writeAsBytes(response.bodyBytes);
-      }
-
-      // 1. Descarga del MP3 de Rescate a Búfer Temporal
+      // 1. Descarga a Búfer Temporal
       final process = await Process.start(ytdlpPath, [
         '-f',
         'bestaudio',
@@ -2716,6 +2712,11 @@ class _FixLyricsModalState extends ConsumerState<FixLyricsModal> {
         tempMp3,
         url,
       ]);
+
+      // 🔴 FIX ARCH: Drenaje pasivo de búferes OS para evitar el Deadlock de 6 minutos.
+      process.stdout.listen((_) {});
+      process.stderr.listen((_) {});
+
       final exitCode = await process.exitCode;
 
       if (exitCode == 0 && File(tempMp3).existsSync()) {
@@ -2723,7 +2724,8 @@ class _FixLyricsModalState extends ConsumerState<FixLyricsModal> {
         final videoId = VideoId(url);
         final manifest = await yt.videos.closedCaptions.getManifest(videoId);
 
-        // 2. Extracción de Closed Captions
+        // 2. Extracción de Closed Captions a un temp .lrc
+        String? tempLrcPath;
         if (manifest.tracks.isNotEmpty) {
           ClosedCaptionTrackInfo? selectedTrack;
           for (var lang in ['es', 'en']) {
@@ -2759,42 +2761,98 @@ class _FixLyricsModalState extends ConsumerState<FixLyricsModal> {
             if (text.isNotEmpty) lrcBuffer.writeln('[$min:$sec.$ms]$text');
           }
           if (lrcBuffer.isNotEmpty) {
-            final tempLrc = tempMp3.replaceAll('.mp3', '.lrc');
-            await File(tempLrc).writeAsString(lrcBuffer.toString());
+            tempLrcPath = tempMp3.replaceAll('.mp3', '.lrc');
+            await File(tempLrcPath).writeAsString(lrcBuffer.toString());
           }
         }
         yt.close();
 
-        // 3. Procesamiento DSP (Trim) + Telemetría
-        final durationBeforeMs = await _getAudioDurationMs(tempMp3);
-        await ref.read(dspWorkerProvider).processSingleFile(tempMp3);
-        final durationAfterMs = await _getAudioDurationMs(tempMp3);
-        final trimmedMs = durationBeforeMs - durationAfterMs;
+        // 3. I/O ATÓMICO: Sobrescritura Física Temprana (Reemplaza el original por el crudo nuevo)
+        final targetOriginalMp3 = File(widget.audioPath);
+        final targetOriginalLrc = widget.audioPath.replaceAll(
+          RegExp(r'\.mp3$|\.webm$', caseSensitive: false),
+          '.lrc',
+        );
 
-        // 4. Compensación Vectorial del Búfer LRC temporal
-        if (trimmedMs > 50) {
-          final tempLrc = tempMp3.replaceAll('.mp3', '.lrc');
-          await _offsetLrcTimeline(tempLrc, trimmedMs);
-        }
-
-        // 5. I/O ATÓMICO: Sobrescritura Física del Archivo Dañado en Laboratorio
-        final oldFile = File(widget.audioPath);
-        await File(tempMp3).copy(oldFile.path); // MP3
+        await File(tempMp3).copy(targetOriginalMp3.path);
         await File(tempMp3).delete();
 
-        final tempLrcFile = File(tempMp3.replaceAll('.mp3', '.lrc'));
-        if (tempLrcFile.existsSync()) {
-          final targetLrc = oldFile.path.replaceAll(
+        if (tempLrcPath != null && File(tempLrcPath).existsSync()) {
+          await File(tempLrcPath).copy(targetOriginalLrc);
+          await File(tempLrcPath).delete();
+        }
+
+        // =========================================================
+        // 4. EJECUCIÓN ESTRICTA DEL PIPELINE COMPLETO POST-REEMPLAZO
+        // =========================================================
+        String currentPath = targetOriginalMp3.path;
+
+        // A) Metadatos
+        currentPath = await ref
+            .read(metadataWorkerProvider)
+            .processSingleFile(currentPath);
+
+        // B) DSP y Telemetría de Corte (El motor C++ entra aquí)
+        final durationBeforeMs = await _getAudioDurationMs(currentPath);
+        await ref.read(dspWorkerProvider).processSingleFile(currentPath);
+        final durationAfterMs = await _getAudioDurationMs(currentPath);
+        final trimmedMs = durationBeforeMs - durationAfterMs;
+
+        // C) Compensación Vectorial: Alinear el LRC a los tiempos post-C++
+        if (trimmedMs > 50) {
+          final lrcFileToPatch = currentPath.replaceAll(
             RegExp(r'\.mp3$|\.webm$', caseSensitive: false),
             '.lrc',
           );
-          await tempLrcFile.copy(targetLrc); // LRC
-          await tempLrcFile.delete();
+          await _offsetLrcTimeline(lrcFileToPatch, trimmedMs);
         }
 
-        debugPrint(
-          "✅ RESCATE ATÓMICO COMPLETADO. Archivo reemplazado en-situ.",
-        );
+        // D) Cierre del Pipeline: Firmas ID3, ISAR y NLP
+        await rust_dsp.injectWatermark(inputPath: currentPath);
+        await ref.read(nlpWorkerProvider).processSingleFile(currentPath);
+
+        final rawGenre = await rust_dsp.readAudioGenre(inputPath: currentPath);
+        String assignedProfile = 'constant_power';
+        int assignedDuration = 6000;
+
+        final Map<String, Map<String, dynamic>> mixProfiles = {
+          'reggaeton': {'curve': 'eq_kill', 'durationMs': 4000},
+          'salsa': {'curve': 'sharp', 'durationMs': 2000},
+          'merengue': {'curve': 'sharp', 'durationMs': 2500},
+          'balada': {'curve': 'linear', 'durationMs': 8000},
+          'rock': {'curve': 'constant_power', 'durationMs': 3500},
+          'cumbia': {'curve': 'constant_power', 'durationMs': 3000},
+          'electro': {'curve': 'eq_kill', 'durationMs': 7000},
+          'latin': {'curve': 'constant_power', 'durationMs': 4500},
+          'pop': {'curve': 'constant_power', 'durationMs': 4000},
+        };
+
+        if (rawGenre.isNotEmpty && rawGenre != 'desconocido') {
+          for (final key in mixProfiles.keys) {
+            if (rawGenre.contains(key)) {
+              assignedProfile = mixProfiles[key]!['curve'] as String;
+              assignedDuration = mixProfiles[key]!['durationMs'] as int;
+              break;
+            }
+          }
+        }
+
+        await ref
+            .read(dbServiceProvider)
+            .saveTrackMetadata(
+              path: currentPath,
+              mixProfile: assignedProfile,
+              durationMs: assignedDuration,
+              genre: rawGenre,
+              cueInMs: 0,
+              mixOutMs: null,
+            );
+
+        await ref
+            .read(dspWorkerProvider)
+            .generateStaticBpmCache(Directory(currentPath).parent.path);
+
+        debugPrint("✅ RESCATE ATÓMICO: Pista reconstruida al 100%.");
         if (mounted) Navigator.pop(context);
       }
     } catch (e) {
@@ -2816,7 +2874,7 @@ class _FixLyricsModalState extends ConsumerState<FixLyricsModal> {
     final query = _searchController.text.trim();
     if (query.isEmpty) return;
 
-    // 🛠️ RUTEO ESTRATÉGICO: Si detecta URL de YT, activa el Rescate Atómico
+    // 🛠️ RUTEO ESTRATÉGICO: Inyecta el Workflow Automático
     if (query.startsWith('http') &&
         (query.contains('youtube.com') || query.contains('youtu.be'))) {
       await _rescueTrackFromYoutube(query);

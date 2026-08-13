@@ -2,8 +2,14 @@ import 'dart:io';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:youtube_explode_dart/youtube_explode_dart.dart';
+import 'package:http/http.dart' as http;
 
+import 'package:djstudio_player/src/rust/api/core_dsp.dart' as rust_dsp;
 import 'providers/player_provider.dart';
+import 'providers/metadata_provider.dart';
+import 'providers/dsp_provider.dart';
+import 'providers/db_provider.dart';
 
 class LabWorkspace extends ConsumerStatefulWidget {
   const LabWorkspace({super.key});
@@ -346,6 +352,271 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
     }
   }
 
+  // ---------------------------------------------------------
+  // 🛠️ MÓDULO DE TELEMETRÍA Y COMPENSACIÓN VECTORIAL (LABORATORIO)
+  // ---------------------------------------------------------
+  String _getFfprobePath() {
+    if (Platform.isAndroid || Platform.isIOS) return 'ffprobe';
+    final exeDir = File(Platform.resolvedExecutable).parent.path;
+    final localPath = Platform.isWindows
+        ? '$exeDir\\ffprobe.exe'
+        : '$exeDir/ffprobe';
+    return File(localPath).existsSync() ? localPath : 'ffprobe';
+  }
+
+  Future<int> _getAudioDurationMs(String path) async {
+    try {
+      final result = await Process.run(_getFfprobePath(), [
+        '-v',
+        'error',
+        '-show_entries',
+        'format=duration',
+        '-of',
+        'default=noprint_wrappers=1:nokey=1',
+        path,
+      ]);
+      final durationSec =
+          double.tryParse(result.stdout.toString().trim()) ?? 0.0;
+      return (durationSec * 1000).toInt();
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  Future<void> _offsetLrcTimeline(String lrcPath, int trimmedMs) async {
+    final file = File(lrcPath);
+    if (!file.existsSync() || trimmedMs <= 0) return;
+
+    try {
+      final lines = await file.readAsLines();
+      final regex = RegExp(r'\[(\d{2}):(\d{2})\.(\d{2,3})\](.*)');
+      final newLines = <String>[];
+
+      for (var line in lines) {
+        final match = regex.firstMatch(line);
+        if (match != null) {
+          final min = int.parse(match.group(1)!);
+          final sec = int.parse(match.group(2)!);
+          int ms = int.parse(match.group(3)!);
+          if (match.group(3)!.length == 2) ms *= 10;
+
+          int totalMs = (min * 60000) + (sec * 1000) + ms - trimmedMs;
+          if (totalMs < 0) totalMs = 0;
+
+          final newMin = (totalMs ~/ 60000).toString().padLeft(2, '0');
+          final newSec = ((totalMs % 60000) ~/ 1000).toString().padLeft(2, '0');
+          final newMs = ((totalMs % 1000) ~/ 10).toString().padLeft(2, '0');
+          final text = match.group(4)!;
+
+          newLines.add('[$newMin:$newSec.$newMs]$text');
+        } else {
+          newLines.add(line);
+        }
+      }
+      await file.writeAsString(newLines.join('\n'));
+    } catch (_) {}
+  }
+
+  // ---------------------------------------------------------
+  // 🛠️ MOTOR DE RESCATE ATÓMICO IN-SITU PARA EL LABORATORIO
+  // ---------------------------------------------------------
+  Future<void> _rescueLabTrackFromYoutube(
+    String url,
+    String targetOriginalPath,
+  ) async {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF121212),
+        content: Row(
+          children: const [
+            CircularProgressIndicator(color: Colors.redAccent),
+            SizedBox(width: 20),
+            Expanded(
+              child: Text(
+                "Ejecutando Rescate Atómico y Masterización...",
+                style: TextStyle(color: Colors.white),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    try {
+      final tempDir = Directory.systemTemp;
+      final ytdlpPath = Platform.isWindows
+          ? '${tempDir.path}${Platform.pathSeparator}yt-dlp.exe'
+          : 'yt-dlp';
+      final tempMp3 =
+          '${tempDir.path}${Platform.pathSeparator}lab_rescue_temp.mp3';
+
+      if (Platform.isWindows && !File(ytdlpPath).existsSync()) {
+        final dlUrl = Uri.parse(
+          'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe',
+        );
+        final response = await http.get(dlUrl);
+        await File(ytdlpPath).writeAsBytes(response.bodyBytes);
+      }
+
+      // 1. Descarga del MP3 de Rescate a Búfer Temporal
+      final process = await Process.start(ytdlpPath, [
+        '-f',
+        'bestaudio',
+        '-x',
+        '--audio-format',
+        'mp3',
+        '--audio-quality',
+        '320K',
+        '--force-overwrites',
+        '-o',
+        tempMp3,
+        url,
+      ]);
+
+      // 🔴 PREVENCIÓN DE DEADLOCKS I/O
+      process.stdout.listen((_) {});
+      process.stderr.listen((_) {});
+
+      final exitCode = await process.exitCode;
+
+      if (exitCode == 0 && File(tempMp3).existsSync()) {
+        final yt = YoutubeExplode();
+        final videoId = VideoId(url);
+        final manifest = await yt.videos.closedCaptions.getManifest(videoId);
+
+        // 2. Extracción de Closed Captions
+        String? tempLrcPath;
+        if (manifest.tracks.isNotEmpty) {
+          ClosedCaptionTrackInfo? selectedTrack;
+          for (var lang in ['es', 'en']) {
+            try {
+              selectedTrack = manifest.tracks.firstWhere(
+                (t) =>
+                    t.language.code.toLowerCase().contains(lang) &&
+                    !t.isAutoGenerated,
+              );
+              break;
+            } catch (_) {}
+          }
+          selectedTrack ??= manifest.tracks.firstWhere(
+            (t) => t.language.code.toLowerCase().contains('es'),
+            orElse: () => manifest.tracks.first,
+          );
+
+          final track = await yt.videos.closedCaptions.get(selectedTrack);
+          final lrcBuffer = StringBuffer();
+
+          for (var caption in track.captions) {
+            final start = caption.offset;
+            final min = start.inMinutes.toString().padLeft(2, '0');
+            final sec = (start.inSeconds % 60).toString().padLeft(2, '0');
+            final ms = ((start.inMilliseconds % 1000) ~/ 10).toString().padLeft(
+              2,
+              '0',
+            );
+            final text = caption.text
+                .replaceAll('\n', ' ')
+                .replaceAll(RegExp(r'<[^>]*>'), '')
+                .trim();
+            if (text.isNotEmpty) lrcBuffer.writeln('[$min:$sec.$ms]$text');
+          }
+          if (lrcBuffer.isNotEmpty) {
+            tempLrcPath = tempMp3.replaceAll('.mp3', '.lrc');
+            await File(tempLrcPath).writeAsString(lrcBuffer.toString());
+          }
+        }
+        yt.close();
+
+        // 3. I/O ATÓMICO: Sobrescritura Física en el Laboratorio
+        final oldFile = File(targetOriginalPath);
+        final oldLrcFile = File(
+          targetOriginalPath.replaceAll(
+            RegExp(r'\.mp3$|\.webm$', caseSensitive: false),
+            '.lrc',
+          ),
+        );
+
+        await File(tempMp3).copy(oldFile.path); // Reemplaza el MP3 defectuoso
+        await File(tempMp3).delete();
+
+        if (tempLrcPath != null && File(tempLrcPath).existsSync()) {
+          await File(tempLrcPath).copy(oldLrcFile.path); // Escribe el nuevo LRC
+          await File(tempLrcPath).delete();
+        }
+
+        // =========================================================
+        // 4. PIPELINE POST-REEMPLAZO (Sin duplicar NLP)
+        // =========================================================
+        String finalPath = oldFile.path;
+
+        // Metadata
+        finalPath = await ref
+            .read(metadataWorkerProvider)
+            .processSingleFile(finalPath);
+
+        // DSP Trim & Master
+        final durationBeforeMs = await _getAudioDurationMs(finalPath);
+        await ref.read(dspWorkerProvider).processSingleFile(finalPath);
+        final durationAfterMs = await _getAudioDurationMs(finalPath);
+
+        // Compensación Vectorial de la nueva letra
+        final trimmedMs = durationBeforeMs - durationAfterMs;
+        if (trimmedMs > 50) {
+          final lrcToPatch = finalPath.replaceAll(
+            RegExp(r'\.mp3$|\.webm$', caseSensitive: false),
+            '.lrc',
+          );
+          await _offsetLrcTimeline(lrcToPatch, trimmedMs);
+        }
+
+        // Sellado y DB
+        await rust_dsp.injectWatermark(inputPath: finalPath);
+        final rawGenre = await rust_dsp.readAudioGenre(inputPath: finalPath);
+        await ref
+            .read(dbServiceProvider)
+            .saveTrackMetadata(
+              path: finalPath,
+              mixProfile: 'constant_power',
+              durationMs: 6000,
+              genre: rawGenre,
+              cueInMs: 0,
+              mixOutMs: null,
+            );
+        await ref
+            .read(dspWorkerProvider)
+            .generateStaticBpmCache(Directory(finalPath).parent.path);
+
+        // 5. Refrescar UI del Laboratorio
+        _loadRegistry();
+        _loadLrcForEdit(finalPath.split(Platform.pathSeparator).last);
+
+        if (mounted) {
+          Navigator.pop(context); // Cierra el loading
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                '✅ Rescate atómico completado. Pista y letra masterizadas.',
+              ),
+              backgroundColor: Color(0xFF39FF14),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('🔴 Fallo de Rescate: $e'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
+    }
+  }
+
   // ==========================================
   // WIDGETS DE RENDERIZADO MODULAR
   // ==========================================
@@ -508,7 +779,8 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
                         isDense: true,
                         filled: true,
                         fillColor: Colors.black,
-                        hintText: "Artista y Canción...",
+                        hintText: "Artista y Canción o URL YouTube...",
+                        hintStyle: TextStyle(color: Colors.white38),
                         border: OutlineInputBorder(),
                       ),
                     ),
@@ -524,12 +796,19 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
                   ),
                   ElevatedButton.icon(
                     onPressed: () {
-                      final q = Uri.encodeComponent(
-                        '${_searchQueryController.text} official audio',
-                      );
-                      _openWebBrowser(
-                        'https://www.youtube.com/results?search_query=$q',
-                      );
+                      final query = _searchQueryController.text.trim();
+                      if (query.startsWith('http')) {
+                        // 🛠️ INYECCIÓN: Llama al rescate atómico si es URL
+                        final targetPath =
+                            '$_labPath${Platform.pathSeparator}$_selectedFileForEdit';
+                        _rescueLabTrackFromYoutube(query, targetPath);
+                      } else {
+                        // Comportamiento normal (abre navegador)
+                        final q = Uri.encodeComponent('$query official audio');
+                        _openWebBrowser(
+                          'https://www.youtube.com/results?search_query=$q',
+                        );
+                      }
                     },
                     icon: const Icon(Icons.video_library, size: 16),
                     label: const Text("YouTube MP3"),
@@ -622,7 +901,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
               ),
               const SizedBox(height: 10),
               const Text(
-                "💡 Workflow Sincronización Manual: Busca en Genius la letra plana -> Entra a 'LRC Maker' -> Pega la letra plana -> Dale Play a tu MP3 -> Toca Espacio para sincronizar -> Copia el resultado y pégalo abajo.",
+                "💡 Workflow Automático: Pega un link de YouTube arriba y presiona 'YouTube MP3' para reemplazar pista y letra.",
                 style: TextStyle(
                   color: Colors.white54,
                   fontSize: 10,

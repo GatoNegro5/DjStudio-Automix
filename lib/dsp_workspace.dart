@@ -129,7 +129,72 @@ class DspNlpWorkspace extends ConsumerWidget {
     );
   }
 
-  // 🛠️ MOTOR UNIVERSAL (One-Click Architecture AOT Cues)
+  // ---------------------------------------------------------
+  // 🛠️ MÓDULO DE TELEMETRÍA Y COMPENSACIÓN VECTORIAL
+  // ---------------------------------------------------------
+  String _getFfprobePath() {
+    if (Platform.isAndroid || Platform.isIOS) return 'ffprobe';
+    final exeDir = File(Platform.resolvedExecutable).parent.path;
+    final localPath = Platform.isWindows
+        ? '$exeDir\\ffprobe.exe'
+        : '$exeDir/ffprobe';
+    return File(localPath).existsSync() ? localPath : 'ffprobe';
+  }
+
+  Future<int> _getAudioDurationMs(String path) async {
+    try {
+      final result = await Process.run(_getFfprobePath(), [
+        '-v',
+        'error',
+        '-show_entries',
+        'format=duration',
+        '-of',
+        'default=noprint_wrappers=1:nokey=1',
+        path,
+      ]);
+      final durationSec =
+          double.tryParse(result.stdout.toString().trim()) ?? 0.0;
+      return (durationSec * 1000).toInt();
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  Future<void> _offsetLrcTimeline(String lrcPath, int trimmedMs) async {
+    final file = File(lrcPath);
+    if (!file.existsSync() || trimmedMs <= 0) return;
+
+    try {
+      final lines = await file.readAsLines();
+      final regex = RegExp(r'\[(\d{2}):(\d{2})\.(\d{2,3})\](.*)');
+      final newLines = <String>[];
+
+      for (var line in lines) {
+        final match = regex.firstMatch(line);
+        if (match != null) {
+          final min = int.parse(match.group(1)!);
+          final sec = int.parse(match.group(2)!);
+          int ms = int.parse(match.group(3)!);
+          if (match.group(3)!.length == 2) ms *= 10;
+
+          int totalMs = (min * 60000) + (sec * 1000) + ms - trimmedMs;
+          if (totalMs < 0) totalMs = 0;
+
+          final newMin = (totalMs ~/ 60000).toString().padLeft(2, '0');
+          final newSec = ((totalMs % 60000) ~/ 1000).toString().padLeft(2, '0');
+          final newMs = ((totalMs % 1000) ~/ 10).toString().padLeft(2, '0');
+          final text = match.group(4)!;
+
+          newLines.add('[$newMin:$newSec.$newMs]$text');
+        } else {
+          newLines.add(line);
+        }
+      }
+      await file.writeAsString(newLines.join('\n'));
+    } catch (_) {}
+  }
+
+  // 🛠️ MOTOR UNIVERSAL (AOT Cues + Vector Compensation)
   Future<void> _executeUniversalPipeline(
     BuildContext context,
     WidgetRef ref,
@@ -176,7 +241,7 @@ class DspNlpWorkspace extends ConsumerWidget {
         String currentPath = file.path;
 
         try {
-          // 🛠️ FORZAMOS LA REESCRITURA (BYPASS DESACTIVADO)
+          // 1. Metadata
           pipe.updateProgress(
             i + 1,
             total,
@@ -189,14 +254,16 @@ class DspNlpWorkspace extends ConsumerWidget {
           if (checkAbort()) break;
 
           final cleanName = currentPath.split(Platform.pathSeparator).last;
+
+          // 2. Telemetría y DSP C++
           pipe.updateProgress(
             i + 1,
             total,
             cleanName,
             "🔊 Masterizando Audio (C++)",
           );
+          final durationBeforeMs = await _getAudioDurationMs(currentPath);
 
-          // 🛠️ TIMEOUT DE RESILIENCIA: Evita Deadlocks en FFI C++
           await ref
               .read(dspWorkerProvider)
               .processSingleFile(currentPath)
@@ -206,11 +273,20 @@ class DspNlpWorkspace extends ConsumerWidget {
                   "C++ Deadlock: Excedido límite de I/O en Masterización.",
                 ),
               );
-
           if (checkAbort()) break;
 
-          pipe.updateProgress(i + 1, total, cleanName, "🔐 Sellando Watermark");
+          final durationAfterMs = await _getAudioDurationMs(currentPath);
+          final trimmedMs = durationBeforeMs - durationAfterMs;
+          if (trimmedMs > 50) {
+            final lrcFileToPatch = currentPath.replaceAll(
+              RegExp(r'\.mp3$|\.webm$', caseSensitive: false),
+              '.lrc',
+            );
+            await _offsetLrcTimeline(lrcFileToPatch, trimmedMs);
+          }
 
+          // 3. Sello
+          pipe.updateProgress(i + 1, total, cleanName, "🔐 Sellando Watermark");
           await rust_dsp
               .injectWatermark(inputPath: currentPath)
               .timeout(
@@ -219,11 +295,10 @@ class DspNlpWorkspace extends ConsumerWidget {
                   "C++ Deadlock: Excedido límite de I/O inyectando ID3v2.",
                 ),
               );
-
           if (checkAbort()) break;
           final finalName = currentPath.split(Platform.pathSeparator).last;
 
-          // 2. EXTRACCIÓN SEMÁNTICA (LETRAS)
+          // 4. NLP Letras
           pipe.updateProgress(
             i + 1,
             total,
@@ -238,10 +313,9 @@ class DspNlpWorkspace extends ConsumerWidget {
                 onTimeout: () =>
                     throw Exception("NLP Timeout: El scraper colapsó."),
               );
-
           if (checkAbort()) break;
 
-          // 3. ASIGNACIÓN DE CURVAS (ISAR)
+          // 5. Asignando Curvas
           pipe.updateProgress(
             i + 1,
             total,
@@ -264,7 +338,7 @@ class DspNlpWorkspace extends ConsumerWidget {
             }
           }
 
-          // 4. AOT CUE POINT CALCULATION
+          // 6. Cues Estructurales
           pipe.updateProgress(
             i + 1,
             total,
