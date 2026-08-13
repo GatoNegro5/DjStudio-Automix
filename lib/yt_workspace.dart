@@ -324,6 +324,80 @@ class _YoutubeSearchAndDownloadWorkspaceState
     }
   }
 
+  // ---------------------------------------------------------
+  // 🛠️ MÓDULO DE TELEMETRÍA Y COMPENSACIÓN VECTORIAL
+  // ---------------------------------------------------------
+  String _getFfprobePath() {
+    if (Platform.isAndroid || Platform.isIOS) return 'ffprobe';
+    final exeDir = File(Platform.resolvedExecutable).parent.path;
+    final localPath = Platform.isWindows
+        ? '$exeDir\\ffprobe.exe'
+        : '$exeDir/ffprobe';
+    return File(localPath).existsSync() ? localPath : 'ffprobe';
+  }
+
+  Future<int> _getAudioDurationMs(String path) async {
+    try {
+      final result = await Process.run(_getFfprobePath(), [
+        '-v',
+        'error',
+        '-show_entries',
+        'format=duration',
+        '-of',
+        'default=noprint_wrappers=1:nokey=1',
+        path,
+      ]);
+      final durationSec =
+          double.tryParse(result.stdout.toString().trim()) ?? 0.0;
+      return (durationSec * 1000).toInt();
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  Future<void> _offsetLrcTimeline(String lrcPath, int trimmedMs) async {
+    final file = File(lrcPath);
+    if (!file.existsSync() || trimmedMs <= 0) return;
+
+    try {
+      final lines = await file.readAsLines();
+      final regex = RegExp(r'\[(\d{2}):(\d{2})\.(\d{2,3})\](.*)');
+      final newLines = <String>[];
+
+      for (var line in lines) {
+        final match = regex.firstMatch(line);
+        if (match != null) {
+          final min = int.parse(match.group(1)!);
+          final sec = int.parse(match.group(2)!);
+          int ms = int.parse(match.group(3)!);
+          if (match.group(3)!.length == 2) ms *= 10;
+
+          // Convertir a MS absolutos y restar el delta del Trim C++
+          int totalMs = (min * 60000) + (sec * 1000) + ms - trimmedMs;
+          if (totalMs < 0)
+            totalMs = 0; // Clamping preventivo (no timestamps negativos)
+
+          final newMin = (totalMs ~/ 60000).toString().padLeft(2, '0');
+          final newSec = ((totalMs % 60000) ~/ 1000).toString().padLeft(2, '0');
+          final newMs = ((totalMs % 1000) ~/ 10).toString().padLeft(2, '0');
+          final text = match.group(4)!;
+
+          newLines.add('[$newMin:$newSec.$newMs]$text');
+        } else {
+          newLines.add(line);
+        }
+      }
+      // Sobrescribe atómicamente el LRC realineado
+      await file.writeAsString(newLines.join('\n'));
+      debugPrint("✅ Vector LRC compensado en -$trimmedMs ms.");
+    } catch (e) {
+      debugPrint("🔴 Error realineando LRC: $e");
+    }
+  }
+
+  // ---------------------------------------------------------
+  // 🛠️ REEMPLAZO DEL PIPELINE SINGLE TRACK
+  // ---------------------------------------------------------
   Future<void> _runSingleTrackPipeline(String initialPath) async {
     String currentPath = initialPath;
 
@@ -336,7 +410,29 @@ class _YoutubeSearchAndDownloadWorkspaceState
       setState(
         () => _statusText = "🔊 Auto-Master: Renderizando LUFS y Trim (C++)...",
       );
+
+      // 1. Telemetría Pre-Trim
+      final durationBeforeMs = await _getAudioDurationMs(currentPath);
+
+      // 2. Ejecución del motor C++ (Destrucción de silencios)
       await ref.read(dspWorkerProvider).processSingleFile(currentPath);
+
+      // 3. Telemetría Post-Trim y Cálculo de Delta
+      final durationAfterMs = await _getAudioDurationMs(currentPath);
+      final trimmedMs = durationBeforeMs - durationAfterMs;
+
+      // 4. Compensación Vectorial del LRC (Si FFmpeg eliminó más de 50ms de silencio)
+      if (trimmedMs > 50) {
+        setState(
+          () => _statusText =
+              "⏱️ Auto-Master: Realineando subtítulos (-$trimmedMs ms)...",
+        );
+        final lrcPath = currentPath.replaceAll(
+          RegExp(r'\.mp3$|\.webm$', caseSensitive: false),
+          '.lrc',
+        );
+        await _offsetLrcTimeline(lrcPath, trimmedMs);
+      }
 
       setState(
         () => _statusText = "🔐 Auto-Master: Inyectando Sello Watermark...",
@@ -376,7 +472,6 @@ class _YoutubeSearchAndDownloadWorkspaceState
         }
       }
 
-      // 🛠️ ACTUALIZACIÓN AOT: Cálculo Semántico y Guardado Robusto
       setState(() => _statusText = "🎯 Auto-Master: Calculando Cues...");
       final existingMeta = await ref
           .read(dbServiceProvider)
@@ -447,14 +542,10 @@ class _YoutubeSearchAndDownloadWorkspaceState
             mixProfile: assignedProfile,
             durationMs: assignedDuration,
             genre: rawGenre,
-            cueInMs:
-                existingMeta?.cueInMs ??
-                calculatedCueIn ??
-                0, // Fallback instrumental
+            cueInMs: existingMeta?.cueInMs ?? calculatedCueIn ?? 0,
             mixOutMs: existingMeta?.mixOutMs ?? calculatedMixOut,
           );
 
-      // Indexación silenciosa en Caché
       setState(() => _statusText = "🥁 Auto-Master: Indexando Caché...");
       await ref
           .read(dspWorkerProvider)
@@ -540,13 +631,21 @@ class _YoutubeSearchAndDownloadWorkspaceState
       if (exitCode == 0) {
         _searchController.clear();
 
-        if (_autoMasterize &&
-            extractedMp3Path != null &&
-            File(extractedMp3Path!).existsSync()) {
-          await _runSingleTrackPipeline(extractedMp3Path!);
+        if (extractedMp3Path != null && File(extractedMp3Path!).existsSync()) {
+          // 🛠️ PIPELINE: Intercepta subtítulos de YT ANTES de Masterizar
+          await _extractLyricsFromYoutube(targetUrl, extractedMp3Path!);
+
+          if (_autoMasterize) {
+            await _runSingleTrackPipeline(extractedMp3Path!);
+          } else {
+            setState(
+              () => _statusText =
+                  "✅ ¡Extracción Completada! MP3 crudo y Letra guardados.",
+            );
+          }
         } else {
           setState(
-            () => _statusText = "✅ ¡Extracción Completada! MP3 crudo guardado.",
+            () => _statusText = "✅ ¡Extracción Completada! (Ruta no trazable)",
           );
         }
       } else {
@@ -842,5 +941,94 @@ class _YoutubeSearchAndDownloadWorkspaceState
         );
       },
     );
+  }
+
+  // 🛠️ INYECCIÓN DSP: Extractor Nativo de Closed Captions (Subtítulos a .LRC)
+  Future<void> _extractLyricsFromYoutube(
+    String videoUrl,
+    String mp3Path,
+  ) async {
+    try {
+      setState(
+        () => _statusText = "Interceptando manifiesto de subtítulos nativos...",
+      );
+      final videoId = VideoId(videoUrl);
+      final manifest = await _yt.videos.closedCaptions.getManifest(videoId);
+
+      if (manifest.tracks.isEmpty) {
+        debugPrint(
+          "⚠️ VETO: El stream de YouTube no contiene pista de subtítulos.",
+        );
+        return;
+      }
+
+      ClosedCaptionTrackInfo? selectedTrack;
+      final langs = ['es', 'en'];
+
+      // Prioridad 1: Subtítulos creados por humanos (Alta precisión)
+      for (var lang in langs) {
+        try {
+          selectedTrack = manifest.tracks.firstWhere(
+            (t) =>
+                t.language.languageCode.toLowerCase().contains(lang) &&
+                !t.isAutoGenerated,
+          );
+          break;
+        } catch (_) {}
+      }
+
+      // Prioridad 2: Fallback a subtítulos Auto-generados por IA de YT
+      if (selectedTrack == null) {
+        for (var lang in langs) {
+          try {
+            selectedTrack = manifest.tracks.firstWhere(
+              (t) => t.language.languageCode.toLowerCase().contains(lang),
+            );
+            break;
+          } catch (_) {}
+        }
+      }
+
+      // Prioridad 3: Force Fetch (Acapara la primera pista disponible si falla el idioma)
+      selectedTrack ??= manifest.tracks.first;
+
+      final track = await _yt.videos.closedCaptions.get(selectedTrack);
+      if (track.captions.isEmpty) return;
+
+      final lrcBuffer = StringBuffer();
+      for (var caption in track.captions) {
+        final start = caption.start;
+        final min = start.inMinutes.toString().padLeft(2, '0');
+        final sec = (start.inSeconds % 60).toString().padLeft(2, '0');
+        final ms = ((start.inMilliseconds % 1000) ~/ 10).toString().padLeft(
+          2,
+          '0',
+        );
+
+        // Limpieza de metadatos del VTT (colores, posiciones y saltos de línea crudos)
+        final text = caption.text
+            .replaceAll('\n', ' ')
+            .replaceAll(RegExp(r'<[^>]*>'), '')
+            .trim();
+
+        if (text.isNotEmpty) {
+          lrcBuffer.writeln('[$min:$sec.$ms]$text');
+        }
+      }
+
+      if (lrcBuffer.isNotEmpty) {
+        final lrcPath = mp3Path.replaceAll(
+          RegExp(r'\.mp3$', caseSensitive: false),
+          '.lrc',
+        );
+        await File(lrcPath).writeAsString(lrcBuffer.toString());
+        setState(
+          () =>
+              _statusText = "✅ Letra sincronizada (.lrc) inyectada con éxito.",
+        );
+      }
+    } catch (e) {
+      debugPrint("🔴 [I/O Scraper Error]: $e");
+    }
   }
 }

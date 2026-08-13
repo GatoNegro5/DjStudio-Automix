@@ -107,14 +107,15 @@ class PlayerNotifier extends Notifier<PlayerState> {
     _playerA = Player();
     _playerB = Player();
 
-    // 🛠️ INYECCIÓN DSP: MODO RADIO FM (LRA=5, Ratio=4.0)
+    // 🛠️ INYECCIÓN DSP: MASTERIZACIÓN PSICOACÚSTICA TIPO SPOTIFY
+    // loudnorm + acompressor + Sub-Bass(60Hz) + Air(12kHz) + Ensanchador Estéreo (1.15)
     (_playerA.platform as dynamic)?.setProperty(
       'af',
-      'loudnorm=I=-14:LRA=5:TP=-1.0,acompressor=threshold=-15dB:ratio=4.0:attack=2:release=50:makeup=2.5',
+      'loudnorm=I=-14:LRA=6:TP=-1.0,acompressor=threshold=-14dB:ratio=3.5:attack=3:release=50:makeup=2,equalizer=f=60:width_type=o:w=1:g=2.5,equalizer=f=12000:width_type=o:w=1:g=3.0,extrastereo=m=1.15',
     );
     (_playerB.platform as dynamic)?.setProperty(
       'af',
-      'loudnorm=I=-14:LRA=5:TP=-1.0,acompressor=threshold=-15dB:ratio=4.0:attack=2:release=50:makeup=2.5',
+      'loudnorm=I=-14:LRA=6:TP=-1.0,acompressor=threshold=-14dB:ratio=3.5:attack=3:release=50:makeup=2,equalizer=f=60:width_type=o:w=1:g=2.5,equalizer=f=12000:width_type=o:w=1:g=3.0,extrastereo=m=1.15',
     );
 
     _attachListeners(_playerA);
