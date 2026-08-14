@@ -97,7 +97,6 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
 
   void _loadLrcForEdit(String fileName) {
     try {
-      // 🛠️ FIX ARQUITECTÓNICO: Regex universal para derivar el LRC sin importar formato
       final lrcFileName = fileName.replaceAll(
         RegExp(r'\.(mp3|m4a|webm|wav|flac)$', caseSensitive: false),
         '.lrc',
@@ -117,16 +116,19 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
       if (lrcFile.existsSync()) {
         final content = lrcFile.readAsStringSync(encoding: utf8);
         setState(() {
+          // ⚠️ Reemplaza _lyricsController por tu variable real
           _lyricsController.text = content;
         });
       } else {
         setState(() {
+          // ⚠️ Reemplaza _lyricsController por tu variable real
           _lyricsController.text = "";
         });
       }
     } catch (e) {
       debugPrint("🔴 Error cargando LRC en UI: $e");
       setState(() {
+        // ⚠️ Reemplaza _lyricsController por tu variable real
         _lyricsController.text = "Error cargando archivo .lrc: $e";
       });
     }
