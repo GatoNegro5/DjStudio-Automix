@@ -116,20 +116,20 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
       if (lrcFile.existsSync()) {
         final content = lrcFile.readAsStringSync(encoding: utf8);
         setState(() {
-          // ⚠️ Reemplaza _lyricsController por tu variable real
-          _lyricsController.text = content;
+          _lrcController.text =
+              content; // ⚠️ CAMBIA AQUÍ SI TU VARIABLE SE LLAMA DISTINTO
         });
       } else {
         setState(() {
-          // ⚠️ Reemplaza _lyricsController por tu variable real
-          _lyricsController.text = "";
+          _lrcController.text =
+              ""; // ⚠️ CAMBIA AQUÍ SI TU VARIABLE SE LLAMA DISTINTO
         });
       }
     } catch (e) {
       debugPrint("🔴 Error cargando LRC en UI: $e");
       setState(() {
-        // ⚠️ Reemplaza _lyricsController por tu variable real
-        _lyricsController.text = "Error cargando archivo .lrc: $e";
+        _lrcController.text =
+            "Error cargando archivo .lrc: $e"; // ⚠️ CAMBIA AQUÍ SI TU VARIABLE SE LLAMA DISTINTO
       });
     }
   }
