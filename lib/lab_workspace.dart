@@ -116,20 +116,23 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
       if (lrcFile.existsSync()) {
         final content = lrcFile.readAsStringSync(encoding: utf8);
         setState(() {
-          _lrcController.text =
-              content; // ⚠️ CAMBIA AQUÍ SI TU VARIABLE SE LLAMA DISTINTO
+          _selectedFileForEdit =
+              fileName; // 🛠️ FIX: Dispara el renderizado del panel derecho
+          _lrcController.text = content;
         });
       } else {
         setState(() {
-          _lrcController.text =
-              ""; // ⚠️ CAMBIA AQUÍ SI TU VARIABLE SE LLAMA DISTINTO
+          _selectedFileForEdit =
+              fileName; // 🛠️ FIX: Abre el panel vacío para permitir pegar texto
+          _lrcController.text = "";
         });
       }
     } catch (e) {
       debugPrint("🔴 Error cargando LRC en UI: $e");
       setState(() {
-        _lrcController.text =
-            "Error cargando archivo .lrc: $e"; // ⚠️ CAMBIA AQUÍ SI TU VARIABLE SE LLAMA DISTINTO
+        _selectedFileForEdit =
+            fileName; // 🛠️ FIX: Muestra el error en el editor
+        _lrcController.text = "Error cargando archivo .lrc: $e";
       });
     }
   }
