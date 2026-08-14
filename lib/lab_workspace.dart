@@ -365,6 +365,15 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
     return File(localPath).existsSync() ? localPath : 'ffprobe';
   }
 
+  String _getFfmpegPath() {
+    if (Platform.isAndroid || Platform.isIOS) return 'ffmpeg';
+    final exeDir = File(Platform.resolvedExecutable).parent.path;
+    final localPath = Platform.isWindows
+        ? '$exeDir\\ffmpeg.exe'
+        : '$exeDir/ffmpeg';
+    return File(localPath).existsSync() ? localPath : 'ffmpeg';
+  }
+
   Future<int> _getAudioDurationMs(String path) async {
     try {
       final result = await Process.run(_getFfprobePath(), [
@@ -484,10 +493,15 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
       final ytdlpPath = Platform.isWindows
           ? '${tempDir.path}${Platform.pathSeparator}yt-dlp.exe'
           : 'yt-dlp';
-
-      // 🛠️ RETORNO AL PATRÓN ATÓMICO: Descarga a búfer temporal para evitar File Locks de Windows
       final tempMp3 =
           '${tempDir.path}${Platform.pathSeparator}lab_rescue_temp.mp3';
+
+      // Limpieza de estados corruptos previos
+      if (File(tempMp3).existsSync()) {
+        try {
+          File(tempMp3).deleteSync();
+        } catch (_) {}
+      }
 
       if (Platform.isWindows && !File(ytdlpPath).existsSync()) {
         statusNotifier.value = "Descargando motor extractor yt-dlp...";
@@ -500,22 +514,26 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
 
       statusNotifier.value =
           "1/6. Descargando audio crudo al búfer temporal...";
+      final ffmpegPath = _getFfmpegPath();
+
       final process = await Process.start(ytdlpPath, [
-        '-f',
-        'bestaudio',
-        '-x',
-        '--audio-format',
-        'mp3',
-        '--audio-quality',
-        '320K',
+        '--ffmpeg-location',
+        ffmpegPath, // 🛠️ INYECCIÓN: Ruta estricta al codificador
+        '-f', 'bestaudio',
+        '-x', '--audio-format', 'mp3',
+        '--audio-quality', '320K',
         '--force-overwrites',
-        '-o',
-        tempMp3,
+        '-o', tempMp3,
         url,
       ]);
 
-      process.stdout.listen((_) {});
-      process.stderr.listen((_) {});
+      String errorTrace = "";
+      process.stdout.listen((_) {}); // Drenaje para evitar Deadlock OS
+      process.stderr.listen((bytes) {
+        errorTrace += String.fromCharCodes(
+          bytes,
+        ); // Captura segura de excepciones
+      });
 
       final exitCode = await process.exitCode;
 
@@ -563,15 +581,12 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
                 .trim();
             final lowerText = text.toLowerCase();
 
-            // Normalización para evadir codificaciones extrañas de tildes
             final normalizedText = lowerText
                 .replaceAll('ú', 'u')
                 .replaceAll('í', 'i')
                 .replaceAll('ó', 'o');
-
             bool isGarbage = false;
 
-            // Filtros de ruido estructural
             if (normalizedText.contains(
               RegExp(
                 r'\[musica\]|\(musica\)|\[aplausos\]|\(aplausos\)|instrumental|♪|🎵',
@@ -583,7 +598,6 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
             if (normalizedText.startsWith('(') && normalizedText.endsWith(')'))
               isGarbage = true;
 
-            // Aniquilación de sílabas huérfanas o números (ej: "y", "2", "i", "ah")
             final alphaNumOnly = lowerText.replaceAll(RegExp(r'[^a-z0-9]'), '');
             if (alphaNumOnly.length <= 2) isGarbage = true;
 
@@ -671,7 +685,9 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
           );
         }
       } else {
-        throw Exception("Fallo en el binario CLI de extracción.");
+        throw Exception(
+          "CLI Exit $exitCode | Traza: ${errorTrace.isNotEmpty ? errorTrace : 'Archivo no generado (Revise FFmpeg).'}",
+        );
       }
     } catch (e) {
       if (mounted) {
@@ -680,6 +696,9 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
           SnackBar(
             content: Text('🔴 Fallo de Rescate: $e'),
             backgroundColor: Colors.redAccent,
+            duration: const Duration(
+              seconds: 8,
+            ), // Aumentado para poder leer la traza completa
           ),
         );
       }
