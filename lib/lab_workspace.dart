@@ -711,8 +711,36 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
             .read(dspWorkerProvider)
             .generateStaticBpmCache(Directory(finalPath).parent.path);
 
-        _loadRegistry();
+        // 🛠️ FIX: Mutación Atómica del Registro (Transfiere el origen del .mp3 al nuevo .m4a)
+        final oldFileName = targetOriginalPath
+            .split(Platform.pathSeparator)
+            .last;
         final finalFileName = finalPath.split(Platform.pathSeparator).last;
+
+        if (oldFileName != finalFileName &&
+            _registry.containsKey(oldFileName)) {
+          final originalOrigin = _registry[oldFileName];
+          _registry.remove(oldFileName);
+
+          // Muta también la extensión de la ruta original para no colapsar al "Restaurar"
+          final newOrigin = originalOrigin.toString().replaceAll(
+            RegExp(r'\.mp3$|\.webm$|\.m4a$', caseSensitive: false),
+            '.$ext',
+          );
+          _registry[finalFileName] = newOrigin;
+
+          // Persistencia forzada al disco antes del reload
+          File(
+            '$_labPath${Platform.pathSeparator}quarantine_registry.json',
+          ).writeAsStringSync(jsonEncode(_registry));
+
+          // Evita que la UI pierda el foco si estaba seleccionada
+          if (_selectedFileForEdit == oldFileName) {
+            _selectedFileForEdit = finalFileName;
+          }
+        }
+
+        _loadRegistry();
         _loadLrcForEdit(finalFileName);
 
         if (mounted) {
