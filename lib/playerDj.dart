@@ -2,16 +2,11 @@ import 'dart:io';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:http/http.dart' as http;
-import 'package:djstudio_player/src/rust/api/core_dsp.dart' as rust_dsp;
 
 import 'providers/directory_provider.dart';
 import 'providers/player_provider.dart';
 import 'providers/pipeline_provider.dart';
 import 'providers/dsp_provider.dart';
-import 'providers/metadata_provider.dart';
-import 'providers/nlp_provider.dart';
-import 'providers/db_provider.dart';
 
 // =====================================================================
 // ROUTE 0: UNIFIED DJ WORKSPACE (IDE 3-PANEL REKORDBOX STYLE)

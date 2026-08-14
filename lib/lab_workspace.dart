@@ -428,7 +428,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
   }
 
   // ---------------------------------------------------------
-  // 🛠️ MOTOR DE RESCATE ATÓMICO (BYPASS DRM SIN FFMPEG)
+  // 🛠️ MOTOR DE RESCATE ATÓMICO (BYPASS DRM: ESTRATEGIA M4A)
   // ---------------------------------------------------------
   Future<void> _rescueLabTrackFromYoutube(
     String url,
@@ -516,15 +516,17 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
       }
 
       statusNotifier.value =
-          "1/6. Descargando stream crudo nativo (Bypass DRM/FFmpeg)...";
+          "1/6. Descargando stream crudo nativo (Bypass DRM)...";
 
-      // 🛠️ BYPASS DEFINITIVO: Sin FFmpeg, directo a WebM/M4A nativo, emulando Android para evitar 403
+      // 🛠️ VECTOR GANADOR: Cliente Default + Forzado a formato 140 (M4A)
       final process = await Process.start(ytdlpPath, [
         '--rm-cache-dir',
-        '--extractor-args', 'youtube:player_client=android,web',
         '-f',
-        'bestaudio', // Descarga el stream crudo original (cero transcodificación)
-        '-o', '$tempAudioPrefix.%(ext)s',
+        '140/bestaudio',
+        '--extractor-args',
+        'youtube:player_client=default',
+        '-o',
+        '$tempAudioPrefix.%(ext)s',
         url,
       ]);
 
@@ -624,7 +626,6 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
 
         statusNotifier.value = "3/6. Sobrescritura Atómica en Laboratorio...";
 
-        // Re-mapeo dinámico: Si bajó un .webm o .m4a, actualizamos la extensión del archivo objetivo
         final baseOriginalName = targetOriginalPath.replaceAll(
           RegExp(r'\.mp3$|\.webm$|\.m4a$', caseSensitive: false),
           '',
@@ -637,7 +638,6 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
         await downloadedFile.copy(newFile.path);
         await downloadedFile.delete();
 
-        // Limpieza del archivo obsoleto original (.mp3) si la nueva pista es de otro formato
         if (targetOriginalPath != newTargetFile &&
             targetOriginalFile.existsSync()) {
           try {
@@ -698,7 +698,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
           _ytUrlController.clear();
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('✅ Rescate atómico completado sin FFmpeg.'),
+              content: Text('✅ Rescate atómico completado.'),
               backgroundColor: Color(0xFF39FF14),
             ),
           );

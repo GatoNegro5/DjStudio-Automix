@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
@@ -610,12 +609,15 @@ class _YoutubeSearchAndDownloadWorkspaceState
             r'\[música\]|\(música\)|\[aplausos\]|\(aplausos\)|instrumental|♪|🎵',
             caseSensitive: false,
           ),
-        ))
+        )) {
           isGarbage = true;
-        if (lowerText.startsWith('[') && lowerText.endsWith(']'))
+        }
+        if (lowerText.startsWith('[') && lowerText.endsWith(']')) {
           isGarbage = true;
-        if (lowerText.startsWith('(') && lowerText.endsWith(')'))
+        }
+        if (lowerText.startsWith('(') && lowerText.endsWith(')')) {
           isGarbage = true;
+        }
 
         if (!isGarbage && text.isNotEmpty) {
           lrcBuffer.writeln('[$min:$sec.$ms]$text');
@@ -672,13 +674,11 @@ class _YoutubeSearchAndDownloadWorkspaceState
       }
 
       final process = await Process.start(ytdlpPath, [
+        '--rm-cache-dir',
         '-f',
-        'bestaudio',
-        '-x',
-        '--audio-format',
-        'mp3',
-        '--audio-quality',
-        '320K',
+        '140/bestaudio',
+        '--extractor-args',
+        'youtube:player_client=default',
         '-o',
         '$downloadPath${Platform.pathSeparator}%(title)s.%(ext)s',
         targetUrl,
@@ -709,10 +709,10 @@ class _YoutubeSearchAndDownloadWorkspaceState
         }
 
         _searchController.clear();
-        if (extractedMp3Path != null && File(extractedMp3Path!).existsSync()) {
-          await _extractLyricsFromYoutube(targetUrl, extractedMp3Path!);
+        if (extractedMp3Path != null && File(extractedMp3Path).existsSync()) {
+          await _extractLyricsFromYoutube(targetUrl, extractedMp3Path);
           if (_autoMasterize) {
-            await _runSingleTrackPipeline(extractedMp3Path!);
+            await _runSingleTrackPipeline(extractedMp3Path);
           } else {
             setState(
               () => _statusText =
