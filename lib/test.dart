@@ -1,78 +1,52 @@
 import 'dart:io';
+import 'dart:convert';
 
-void main() async {
-  final url = 'https://www.youtube.com/watch?v=WaSQSvSg5sQ';
-  final tempDir = Directory.systemTemp;
-  final ytdlpPath = Platform.isWindows
-      ? '${tempDir.path}\\yt-dlp.exe'
-      : 'yt-dlp';
+void main() {
+  print("🧪 INICIANDO SANDBOX: I/O AUDIT DEL ARCHIVO LRC\n");
 
-  print("🧪 INICIANDO SANDBOX DE I/O PARA YT-DLP...");
-  print("Ruta del binario: $ytdlpPath");
+  final audioPath =
+      r"C:\Users\ASUS\Music\DjStudio_LAB\Los Dukes - 20 Años Menos.m4a";
+  final regex = RegExp(r'\.(mp3|m4a|webm|wav|flac)$', caseSensitive: false);
+  final lrcPath = audioPath.replaceAll(regex, '.lrc');
 
-  // Matriz de estrategias para evadir el DRM y el experimento SABR
-  final strategies = [
-    {
-      'name': 'Spoofing iOS + Web',
-      'args': [
-        '--rm-cache-dir',
-        '-f',
-        'bestaudio',
-        '--extractor-args',
-        'youtube:player_client=ios,web',
-        '-o',
-        '${tempDir.path}\\test1.%(ext)s',
-        url,
-      ],
-    },
-    {
-      'name': 'Spoofing TV + Web',
-      'args': [
-        '--rm-cache-dir',
-        '-f',
-        'bestaudio',
-        '--extractor-args',
-        'youtube:player_client=tv,web',
-        '-o',
-        '${tempDir.path}\\test2.%(ext)s',
-        url,
-      ],
-    },
-    {
-      'name': 'Default Client (Fuerza bruta m4a)',
-      'args': [
-        '--rm-cache-dir',
-        '-f',
-        '140/bestaudio',
-        '--extractor-args',
-        'youtube:player_client=default',
-        '-o',
-        '${tempDir.path}\\test3.%(ext)s',
-        url,
-      ],
-    },
-  ];
+  print("📂 Buscando letra física en: $lrcPath");
 
-  for (var i = 0; i < strategies.length; i++) {
-    final strategy = strategies[i];
-    print("\n🚀 Probando Estrategia ${i + 1}: ${strategy['name']}");
+  final lrcFile = File(lrcPath);
 
-    final result = await Process.run(
-      ytdlpPath,
-      strategy['args'] as List<String>,
+  if (!lrcFile.existsSync()) {
+    print("\n🔴 FATAL: El archivo .lrc NO EXISTE físicamente en el disco.");
+    print(
+      "-> El proceso de rescate nunca lo creó para esta canción, o se borró en el proceso atómico.",
     );
-
-    if (result.exitCode == 0) {
-      print("✅ ÉXITO. La estrategia ${i + 1} evadió el bloqueo.");
-      print("Log de salida:\n${result.stdout}");
-      return; // Detenemos el test al encontrar el vector funcional
-    } else {
-      print("🔴 FALLO. Bloqueo detectado.");
-      print("Error arrojado:\n${result.stderr}");
-    }
+    return;
   }
 
-  print(
-    "\n💀 Todas las estrategias fallaron. Se requiere actualización del binario yt-dlp.",
-  );
+  print("🟢 ¡Archivo encontrado! Procediendo a decodificación UTF-8...\n");
+
+  try {
+    final content = lrcFile.readAsLinesSync(encoding: utf8);
+
+    if (content.isEmpty) {
+      print(
+        "⚠️ ALERTA: El archivo existe pero está de tamaño 0 bytes (VACÍO).",
+      );
+      return;
+    }
+
+    print("📜 VOLCADO DE MEMORIA (${content.length} líneas detectadas):");
+    print("-" * 50);
+    for (var i = 0; i < content.length; i++) {
+      if (i >= 20) {
+        print(
+          "... [+ ${content.length - 20} líneas adicionales omitidas en consola]",
+        );
+        break;
+      }
+      print(content[i]);
+    }
+    print("-" * 50);
+    print("✅ I/O Audit exitoso. Los datos están intactos en el disco.");
+  } catch (e) {
+    print("\n💥 CRASH DE DECODIFICACIÓN I/O: $e");
+  }
 }

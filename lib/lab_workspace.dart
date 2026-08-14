@@ -96,23 +96,40 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
   }
 
   void _loadLrcForEdit(String fileName) {
-    final lrcFile = File(
-      '$_labPath${Platform.pathSeparator}${fileName.replaceAll(RegExp(r'\.mp3$|\.webm$', caseSensitive: false), '.lrc')}',
-    );
-    if (lrcFile.existsSync()) {
-      _lrcController.text = lrcFile.readAsStringSync();
-    } else {
-      _lrcController.text = "";
+    try {
+      // 🛠️ FIX ARQUITECTÓNICO: Regex universal para derivar el LRC sin importar formato
+      final lrcFileName = fileName.replaceAll(
+        RegExp(r'\.(mp3|m4a|webm|wav|flac)$', caseSensitive: false),
+        '.lrc',
+      );
+
+      String baseMusicPath = Platform.isWindows
+          ? '${Platform.environment['USERPROFILE'] ?? 'C:'}\\Music'
+          : '${Platform.environment['HOME'] ?? '/storage/emulated/0'}/Music';
+
+      final labDir = Directory(
+        '$baseMusicPath${Platform.pathSeparator}DjStudio_LAB',
+      );
+      final lrcFile = File(
+        '${labDir.path}${Platform.pathSeparator}$lrcFileName',
+      );
+
+      if (lrcFile.existsSync()) {
+        final content = lrcFile.readAsStringSync(encoding: utf8);
+        setState(() {
+          _lyricsController.text = content;
+        });
+      } else {
+        setState(() {
+          _lyricsController.text = "";
+        });
+      }
+    } catch (e) {
+      debugPrint("🔴 Error cargando LRC en UI: $e");
+      setState(() {
+        _lyricsController.text = "Error cargando archivo .lrc: $e";
+      });
     }
-
-    _searchQueryController.text = fileName
-        .replaceAll(RegExp(r'\.mp3$|\.webm$', caseSensitive: false), '')
-        .trim();
-    _ytUrlController.clear(); // Limpiamos YT al cambiar de archivo
-
-    setState(() {
-      _selectedFileForEdit = fileName;
-    });
   }
 
   void _saveLrc() {
