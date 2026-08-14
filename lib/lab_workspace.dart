@@ -485,6 +485,10 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
           ? '${tempDir.path}${Platform.pathSeparator}yt-dlp.exe'
           : 'yt-dlp';
 
+      // 🛠️ RETORNO AL PATRÓN ATÓMICO: Descarga a búfer temporal para evitar File Locks de Windows
+      final tempMp3 =
+          '${tempDir.path}${Platform.pathSeparator}lab_rescue_temp.mp3';
+
       if (Platform.isWindows && !File(ytdlpPath).existsSync()) {
         statusNotifier.value = "Descargando motor extractor yt-dlp...";
         final dlUrl = Uri.parse(
@@ -495,7 +499,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
       }
 
       statusNotifier.value =
-          "1/5. Descargando audio crudo directamente al Laboratorio...";
+          "1/6. Descargando audio crudo al búfer temporal...";
       final process = await Process.start(ytdlpPath, [
         '-f',
         'bestaudio',
@@ -506,28 +510,23 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
         '320K',
         '--force-overwrites',
         '-o',
-        targetOriginalPath,
+        tempMp3,
         url,
       ]);
 
-      // 🔴 PREVENCIÓN DE DEADLOCKS I/O
       process.stdout.listen((_) {});
       process.stderr.listen((_) {});
 
       final exitCode = await process.exitCode;
 
-      if (exitCode == 0 && File(targetOriginalPath).existsSync()) {
+      if (exitCode == 0 && File(tempMp3).existsSync()) {
         statusNotifier.value =
-            "2/5. Extrayendo y purificando subtítulos VTT...";
+            "2/6. Extrayendo y purificando subtítulos VTT...";
         final yt = YoutubeExplode();
         final videoId = VideoId(url);
         final manifest = await yt.videos.closedCaptions.getManifest(videoId);
 
-        final targetLrcPath = targetOriginalPath.replaceAll(
-          RegExp(r'\.mp3$|\.webm$', caseSensitive: false),
-          '.lrc',
-        );
-
+        String? tempLrcPath;
         if (manifest.tracks.isNotEmpty) {
           ClosedCaptionTrackInfo? selectedTrack;
           for (var lang in ['es', 'en']) {
@@ -557,40 +556,69 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
               '0',
             );
 
-            // 🛠️ NLP GARBAGE FILTER
+            // 🛠️ NLP GARBAGE FILTER AGRESIVO
             final text = caption.text
                 .replaceAll('\n', ' ')
                 .replaceAll(RegExp(r'<[^>]*>'), '')
                 .trim();
             final lowerText = text.toLowerCase();
+
+            // Normalización para evadir codificaciones extrañas de tildes
+            final normalizedText = lowerText
+                .replaceAll('ú', 'u')
+                .replaceAll('í', 'i')
+                .replaceAll('ó', 'o');
+
             bool isGarbage = false;
 
-            if (text.length <= 2) isGarbage = true;
-            if (lowerText.contains(
+            // Filtros de ruido estructural
+            if (normalizedText.contains(
               RegExp(
-                r'\[música\]|\(música\)|\[aplausos\]|\(aplausos\)|instrumental|♪|🎵',
-                caseSensitive: false,
+                r'\[musica\]|\(musica\)|\[aplausos\]|\(aplausos\)|instrumental|♪|🎵',
               ),
             ))
               isGarbage = true;
-            if (lowerText.startsWith('[') && lowerText.endsWith(']'))
+            if (normalizedText.startsWith('[') && normalizedText.endsWith(']'))
               isGarbage = true;
-            if (lowerText.startsWith('(') && lowerText.endsWith(')'))
+            if (normalizedText.startsWith('(') && normalizedText.endsWith(')'))
               isGarbage = true;
+
+            // Aniquilación de sílabas huérfanas o números (ej: "y", "2", "i", "ah")
+            final alphaNumOnly = lowerText.replaceAll(RegExp(r'[^a-z0-9]'), '');
+            if (alphaNumOnly.length <= 2) isGarbage = true;
 
             if (!isGarbage && text.isNotEmpty) {
               lrcBuffer.writeln('[$min:$sec.$ms]$text');
             }
           }
           if (lrcBuffer.isNotEmpty) {
-            await File(targetLrcPath).writeAsString(lrcBuffer.toString());
+            tempLrcPath = tempMp3.replaceAll('.mp3', '.lrc');
+            await File(tempLrcPath).writeAsString(lrcBuffer.toString());
           }
         }
         yt.close();
 
+        statusNotifier.value = "3/6. Sobrescritura Atómica en Laboratorio...";
+        final oldFile = File(targetOriginalPath);
+        final oldLrcFile = File(
+          targetOriginalPath.replaceAll(
+            RegExp(r'\.mp3$|\.webm$', caseSensitive: false),
+            '.lrc',
+          ),
+        );
+
+        await File(tempMp3).copy(oldFile.path);
+        await File(tempMp3).delete();
+
+        if (tempLrcPath != null && File(tempLrcPath).existsSync()) {
+          await File(tempLrcPath).copy(oldLrcFile.path);
+          await File(tempLrcPath).delete();
+        }
+
+        String finalPath = oldFile.path;
+
         statusNotifier.value =
-            "3/5. Aplicando Auto-Trim C++ (Cortando silencios)...";
-        String finalPath = targetOriginalPath;
+            "4/6. Aplicando Auto-Trim C++ (Cortando silencios)...";
         finalPath = await ref
             .read(metadataWorkerProvider)
             .processSingleFile(finalPath);
@@ -599,7 +627,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
         final durationAfterMs = await _getAudioDurationMs(finalPath);
 
         statusNotifier.value =
-            "4/5. Compensación del Vector de Tiempo (LRC)...";
+            "5/6. Compensación del Vector de Tiempo (LRC)...";
         final trimmedMs = durationBeforeMs - durationAfterMs;
         if (trimmedMs > 50) {
           final lrcToPatch = finalPath.replaceAll(
@@ -609,7 +637,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
           await _offsetLrcTimeline(lrcToPatch, trimmedMs);
         }
 
-        statusNotifier.value = "5/5. Indexando en Base de Datos ISAR...";
+        statusNotifier.value = "6/6. Indexando en Base de Datos ISAR...";
         await rust_dsp.injectWatermark(inputPath: finalPath);
         final rawGenre = await rust_dsp.readAudioGenre(inputPath: finalPath);
         await ref
@@ -626,13 +654,12 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
             .read(dspWorkerProvider)
             .generateStaticBpmCache(Directory(finalPath).parent.path);
 
-        // 🛠️ AUTO-INYECCIÓN EN EL EDITOR
         _loadRegistry();
         final finalFileName = finalPath.split(Platform.pathSeparator).last;
         _loadLrcForEdit(finalFileName);
 
         if (mounted) {
-          Navigator.pop(context); // Cierra loading
+          Navigator.pop(context);
           _ytUrlController.clear();
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
