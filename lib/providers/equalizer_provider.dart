@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:media_kit/media_kit.dart';
 import 'audio_equalizer_service.dart';
+import 'player_provider.dart'; // 🛠️ INYECCIÓN: Importación del reproductor maestro
 
 class EqualizerState {
   final bool enabled;
@@ -79,3 +80,17 @@ class EqualizerNotifier extends StateNotifier<EqualizerState> {
     );
   }
 }
+
+// 🛠️ INYECCIÓN DE DEPENDENCIAS: El Provider global
+final equalizerProvider = StateNotifierProvider<EqualizerNotifier, EqualizerState>((
+  ref,
+) {
+  // 1. Extraemos la lista con ambos reproductores (Deck A y Deck B) del PlayerNotifier
+  final players = ref.read(playerProvider.notifier).deckPlayers;
+
+  // 2. Inicializamos el servicio Multi-Deck
+  final service = AudioEqualizerService(players);
+
+  // 3. Retornamos el controlador del ecualizador
+  return EqualizerNotifier(service);
+});

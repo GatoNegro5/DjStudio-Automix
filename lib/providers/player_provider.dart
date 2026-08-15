@@ -91,6 +91,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
 
   Player get _activePlayer => _usePlayerA ? _playerA : _playerB;
   Player get _standbyPlayer => _usePlayerA ? _playerB : _playerA;
+  List<Player> get deckPlayers => [_playerA, _playerB];
 
   StreamSubscription? _positionSub;
   StreamSubscription? _durationSub;
@@ -107,17 +108,16 @@ class PlayerNotifier extends Notifier<PlayerState> {
     _playerA = Player();
     _playerB = Player();
 
-    // 🛠️ FIX VOLUMEN: Eliminada la doble masterización (loudnorm + acompressor).
-    // El audio ya viene normalizado a -14 LUFS desde el disco duro por el Pipeline Rust.
-    // Solo dejamos ecualización sub-grave/aire y Ensanchador Estéreo.
-    (_playerA.platform as dynamic)?.setProperty(
-      'af',
-      'equalizer=f=60:width_type=o:w=1:g=2.5,equalizer=f=12000:width_type=o:w=1:g=3.0,extrastereo=m=1.15',
-    );
-    (_playerB.platform as dynamic)?.setProperty(
-      'af',
-      'equalizer=f=60:width_type=o:w=1:g=2.5,equalizer=f=12000:width_type=o:w=1:g=3.0,extrastereo=m=1.15',
-    );
+    // 🛠️ FIX FIDELIDAD:
+    // 1. aresample=resampler=soxr:precision=28 -> Remuestreo de grado audiófilo.
+    // 2. crystalizer=i=2.0 -> Genera armónicos perdidos por la compresión MP3.
+    // 3. bass=g=3:f=60 -> Realce controlado de sub-graves.
+    // 4. extrastereo=m=1.15 -> Ensanchador espacial.
+    final hifiFilter =
+        'aresample=resampler=soxr:precision=28,crystalizer=i=2.0,bass=g=3:f=60,extrastereo=m=1.15';
+
+    (_playerA.platform as dynamic)?.setProperty('af', hifiFilter);
+    (_playerB.platform as dynamic)?.setProperty('af', hifiFilter);
 
     _attachListeners(_playerA);
     _initPersistence();

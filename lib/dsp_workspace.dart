@@ -194,7 +194,7 @@ class DspNlpWorkspace extends ConsumerWidget {
     } catch (_) {}
   }
 
-  // 🛠️ MOTOR UNIVERSAL (AOT Cues + Vector Compensation)
+  // 🛠️ MOTOR UNIVERSAL (AOT Cues + Vector Compensation + Mobile Bypass)
   Future<void> _executeUniversalPipeline(
     BuildContext context,
     WidgetRef ref,
@@ -203,6 +203,9 @@ class DspNlpWorkspace extends ConsumerWidget {
     final pipe = ref.read(pipelineProvider.notifier);
     ref.read(directoryProvider.notifier).scanPath(targetPath);
     bool checkAbort() => ref.read(pipelineProvider).isAborted;
+
+    final bool isMobileOS =
+        Platform.isAndroid || Platform.isIOS; // 🛡️ SENSOR DE KERNEL
 
     final Map<String, Map<String, dynamic>> mixProfiles = {
       'reggaeton': {'curve': 'eq_kill', 'durationMs': 4000},
@@ -254,51 +257,68 @@ class DspNlpWorkspace extends ConsumerWidget {
           if (checkAbort()) break;
 
           final cleanName = currentPath.split(Platform.pathSeparator).last;
+          int durationAfterMs = 0;
 
-          // 2. Telemetría y DSP C++
-          pipe.updateProgress(
-            i + 1,
-            total,
-            cleanName,
-            "🔊 Masterizando Audio (C++)",
-          );
-          final durationBeforeMs = await _getAudioDurationMs(currentPath);
-
-          await ref
-              .read(dspWorkerProvider)
-              .processSingleFile(currentPath)
-              .timeout(
-                const Duration(seconds: 45),
-                onTimeout: () => throw Exception(
-                  "C++ Deadlock: Excedido límite de I/O en Masterización.",
-                ),
-              );
-          if (checkAbort()) break;
-
-          final durationAfterMs = await _getAudioDurationMs(currentPath);
-          final trimmedMs = durationBeforeMs - durationAfterMs;
-          if (trimmedMs > 50) {
-            final lrcFileToPatch = currentPath.replaceAll(
-              RegExp(r'\.mp3$|\.webm$', caseSensitive: false),
-              '.lrc',
+          // 2 & 3. DSP C++ y Sello (Aislado para Desktop)
+          if (!isMobileOS) {
+            pipe.updateProgress(
+              i + 1,
+              total,
+              cleanName,
+              "🔊 Masterizando Audio (C++)",
             );
-            await _offsetLrcTimeline(lrcFileToPatch, trimmedMs);
+            final durationBeforeMs = await _getAudioDurationMs(currentPath);
+
+            await ref
+                .read(dspWorkerProvider)
+                .processSingleFile(currentPath)
+                .timeout(
+                  const Duration(seconds: 45),
+                  onTimeout: () => throw Exception(
+                    "C++ Deadlock: Excedido límite de I/O en Masterización.",
+                  ),
+                );
+            if (checkAbort()) break;
+
+            durationAfterMs = await _getAudioDurationMs(currentPath);
+            final trimmedMs = durationBeforeMs - durationAfterMs;
+            if (trimmedMs > 50) {
+              final lrcFileToPatch = currentPath.replaceAll(
+                RegExp(r'\.mp3$|\.webm$', caseSensitive: false),
+                '.lrc',
+              );
+              await _offsetLrcTimeline(lrcFileToPatch, trimmedMs);
+            }
+
+            pipe.updateProgress(
+              i + 1,
+              total,
+              cleanName,
+              "🔐 Sellando Watermark",
+            );
+            await rust_dsp
+                .injectWatermark(inputPath: currentPath)
+                .timeout(
+                  const Duration(seconds: 15),
+                  onTimeout: () => throw Exception(
+                    "C++ Deadlock: Excedido límite de I/O inyectando ID3v2.",
+                  ),
+                );
+            if (checkAbort()) break;
+          } else {
+            // 🛡️ BYPASS MÓVIL
+            pipe.updateProgress(
+              i + 1,
+              total,
+              cleanName,
+              "⏭️ Bypass I/O (Plataforma Móvil)",
+            );
+            await Future.delayed(const Duration(milliseconds: 50));
           }
 
-          // 3. Sello
-          pipe.updateProgress(i + 1, total, cleanName, "🔐 Sellando Watermark");
-          await rust_dsp
-              .injectWatermark(inputPath: currentPath)
-              .timeout(
-                const Duration(seconds: 15),
-                onTimeout: () => throw Exception(
-                  "C++ Deadlock: Excedido límite de I/O inyectando ID3v2.",
-                ),
-              );
-          if (checkAbort()) break;
           final finalName = currentPath.split(Platform.pathSeparator).last;
 
-          // 4. NLP Letras
+          // 4. NLP Letras (Soportado en Móvil vía HTTP)
           pipe.updateProgress(
             i + 1,
             total,
@@ -315,16 +335,17 @@ class DspNlpWorkspace extends ConsumerWidget {
               );
           if (checkAbort()) break;
 
-          // 5. Asignando Curvas
-          pipe.updateProgress(
-            i + 1,
-            total,
-            finalName,
-            "🎛️ Asignando Curvas ISAR",
-          );
-          final rawGenre = await rust_dsp.readAudioGenre(
-            inputPath: currentPath,
-          );
+          // 5. Asignando Curvas (Lectura ID3 aislada en Móvil)
+          String rawGenre = 'desconocido';
+          if (!isMobileOS) {
+            pipe.updateProgress(
+              i + 1,
+              total,
+              finalName,
+              "🎛️ Asignando Curvas ISAR",
+            );
+            rawGenre = await rust_dsp.readAudioGenre(inputPath: currentPath);
+          }
 
           String assignedProfile = 'constant_power';
           int assignedDuration = 6000;
@@ -415,7 +436,9 @@ class DspNlpWorkspace extends ConsumerWidget {
 
                   int idealMixOut = lastVocalMs + 2000;
 
-                  if ((idealMixOut + assignedDuration) > durationAfterMs) {
+                  // 🛠️ LIMITADOR GEOMÉTRICO (Requiere duración física. Si es móvil, se salta el bloqueo estricto)
+                  if (durationAfterMs > 0 &&
+                      (idealMixOut + assignedDuration) > durationAfterMs) {
                     calculatedMixOut =
                         durationAfterMs - assignedDuration - 1000;
                   } else {
@@ -425,8 +448,13 @@ class DspNlpWorkspace extends ConsumerWidget {
                   if (calculatedMixOut != null &&
                       calculatedCueIn != null &&
                       calculatedMixOut! <= calculatedCueIn!) {
-                    calculatedMixOut =
-                        durationAfterMs - assignedDuration - 1000;
+                    if (durationAfterMs > 0) {
+                      calculatedMixOut =
+                          durationAfterMs - assignedDuration - 1000;
+                    } else {
+                      calculatedMixOut =
+                          calculatedCueIn! + assignedDuration; // Fallback ciego
+                    }
                   }
                   if (calculatedMixOut != null && calculatedMixOut! < 0) {
                     calculatedMixOut = 0;
@@ -434,13 +462,8 @@ class DspNlpWorkspace extends ConsumerWidget {
                 }
               } catch (_) {}
             }
-          } else {
-            debugPrint(
-              "🛡️ [PIPELINE] Bypass de cálculo. Pista blindada manualmente: $finalName",
-            );
           }
 
-          // 🛠️ FIX: Mutación Forzada o Mantenimiento de Blindaje
           await ref
               .read(dbServiceProvider)
               .saveTrackMetadata(
@@ -452,7 +475,7 @@ class DspNlpWorkspace extends ConsumerWidget {
                     ? existingMeta!.cueInMs
                     : (calculatedCueIn ?? 0),
                 mixOutMs: isManual ? existingMeta!.mixOutMs : calculatedMixOut,
-                isManualCue: isManual, // Mantiene el escudo intacto
+                isManualCue: isManual,
               );
         } catch (e) {
           debugPrint("🔴 Error aislando pista $originalName: $e");
@@ -467,6 +490,7 @@ class DspNlpWorkspace extends ConsumerWidget {
           "Indexando...",
           "🥁 Calculando Caché BPM Global",
         );
+        // Symphonia es puro Rust, funciona 100% en Android sin FFmpeg
         await ref.read(dspWorkerProvider).generateStaticBpmCache(targetPath);
       }
     } catch (e) {

@@ -11,7 +11,7 @@ class EqualizerPreset {
     required this.gains,
   });
 
-  // Presets calibrados acusticamente
+  // Presets calibrados acústicamente
   static const List<EqualizerPreset> defaultPresets = [
     EqualizerPreset(
       name: 'Spotify Signature',
@@ -42,7 +42,8 @@ class EqualizerPreset {
 }
 
 class AudioEqualizerService {
-  final Player player;
+  // 🛠️ FIX ARQUITECTURA: Soporte Multi-Deck. Recibe la lista para afectar a DECK A y DECK B al mismo tiempo.
+  final List<Player> players;
 
   // Frecuencias fijas de 10 bandas (ISO Standard)
   static const List<int> bandFrequencies = [
@@ -58,30 +59,25 @@ class AudioEqualizerService {
     16000,
   ];
 
-  AudioEqualizerService(this.player);
+  AudioEqualizerService(this.players);
 
-  /// Aplica el filtro DSP de ecualización en tiempo real sobre libmpv
+  /// Construye y aplica el Grafo DSP Unificado (Hi-Fi Base + EQ Manual) sobre libmpv
   Future<void> applyEqualizer({
     required double preamp,
     required List<double> gains,
     required bool enabled,
-    bool enableAutoMastering = true, // El pipeline de Spotify
   }) async {
     if (gains.length != 10) return;
 
     final List<String> filters = [];
 
-    // 1. Capa de Masterización Dinámica (Spotify Sound)
-    if (enableAutoMastering) {
-      // loudnorm: EBU R128 a -14 LUFS (Estándar de Streaming)
-      // acompressor: Glue y punch (ratio 2.5:1, attack rápido, release suave)
-      filters.add('loudnorm=I=-14:LRA=11:TP=-1.0');
-      filters.add(
-        'acompressor=threshold=-12dB:ratio=2.5:attack=5:release=50:makeup=1.5',
-      );
-    }
+    // 1. 💎 CAPA DE FIDELIDAD BASE (ZERO-LOSS & PSICOACÚSTICA)
+    // ❌ PROHIBIDO usar loudnorm y acompressor aquí. El pipeline de Rust ya masterizó el archivo físico a -14 LUFS.
+    // ✅ Inyectamos Remuestreo SoXR de 28-bit y Crystalizer para regenerar armónicos perdidos en la compresión.
+    filters.add('aresample=resampler=soxr:precision=28');
+    filters.add('crystalizer=i=2.0');
 
-    // 2. Capa de Ecualización Manual / Presets
+    // 2. 🎛️ CAPA DE ECUALIZACIÓN MANUAL / PRESETS
     if (enabled) {
       if (preamp != 0.0) {
         filters.add('volume=volume=${preamp.toStringAsFixed(1)}dB');
@@ -96,14 +92,16 @@ class AudioEqualizerService {
       }
     }
 
-    if (filters.isEmpty) {
-      // Bypass total
-      await (player.platform as dynamic)?.setProperty('af', '');
-      return;
-    }
+    // 3. 🌐 CAPA ESPACIAL Y SUB-GRAVES (Siempre al final de la cadena de fase)
+    filters.add('bass=g=3:f=60');
+    filters.add('extrastereo=m=1.15');
 
     // Enviar el grafo de filtros directamente al procesador C++ de libmpv
     final String afString = filters.join(',');
-    await (player.platform as dynamic)?.setProperty('af', afString);
+
+    // 🛠️ APLICACIÓN SIMULTÁNEA: Asegura que el AutoMix no pierda la ecualización al cruzar pistas
+    for (var player in players) {
+      await (player.platform as dynamic)?.setProperty('af', afString);
+    }
   }
 }
