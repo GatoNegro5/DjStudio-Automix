@@ -22,6 +22,9 @@ class TrackMetadata {
   bool hasBpm = false;
   bool hasCurve = false;
 
+  // 🛡️ BLINDAJE: Flag de Inmutabilidad Condicional (Protege Cues Manuales)
+  bool isManualCue = false;
+
   static int fastHash(String string) {
     var hash = 0xcbf29ce484222325;
     var i = 0;

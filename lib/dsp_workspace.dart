@@ -338,7 +338,7 @@ class DspNlpWorkspace extends ConsumerWidget {
             }
           }
 
-          // 6. Cues Estructurales
+          // 6. Cues Estructurales (Motor Heurístico 2.0 Blindado)
           pipe.updateProgress(
             i + 1,
             total,
@@ -348,65 +348,99 @@ class DspNlpWorkspace extends ConsumerWidget {
           final existingMeta = await ref
               .read(dbServiceProvider)
               .getTrackMetadata(currentPath);
+
           int? calculatedCueIn;
           int? calculatedMixOut;
 
-          final lrcFile = File(
-            currentPath.replaceAll(
-              RegExp(r'\.mp3$|\.webm$', caseSensitive: false),
-              '.lrc',
-            ),
-          );
-          if (lrcFile.existsSync()) {
-            try {
-              final lines = await lrcFile.readAsLines();
-              final regex = RegExp(r'\[(\d{2}):(\d{2})\.(\d{2,3})\](.*)');
-              int firstVocalMs = -1;
-              int lastVocalMs = -1;
+          final isManual = existingMeta?.isManualCue ?? false;
 
-              for (var line in lines) {
-                final match = regex.firstMatch(line);
-                if (match != null) {
-                  final text = match.group(4)!.trim().toLowerCase();
-                  bool isGarbage = false;
-                  if (text.length < 4 ||
-                      text.contains('🎵') ||
-                      text.contains('♪') ||
-                      text.startsWith('(') ||
-                      text.startsWith('[')) {
-                    isGarbage = true;
-                  } else if (text.contains('instrumental') ||
-                      text.contains('sync') ||
-                      text.contains('lyric') ||
-                      text.contains('letra no encontrada') ||
-                      text.contains('error de conexión') ||
-                      text.contains(' - ')) {
-                    isGarbage = true;
-                  }
+          if (!isManual) {
+            final lrcFile = File(
+              currentPath.replaceAll(
+                RegExp(r'\.mp3$|\.webm$', caseSensitive: false),
+                '.lrc',
+              ),
+            );
 
-                  if (!isGarbage) {
-                    final min = int.parse(match.group(1)!);
-                    final sec = int.parse(match.group(2)!);
-                    int ms = int.parse(match.group(3)!);
-                    if (match.group(3)!.length == 2) ms *= 10;
+            if (lrcFile.existsSync()) {
+              try {
+                final lines = await lrcFile.readAsLines();
+                final regex = RegExp(r'\[(\d{2}):(\d{2})\.(\d{2,3})\](.*)');
+                int firstVocalMs = -1;
+                int lastVocalMs = -1;
 
-                    int currentMs = (min * 60000) + (sec * 1000) + ms;
-                    if (firstVocalMs == -1) firstVocalMs = currentMs;
-                    lastVocalMs = currentMs;
+                for (var line in lines) {
+                  final match = regex.firstMatch(line);
+                  if (match != null) {
+                    final text = match.group(4)!.trim().toLowerCase();
+                    bool isGarbage = false;
+
+                    if (text.length < 3 ||
+                        text.contains('🎵') ||
+                        text.contains('♪') ||
+                        text.startsWith('(') ||
+                        text.startsWith('[')) {
+                      isGarbage = true;
+                    } else if (text.contains('instrumental') ||
+                        text.contains('sync') ||
+                        text.contains('lyric') ||
+                        text.contains('letra no encontrada') ||
+                        text.contains('error') ||
+                        text.contains('autor') ||
+                        text.contains('sincronizado') ||
+                        text.contains('by ') ||
+                        text.contains('fuente') ||
+                        text.contains(' - ')) {
+                      isGarbage = true;
+                    }
+
+                    if (!isGarbage) {
+                      final min = int.parse(match.group(1)!);
+                      final sec = int.parse(match.group(2)!);
+                      int ms = int.parse(match.group(3)!);
+                      if (match.group(3)!.length == 2) ms *= 10;
+
+                      int currentMs = (min * 60000) + (sec * 1000) + ms;
+                      if (firstVocalMs == -1) firstVocalMs = currentMs;
+                      lastVocalMs = currentMs;
+                    }
                   }
                 }
-              }
 
-              if (firstVocalMs != -1) {
-                int optimalBuffer = assignedDuration + 4000;
-                calculatedCueIn = (firstVocalMs >= optimalBuffer)
-                    ? (firstVocalMs - optimalBuffer)
-                    : 0;
-                calculatedMixOut = lastVocalMs + 4000;
-              }
-            } catch (_) {}
+                if (firstVocalMs != -1) {
+                  int optimalBuffer = assignedDuration + 2000;
+                  calculatedCueIn = (firstVocalMs >= optimalBuffer)
+                      ? (firstVocalMs - optimalBuffer)
+                      : 0;
+
+                  int idealMixOut = lastVocalMs + 2000;
+
+                  if ((idealMixOut + assignedDuration) > durationAfterMs) {
+                    calculatedMixOut =
+                        durationAfterMs - assignedDuration - 1000;
+                  } else {
+                    calculatedMixOut = idealMixOut;
+                  }
+
+                  if (calculatedMixOut != null &&
+                      calculatedCueIn != null &&
+                      calculatedMixOut! <= calculatedCueIn!) {
+                    calculatedMixOut =
+                        durationAfterMs - assignedDuration - 1000;
+                  }
+                  if (calculatedMixOut != null && calculatedMixOut! < 0) {
+                    calculatedMixOut = 0;
+                  }
+                }
+              } catch (_) {}
+            }
+          } else {
+            debugPrint(
+              "🛡️ [PIPELINE] Bypass de cálculo. Pista blindada manualmente: $finalName",
+            );
           }
 
+          // 🛠️ FIX: Mutación Forzada o Mantenimiento de Blindaje
           await ref
               .read(dbServiceProvider)
               .saveTrackMetadata(
@@ -414,8 +448,11 @@ class DspNlpWorkspace extends ConsumerWidget {
                 mixProfile: assignedProfile,
                 durationMs: assignedDuration,
                 genre: rawGenre,
-                cueInMs: existingMeta?.cueInMs ?? calculatedCueIn ?? 0,
-                mixOutMs: existingMeta?.mixOutMs ?? calculatedMixOut,
+                cueInMs: isManual
+                    ? existingMeta!.cueInMs
+                    : (calculatedCueIn ?? 0),
+                mixOutMs: isManual ? existingMeta!.mixOutMs : calculatedMixOut,
+                isManualCue: isManual, // Mantiene el escudo intacto
               );
         } catch (e) {
           debugPrint("🔴 Error aislando pista $originalName: $e");

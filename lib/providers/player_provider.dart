@@ -107,13 +107,16 @@ class PlayerNotifier extends Notifier<PlayerState> {
     _playerA = Player();
     _playerB = Player();
 
+    // 🛠️ FIX VOLUMEN: Eliminada la doble masterización (loudnorm + acompressor).
+    // El audio ya viene normalizado a -14 LUFS desde el disco duro por el Pipeline Rust.
+    // Solo dejamos ecualización sub-grave/aire y Ensanchador Estéreo.
     (_playerA.platform as dynamic)?.setProperty(
       'af',
-      'loudnorm=I=-14:LRA=6:TP=-1.0,acompressor=threshold=-14dB:ratio=3.5:attack=3:release=50:makeup=2,equalizer=f=60:width_type=o:w=1:g=2.5,equalizer=f=12000:width_type=o:w=1:g=3.0,extrastereo=m=1.15',
+      'equalizer=f=60:width_type=o:w=1:g=2.5,equalizer=f=12000:width_type=o:w=1:g=3.0,extrastereo=m=1.15',
     );
     (_playerB.platform as dynamic)?.setProperty(
       'af',
-      'loudnorm=I=-14:LRA=6:TP=-1.0,acompressor=threshold=-14dB:ratio=3.5:attack=3:release=50:makeup=2,equalizer=f=60:width_type=o:w=1:g=2.5,equalizer=f=12000:width_type=o:w=1:g=3.0,extrastereo=m=1.15',
+      'equalizer=f=60:width_type=o:w=1:g=2.5,equalizer=f=12000:width_type=o:w=1:g=3.0,extrastereo=m=1.15',
     );
 
     _attachListeners(_playerA);
@@ -129,6 +132,48 @@ class PlayerNotifier extends Notifier<PlayerState> {
     });
 
     return PlayerState();
+  }
+
+  Future<void> setMixPoint(String type) async {
+    if (state.currentTrackPath == null) return;
+    final currentPosMs = state.position.inMilliseconds;
+    final db = ref.read(dbServiceProvider);
+
+    if (type == 'IN') {
+      await db.saveTrackMetadata(
+        path: state.currentTrackPath!,
+        cueInMs: currentPosMs,
+        isManualCue: true, // 🛠️ ACTIVA BLINDAJE EN DB
+      );
+      state = state.copyWith(customCueInMs: currentPosMs);
+    } else {
+      await db.saveTrackMetadata(
+        path: state.currentTrackPath!,
+        mixOutMs: currentPosMs,
+        isManualCue: true, // 🛠️ ACTIVA BLINDAJE EN DB
+      );
+      state = state.copyWith(customMixOutMs: currentPosMs, autoMixArmed: true);
+      _recalculateMixWindow();
+      if (!state.isPlaying) _isPrepModeBypass = true;
+    }
+  }
+
+  Future<void> clearMixPoints() async {
+    if (state.currentTrackPath == null) return;
+    await ref
+        .read(dbServiceProvider)
+        .saveTrackMetadata(
+          path: state.currentTrackPath!,
+          clearCues: true,
+          isManualCue:
+              false, // 🛠️ LIBERA BLINDAJE (Retorna a control del Auto-Master)
+        );
+    state = state.copyWith(
+      customCueInMs: -1,
+      customMixOutMs: -1,
+      autoMixArmed: true,
+    );
+    _recalculateMixWindow();
   }
 
   String _getSessionFilePath() {
@@ -285,41 +330,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
       await File(lrcPath).writeAsString(syncedLyrics);
       if (state.currentTrackPath == audioPath) await _loadLyrics(audioPath);
     } catch (_) {}
-  }
-
-  Future<void> setMixPoint(String type) async {
-    if (state.currentTrackPath == null) return;
-    final currentPosMs = state.position.inMilliseconds;
-    final db = ref.read(dbServiceProvider);
-
-    if (type == 'IN') {
-      await db.saveTrackMetadata(
-        path: state.currentTrackPath!,
-        cueInMs: currentPosMs,
-      );
-      state = state.copyWith(customCueInMs: currentPosMs);
-    } else {
-      await db.saveTrackMetadata(
-        path: state.currentTrackPath!,
-        mixOutMs: currentPosMs,
-      );
-      state = state.copyWith(customMixOutMs: currentPosMs, autoMixArmed: true);
-      _recalculateMixWindow();
-      if (!state.isPlaying) _isPrepModeBypass = true;
-    }
-  }
-
-  Future<void> clearMixPoints() async {
-    if (state.currentTrackPath == null) return;
-    await ref
-        .read(dbServiceProvider)
-        .saveTrackMetadata(path: state.currentTrackPath!, clearCues: true);
-    state = state.copyWith(
-      customCueInMs: -1,
-      customMixOutMs: -1,
-      autoMixArmed: true,
-    );
-    _recalculateMixWindow();
   }
 
   Future<void> _loadTrackMetadata(String audioPath) async {
@@ -903,43 +913,63 @@ class PlayerNotifier extends Notifier<PlayerState> {
     await Future.delayed(const Duration(milliseconds: 600));
   }
 
+  // 🛠️ FIX SYNC I/O ROJO: Sync GLOBAL Inteligente
   Future<void> autoSyncFirstLyric() async {
     if (state.currentTrackPath == null || state.lyrics.isEmpty) return;
 
-    final firstLyric = state.lyrics.firstWhere(
-      (l) =>
-          !l.text.contains('Letra no encontrada') && !l.text.contains('Error'),
-      orElse: () => LyricLine(timestamp: Duration.zero, text: ''),
-    );
-
-    if (firstLyric.text.isEmpty) return;
-
-    final int originalStartMs = firstLyric.timestamp.inMilliseconds;
     final int currentAudioMs = state.position.inMilliseconds;
-    final int calculatedOffsetMs = currentAudioMs - originalStartMs;
-    await shiftLyrics(calculatedOffsetMs);
-  }
-
-  Future<void> autoSyncFromCurrentLyric() async {
-    if (state.currentTrackPath == null || state.lyrics.isEmpty) return;
-
-    int anchorIndex = state.activeLyricIndex >= 0 ? state.activeLyricIndex : 0;
     LyricLine? anchorLyric;
+    int minDiff = 99999999;
 
-    for (int i = anchorIndex; i < state.lyrics.length; i++) {
-      if (!state.lyrics[i].text.contains('Letra no encontrada') &&
-          !state.lyrics[i].text.contains('Error')) {
-        anchorLyric = state.lyrics[i];
-        break;
+    // 🧠 Búsqueda de proximidad: Adivina matemáticamente qué línea quiso presionar el usuario
+    for (int i = 0; i < state.lyrics.length; i++) {
+      final l = state.lyrics[i];
+      if (l.text.contains('Letra no encontrada') || l.text.contains('Error'))
+        continue;
+
+      final diff = (l.timestamp.inMilliseconds - currentAudioMs).abs();
+      if (diff < minDiff) {
+        minDiff = diff;
+        anchorLyric = l;
       }
     }
 
     if (anchorLyric == null || anchorLyric.text.isEmpty) return;
 
     final int originalAnchorMs = anchorLyric.timestamp.inMilliseconds;
-    final int currentAudioMs = state.position.inMilliseconds;
     final int calculatedOffsetMs = currentAudioMs - originalAnchorMs;
 
+    // Al ser Global, aplica el desfase a TODO el archivo LRC
+    await shiftLyrics(calculatedOffsetMs);
+  }
+
+  // 🛠️ FIX SYNC I/O AZUL CARDENILLO: Sync 2 MED Inteligente
+  Future<void> autoSyncFromCurrentLyric() async {
+    if (state.currentTrackPath == null || state.lyrics.isEmpty) return;
+
+    final int currentAudioMs = state.position.inMilliseconds;
+    LyricLine? anchorLyric;
+    int minDiff = 99999999;
+
+    // 🧠 Búsqueda de proximidad: Adivina matemáticamente qué línea quiso presionar el usuario
+    for (int i = 0; i < state.lyrics.length; i++) {
+      final l = state.lyrics[i];
+      if (l.text.contains('Letra no encontrada') || l.text.contains('Error'))
+        continue;
+
+      final diff = (l.timestamp.inMilliseconds - currentAudioMs).abs();
+      if (diff < minDiff) {
+        minDiff = diff;
+        anchorLyric = l;
+      }
+    }
+
+    if (anchorLyric == null || anchorLyric.text.isEmpty) return;
+
+    final int originalAnchorMs = anchorLyric.timestamp.inMilliseconds;
+    final int calculatedOffsetMs = currentAudioMs - originalAnchorMs;
+
+    // 🛡️ INMUTABILIDAD: Desplaza SOLO desde la línea ancla (thresholdMs) hacia el final de la canción
     await shiftLyricsPartial(calculatedOffsetMs, originalAnchorMs);
   }
 

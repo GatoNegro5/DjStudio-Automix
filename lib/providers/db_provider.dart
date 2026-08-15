@@ -32,15 +32,18 @@ class DatabaseService {
     int? cueInMs,
     int? mixOutMs,
     bool clearCues = false,
-    // 🛠️ INYECCIÓN: Recepción de estados
     bool? hasLyrics,
     bool? hasBpm,
     bool? hasCurve,
+    bool? isManualCue, // 🛠️ INYECCIÓN: Escudo protector
   }) async {
     final isar = await ref.read(isarInitProvider.future);
 
     await isar.writeTxn(() async {
       final existing = await isar.trackMetadatas.getByFilePath(path);
+
+      // Si ya era manual y no se está pasando un override explícito, mantener el blindaje
+      final manualStatus = isManualCue ?? existing?.isManualCue ?? false;
 
       final track = TrackMetadata()
         ..filePath = path
@@ -49,10 +52,12 @@ class DatabaseService {
         ..genreAssigned = genre ?? existing?.genreAssigned ?? 'desconocido'
         ..cueInMs = clearCues ? null : (cueInMs ?? existing?.cueInMs)
         ..mixOutMs = clearCues ? null : (mixOutMs ?? existing?.mixOutMs)
-        // 🛠️ MAPEO DE ESTADO ATÓMICO: Persiste el valor anterior si no se provee uno nuevo
         ..hasLyrics = hasLyrics ?? existing?.hasLyrics ?? false
         ..hasBpm = hasBpm ?? existing?.hasBpm ?? false
-        ..hasCurve = hasCurve ?? existing?.hasCurve ?? false;
+        ..hasCurve = hasCurve ?? existing?.hasCurve ?? false
+        ..isManualCue = clearCues
+            ? false
+            : manualStatus; // 🛠️ ASIGNACIÓN ATÓMICA
 
       await isar.trackMetadatas.putByFilePath(track);
     });
@@ -70,7 +75,6 @@ class DatabaseService {
     });
   }
 
-  // 🛠️ INYECCIÓN: Motor de Laboratorio. Retorna pistas incompletas en O(1)
   Future<List<TrackMetadata>> getTracksWithMissingData() async {
     final isar = await ref.read(isarInitProvider.future);
     return await isar.trackMetadatas
