@@ -10,6 +10,7 @@ import 'providers/player_provider.dart';
 import 'providers/metadata_provider.dart';
 import 'providers/dsp_provider.dart';
 import 'providers/db_provider.dart';
+import 'providers/nlp_provider.dart'; // 🛠️ FIX: Inyección del NLP Provider
 
 class LabWorkspace extends ConsumerStatefulWidget {
   const LabWorkspace({super.key});
