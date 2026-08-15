@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import 'package:http/http.dart' as http;
+import 'package:file_picker/file_picker.dart';
 
 // 🛠️ INYECTADO: Backend FFI Nativo y Providers para Auto-Masterización
 import 'package:djstudio_player/src/rust/api/core_dsp.dart' as rust_dsp;
@@ -10,159 +11,6 @@ import 'providers/metadata_provider.dart';
 import 'providers/nlp_provider.dart';
 import 'providers/dsp_provider.dart';
 import 'providers/db_provider.dart';
-
-// =====================================================================
-// WIDGET RECURSIVO: Árbol Jerárquico de Carpetas (Estilo Automix)
-// =====================================================================
-class FolderTreeView extends StatefulWidget {
-  final Directory directory;
-  final String selectedPath;
-  final Function(String) onSelected;
-  final bool isRoot;
-
-  const FolderTreeView({
-    super.key,
-    required this.directory,
-    required this.selectedPath,
-    required this.onSelected,
-    this.isRoot = false,
-  });
-
-  @override
-  State<FolderTreeView> createState() => _FolderTreeViewState();
-}
-
-class _FolderTreeViewState extends State<FolderTreeView> {
-  bool _isExpanded = false;
-  List<Directory> _subDirs = [];
-  bool _loaded = false;
-
-  void _loadSubDirs() {
-    if (!_loaded) {
-      try {
-        _subDirs = widget.directory.listSync().whereType<Directory>().toList();
-        _subDirs.removeWhere((d) {
-          final name = d.path.split(Platform.pathSeparator).last;
-          return name.startsWith('.') || name.startsWith('\$');
-        });
-        _subDirs.sort(
-          (a, b) => a.path.toLowerCase().compareTo(b.path.toLowerCase()),
-        );
-      } catch (_) {}
-      _loaded = true;
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final folderName = widget.isRoot
-        ? "Raíz (Music)"
-        : widget.directory.path.split(Platform.pathSeparator).last;
-    final isSelected = widget.selectedPath == widget.directory.path;
-
-    _loadSubDirs(); // Carga síncrona perezosa por nivel
-    final hasChildren = _subDirs.isNotEmpty;
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          margin: const EdgeInsets.symmetric(vertical: 2),
-          decoration: BoxDecoration(
-            color: isSelected
-                ? const Color(0xFF00FFFF).withValues(alpha: 0.15)
-                : Colors.transparent,
-            borderRadius: BorderRadius.circular(4),
-            border: isSelected
-                ? Border.all(color: const Color(0xFF00FFFF))
-                : Border.all(color: Colors.transparent),
-          ),
-          child: Row(
-            children: [
-              Expanded(
-                child: InkWell(
-                  onTap: () => widget.onSelected(widget.directory.path),
-                  borderRadius: BorderRadius.circular(4),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      vertical: 10.0,
-                      horizontal: 8.0,
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(
-                          widget.isRoot
-                              ? Icons.folder_special
-                              : (hasChildren && _isExpanded
-                                    ? Icons.folder_open
-                                    : Icons.folder),
-                          color: isSelected
-                              ? const Color(0xFF39FF14)
-                              : (widget.isRoot
-                                    ? const Color(0xFF00FFFF)
-                                    : Colors.white54),
-                          size: 20,
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Text(
-                            folderName,
-                            style: TextStyle(
-                              color: isSelected
-                                  ? const Color(0xFF39FF14)
-                                  : Colors.white,
-                              fontWeight: isSelected
-                                  ? FontWeight.bold
-                                  : FontWeight.normal,
-                              fontSize: 14,
-                              fontFamily: 'Consolas',
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-              if (hasChildren)
-                InkWell(
-                  onTap: () => setState(() => _isExpanded = !_isExpanded),
-                  borderRadius: BorderRadius.circular(20),
-                  child: Padding(
-                    padding: const EdgeInsets.all(8.0),
-                    child: Icon(
-                      _isExpanded
-                          ? Icons.keyboard_arrow_up
-                          : Icons.keyboard_arrow_down,
-                      color: const Color(0xFF9E9E9E),
-                      size: 20,
-                    ),
-                  ),
-                ),
-            ],
-          ),
-        ),
-        if (_isExpanded && hasChildren)
-          Padding(
-            padding: const EdgeInsets.only(left: 20.0),
-            child: Column(
-              children: _subDirs
-                  .map(
-                    (d) => FolderTreeView(
-                      directory: d,
-                      selectedPath: widget.selectedPath,
-                      onSelected: widget.onSelected,
-                    ),
-                  )
-                  .toList(),
-            ),
-          ),
-      ],
-    );
-  }
-}
 
 // =====================================================================
 // MÓDULO 2: BÚSQUEDA, EXTRACCIÓN Y AUTO-MASTER YT
@@ -225,72 +73,33 @@ class _YoutubeSearchAndDownloadWorkspaceState
     });
   }
 
-  // 🛠️ RESTAURADO: Explorador Jerárquico Personalizado (Cero dependencias externas)
-  void _showFolderSelectionDialog() {
-    String baseMusicPath = '';
-    if (Platform.isWindows) {
-      final userProfile = Platform.environment['USERPROFILE'];
-      baseMusicPath = userProfile != null ? '$userProfile\\Music' : 'C:\\Music';
-    } else if (Platform.isMacOS || Platform.isLinux) {
-      baseMusicPath = '${Platform.environment['HOME']}/Music';
-    } else {
-      baseMusicPath = '/storage/emulated/0/Music';
-    }
+  // 🛠️ PROFESIONAL: Uso de API Nativa del OS para Selección de Carpetas
+  Future<void> _showFolderSelectionDialog() async {
+    try {
+      final String? selectedDirectory = await FilePicker.platform
+          .getDirectoryPath(
+            dialogTitle: 'Seleccionar Carpeta Destino',
+            lockParentWindow: true,
+          );
 
-    final baseDir = Directory(baseMusicPath);
-
-    showDialog(
-      context: context,
-      builder: (ctx) {
-        return AlertDialog(
-          backgroundColor: const Color(0xFF121212),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(8),
-            side: const BorderSide(color: Color(0xFF00FFFF)),
-          ),
-          title: const Row(
-            children: [
-              Icon(Icons.folder_special, color: Color(0xFF00FFFF)),
-              SizedBox(width: 10),
-              Text(
-                "Selección de Carpeta Destino",
-                style: TextStyle(
-                  color: Color(0xFF00FFFF),
-                  fontWeight: FontWeight.bold,
-                  fontSize: 16,
-                ),
-              ),
-            ],
-          ),
-          content: SizedBox(
-            width: 550,
-            height: 450,
-            child: SingleChildScrollView(
-              child: FolderTreeView(
-                directory: baseDir,
-                selectedPath: _selectedFolderPath,
-                isRoot: true,
-                onSelected: (newPath) {
-                  setState(() {
-                    _selectedFolderPath = newPath;
-                  });
-                  Navigator.pop(ctx);
-                },
-              ),
+      if (selectedDirectory != null) {
+        setState(() {
+          _selectedFolderPath = selectedDirectory;
+        });
+      }
+    } catch (e) {
+      debugPrint("🔴 Error invocando el explorador nativo: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '🔴 Fallo al abrir el explorador de archivos nativo: $e',
             ),
+            backgroundColor: Colors.redAccent,
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text(
-                "Cancelar",
-                style: TextStyle(color: Colors.white54),
-              ),
-            ),
-          ],
         );
-      },
-    );
+      }
+    }
   }
 
   // ---------------------------------------------------------
