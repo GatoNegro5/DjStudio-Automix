@@ -466,11 +466,14 @@ class _YoutubeSearchAndDownloadWorkspaceState
 
     setState(() {
       _isProcessing = true;
-      _statusText = "Iniciando pipeline nativo (Dart Stream)...";
+      _statusText = "Iniciando motor híbrido (VR Bypass + FFmpeg)...";
     });
 
     try {
-      final videoId = VideoId(targetUrl);
+      final tempDir = Directory.systemTemp;
+      final ytdlpPath = Platform.isWindows
+          ? '${tempDir.path}${Platform.pathSeparator}yt-dlp.exe'
+          : 'yt-dlp';
       final downloadPath = _selectedFolderPath;
 
       if (!Directory(downloadPath).existsSync()) {
@@ -478,62 +481,71 @@ class _YoutubeSearchAndDownloadWorkspaceState
       }
 
       setState(
-        () => _statusText = "Resolviendo firmas de stream y manifiesto...",
+        () => _statusText = "Resolviendo manifiesto para nombrar archivo...",
       );
-
-      final manifest = await _yt.videos.streamsClient.getManifest(videoId);
-      final streamInfo = manifest.audioOnly.withHighestBitrate();
+      final videoId = VideoId(targetUrl);
       final video = await _yt.videos.get(videoId);
-
       final safeTitle = video.title
           .replaceAll(RegExp(r'[\\/:*?"<>|]'), '')
           .trim();
-      final rawExt = streamInfo.container.name;
 
-      // 1. Descarga del Stream crudo a zona temporal (Blindado Anti-Deadlock)
       final tempRawPath =
-          '${Directory.systemTemp.path}${Platform.pathSeparator}raw_audio_temp.$rawExt';
+          '${tempDir.path}${Platform.pathSeparator}raw_vr_audio.m4a';
       final finalMp3Path =
           '$downloadPath${Platform.pathSeparator}$safeTitle.mp3';
 
+      // 1. Limpieza de estado residual atómica
+      if (File(tempRawPath).existsSync()) File(tempRawPath).deleteSync();
+
       setState(
         () => _statusText =
-            "Extrayendo contenedor nativo ($rawExt) vía Chunks (Anti-Throttling)...",
+            "Descargando stream crudo vía Android VR (Anti-Throttle)...",
       );
 
-      final file = File(tempRawPath);
-      final fileStream = file.openWrite();
+      // 2. Extracción blindada con yt-dlp usando la firma ganadora
+      final process = await Process.start(ytdlpPath, [
+        '--rm-cache-dir',
+        '-f',
+        '140/bestaudio',
+        '--extractor-args',
+        'youtube:player_client=android_vr',
+        '-o',
+        tempRawPath,
+        targetUrl,
+      ]);
 
-      try {
-        // 🛠️ FIX ARQUITECTÓNICO: Iteración manual de bytes. Evita el Deadlock de .pipe()
-        final stream = _yt.videos.streamsClient.get(streamInfo);
-        await for (final chunk in stream) {
-          fileStream.add(chunk);
-        }
-      } finally {
-        // Garantizamos la liberación en memoria ram sin importar si el stream colapsa
-        await fileStream.flush();
-        await fileStream.close();
+      String errorTrace = "";
+      process.stdout.listen((_) {});
+      process.stderr.listen((bytes) {
+        errorTrace += String.fromCharCodes(bytes);
+      });
+
+      final exitCode = await process.exitCode;
+
+      if (exitCode != 0 || !File(tempRawPath).existsSync()) {
+        throw Exception("Fallo CLI Extractor. Traza: $errorTrace");
       }
 
-      // 2. Transcodificación forzada a MP3 (320kbps)
+      // 3. Transcodificación forzada a MP3 (320kbps)
       setState(
         () => _statusText = "Transcodificando a MP3 (320kbps) vía FFmpeg...",
       );
 
-      final process = await Process.run(_getFfmpegPath(), [
+      final ffmpegProcess = await Process.run(_getFfmpegPath(), [
         '-y',
         '-i', tempRawPath,
-        '-vn', // Ignorar cualquier track de video residual
-        '-b:a', '320k', // Forzar bitrate a 320kbps
+        '-vn', // Ignorar canales de video residuales
+        '-b:a', '320k', // Forzar bitrate
         finalMp3Path,
       ]);
 
-      if (process.exitCode != 0) {
-        throw Exception("Fallo en motor FFmpeg: ${process.stderr.toString()}");
+      if (ffmpegProcess.exitCode != 0) {
+        throw Exception(
+          "Fallo en motor FFmpeg: ${ffmpegProcess.stderr.toString()}",
+        );
       }
 
-      // Limpieza atómica del contenedor crudo
+      // 4. Recolección de basura (Garbage Collection)
       try {
         if (File(tempRawPath).existsSync()) File(tempRawPath).deleteSync();
       } catch (_) {}
@@ -548,14 +560,16 @@ class _YoutubeSearchAndDownloadWorkspaceState
         } else {
           setState(
             () => _statusText =
-                "✅ ¡Extracción Completada! MP3 guardado en disco.",
+                "✅ ¡Extracción Completada! MP3 masterizado en disco.",
           );
         }
       } else {
-        throw Exception("Fallo de escritura I/O post-transcodificación.");
+        throw Exception(
+          "Fallo de I/O post-transcodificación. El MP3 no se materializó.",
+        );
       }
     } catch (e) {
-      debugPrint("🔴 Error en Pipeline Nativo: $e");
+      debugPrint("🔴 Error en Pipeline Híbrido: $e");
       setState(() => _statusText = "🔴 ERROR FATAL: $e");
     } finally {
       setState(() => _isProcessing = false);
