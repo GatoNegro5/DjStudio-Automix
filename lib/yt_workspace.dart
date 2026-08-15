@@ -216,155 +216,6 @@ class _YoutubeSearchAndDownloadWorkspaceState
     }
   }
 
-  Future<void> _runSingleTrackPipeline(String initialPath) async {
-    String currentPath = initialPath;
-
-    try {
-      setState(() => _statusText = "⚙️ Limpieza de metadatos...");
-      currentPath = await ref
-          .read(metadataWorkerProvider)
-          .processSingleFile(currentPath);
-
-      setState(() => _statusText = "🔊 Aplicando DSP (C++) & Trim...");
-
-      // 🛠️ INYECCIÓN: Telemetría de Compensación
-      final durationBeforeMs = await _getAudioDurationMs(currentPath);
-      await ref.read(dspWorkerProvider).processSingleFile(currentPath);
-      final durationAfterMs = await _getAudioDurationMs(currentPath);
-      final trimmedMs = durationBeforeMs - durationAfterMs;
-
-      if (trimmedMs > 50) {
-        setState(
-          () => _statusText = "⏱️ Realineando subtítulos (-$trimmedMs ms)...",
-        );
-        final lrcPath = currentPath.replaceAll(
-          RegExp(r'\.mp3$|\.webm$', caseSensitive: false),
-          '.lrc',
-        );
-        await _offsetLrcTimeline(lrcPath, trimmedMs);
-      }
-
-      setState(() => _statusText = "🔐 Inyectando Sello Watermark...");
-      await rust_dsp.injectWatermark(inputPath: currentPath);
-
-      setState(() => _statusText = "📝 Scraping de Letras (NLP)...");
-      await ref.read(nlpWorkerProvider).processSingleFile(currentPath);
-
-      setState(() => _statusText = "🎛️ Asignando Curvas ISAR...");
-      final rawGenre = await rust_dsp.readAudioGenre(inputPath: currentPath);
-
-      String assignedProfile = 'constant_power';
-      int assignedDuration = 6000;
-
-      final Map<String, Map<String, dynamic>> mixProfiles = {
-        'reggaeton': {'curve': 'eq_kill', 'durationMs': 4000},
-        'salsa': {'curve': 'sharp', 'durationMs': 2000},
-        'merengue': {'curve': 'sharp', 'durationMs': 2500},
-        'balada': {'curve': 'linear', 'durationMs': 8000},
-        'rock': {'curve': 'constant_power', 'durationMs': 3500},
-        'cumbia': {'curve': 'constant_power', 'durationMs': 3000},
-        'electro': {'curve': 'eq_kill', 'durationMs': 7000},
-        'latin': {'curve': 'constant_power', 'durationMs': 4500},
-        'pop': {'curve': 'constant_power', 'durationMs': 4000},
-      };
-
-      if (rawGenre.isNotEmpty && rawGenre != 'desconocido') {
-        for (final key in mixProfiles.keys) {
-          if (rawGenre.contains(key)) {
-            assignedProfile = mixProfiles[key]!['curve'] as String;
-            assignedDuration = mixProfiles[key]!['durationMs'] as int;
-            break;
-          }
-        }
-      }
-
-      setState(() => _statusText = "🎯 Calculando Cues...");
-      final existingMeta = await ref
-          .read(dbServiceProvider)
-          .getTrackMetadata(currentPath);
-      int? calculatedCueIn;
-      int? calculatedMixOut;
-
-      final lrcFile = File(
-        currentPath.replaceAll(
-          RegExp(r'\.mp3$|\.webm$', caseSensitive: false),
-          '.lrc',
-        ),
-      );
-      if (lrcFile.existsSync()) {
-        try {
-          final lines = await lrcFile.readAsLines();
-          final regex = RegExp(r'\[(\d{2}):(\d{2})\.(\d{2,3})\](.*)');
-          int firstVocalMs = -1;
-          int lastVocalMs = -1;
-
-          for (var line in lines) {
-            final match = regex.firstMatch(line);
-            if (match != null) {
-              final text = match.group(4)!.trim().toLowerCase();
-              bool isGarbage = false;
-              if (text.length < 4 ||
-                  text.contains('🎵') ||
-                  text.contains('♪') ||
-                  text.startsWith('(') ||
-                  text.startsWith('[')) {
-                isGarbage = true;
-              } else if (text.contains('instrumental') ||
-                  text.contains('sync') ||
-                  text.contains('lyric') ||
-                  text.contains('letra no encontrada') ||
-                  text.contains('error de conexión') ||
-                  text.contains(' - ')) {
-                isGarbage = true;
-              }
-
-              if (!isGarbage) {
-                final min = int.parse(match.group(1)!);
-                final sec = int.parse(match.group(2)!);
-                int ms = int.parse(match.group(3)!);
-                if (match.group(3)!.length == 2) ms *= 10;
-
-                int currentMs = (min * 60000) + (sec * 1000) + ms;
-                if (firstVocalMs == -1) firstVocalMs = currentMs;
-                lastVocalMs = currentMs;
-              }
-            }
-          }
-
-          if (firstVocalMs != -1) {
-            int optimalBuffer = assignedDuration + 4000;
-            calculatedCueIn = (firstVocalMs >= optimalBuffer)
-                ? (firstVocalMs - optimalBuffer)
-                : 0;
-            calculatedMixOut = lastVocalMs + 4000;
-          }
-        } catch (_) {}
-      }
-
-      await ref
-          .read(dbServiceProvider)
-          .saveTrackMetadata(
-            path: currentPath,
-            mixProfile: assignedProfile,
-            durationMs: assignedDuration,
-            genre: rawGenre,
-            cueInMs: existingMeta?.cueInMs ?? calculatedCueIn ?? 0,
-            mixOutMs: existingMeta?.mixOutMs ?? calculatedMixOut,
-          );
-
-      setState(() => _statusText = "🥁 Indexando Caché...");
-      await ref
-          .read(dspWorkerProvider)
-          .generateStaticBpmCache(Directory(currentPath).parent.path);
-
-      setState(() => _statusText = "✅ ¡Track inyectado y listo para Automix!");
-    } catch (e) {
-      setState(
-        () => _statusText = "⚠️ Descargado, pero falló el Auto-Master: $e",
-      );
-    }
-  }
-
   Future<void> _extractLyricsFromYoutube(
     String videoUrl,
     String mp3Path,
@@ -465,6 +316,159 @@ class _YoutubeSearchAndDownloadWorkspaceState
     }
   }
 
+  Future<void> _runSingleTrackPipeline(String initialPath) async {
+    String currentPath = initialPath;
+
+    try {
+      setState(() => _statusText = "⚙️ Limpieza de metadatos...");
+      currentPath = await ref
+          .read(metadataWorkerProvider)
+          .processSingleFile(currentPath);
+
+      final lrcPath = currentPath.replaceAll(
+        RegExp(r'\.mp3$|\.webm$', caseSensitive: false),
+        '.lrc',
+      );
+      final hasPreIngestedLrc = File(lrcPath).existsSync();
+
+      // Omitir extracción si el usuario ya verificó el LRC en el Sandbox Pre-Ingesta
+      if (!hasPreIngestedLrc) {
+        setState(() => _statusText = "📝 Scraping LRCLIB (NLP)...");
+        await ref.read(nlpWorkerProvider).processSingleFile(currentPath);
+      } else {
+        debugPrint(
+          "🟢 [TRACKER PIPELINE] NLP Omitido. Procesando letra verificada por el usuario.",
+        );
+      }
+
+      setState(() => _statusText = "🔊 Aplicando DSP (C++) & Trim...");
+      final durationBeforeMs = await _getAudioDurationMs(currentPath);
+      await ref.read(dspWorkerProvider).processSingleFile(currentPath);
+      final durationAfterMs = await _getAudioDurationMs(currentPath);
+      final trimmedMs = durationBeforeMs - durationAfterMs;
+
+      // Compensación garantizada: Ajusta matemáticamente el LRC aprobado por el usuario
+      if (trimmedMs > 50) {
+        setState(
+          () => _statusText =
+              "⏱️ Realineando vector de subtítulos (-$trimmedMs ms)...",
+        );
+        await _offsetLrcTimeline(lrcPath, trimmedMs);
+      }
+
+      setState(() => _statusText = "🔐 Inyectando Sello Watermark...");
+      await rust_dsp.injectWatermark(inputPath: currentPath);
+
+      setState(() => _statusText = "🎛️ Asignando Curvas ISAR...");
+      final rawGenre = await rust_dsp.readAudioGenre(inputPath: currentPath);
+
+      String assignedProfile = 'constant_power';
+      int assignedDuration = 6000;
+
+      final Map<String, Map<String, dynamic>> mixProfiles = {
+        'reggaeton': {'curve': 'eq_kill', 'durationMs': 4000},
+        'salsa': {'curve': 'sharp', 'durationMs': 2000},
+        'merengue': {'curve': 'sharp', 'durationMs': 2500},
+        'balada': {'curve': 'linear', 'durationMs': 8000},
+        'rock': {'curve': 'constant_power', 'durationMs': 3500},
+        'cumbia': {'curve': 'constant_power', 'durationMs': 3000},
+        'electro': {'curve': 'eq_kill', 'durationMs': 7000},
+        'latin': {'curve': 'constant_power', 'durationMs': 4500},
+        'pop': {'curve': 'constant_power', 'durationMs': 4000},
+      };
+
+      if (rawGenre.isNotEmpty && rawGenre != 'desconocido') {
+        for (final key in mixProfiles.keys) {
+          if (rawGenre.contains(key)) {
+            assignedProfile = mixProfiles[key]!['curve'] as String;
+            assignedDuration = mixProfiles[key]!['durationMs'] as int;
+            break;
+          }
+        }
+      }
+
+      setState(() => _statusText = "🎯 Calculando Cues...");
+      final existingMeta = await ref
+          .read(dbServiceProvider)
+          .getTrackMetadata(currentPath);
+      int? calculatedCueIn;
+      int? calculatedMixOut;
+
+      final lrcFile = File(lrcPath);
+      if (lrcFile.existsSync()) {
+        try {
+          final lines = await lrcFile.readAsLines();
+          final regex = RegExp(r'\[(\d{2}):(\d{2})\.(\d{2,3})\](.*)');
+          int firstVocalMs = -1;
+          int lastVocalMs = -1;
+
+          for (var line in lines) {
+            final match = regex.firstMatch(line);
+            if (match != null) {
+              final text = match.group(4)!.trim().toLowerCase();
+              bool isGarbage = false;
+              if (text.length < 4 ||
+                  text.contains('🎵') ||
+                  text.contains('♪') ||
+                  text.startsWith('(') ||
+                  text.startsWith('[')) {
+                isGarbage = true;
+              } else if (text.contains('instrumental') ||
+                  text.contains('sync') ||
+                  text.contains('lyric') ||
+                  text.contains('letra no encontrada') ||
+                  text.contains('error de conexión') ||
+                  text.contains(' - ')) {
+                isGarbage = true;
+              }
+
+              if (!isGarbage) {
+                final min = int.parse(match.group(1)!);
+                final sec = int.parse(match.group(2)!);
+                int ms = int.parse(match.group(3)!);
+                if (match.group(3)!.length == 2) ms *= 10;
+
+                int currentMs = (min * 60000) + (sec * 1000) + ms;
+                if (firstVocalMs == -1) firstVocalMs = currentMs;
+                lastVocalMs = currentMs;
+              }
+            }
+          }
+
+          if (firstVocalMs != -1) {
+            int optimalBuffer = assignedDuration + 4000;
+            calculatedCueIn = (firstVocalMs >= optimalBuffer)
+                ? (firstVocalMs - optimalBuffer)
+                : 0;
+            calculatedMixOut = lastVocalMs + 4000;
+          }
+        } catch (_) {}
+      }
+
+      await ref
+          .read(dbServiceProvider)
+          .saveTrackMetadata(
+            path: currentPath,
+            mixProfile: assignedProfile,
+            durationMs: assignedDuration,
+            genre: rawGenre,
+            cueInMs: existingMeta?.cueInMs ?? calculatedCueIn ?? 0,
+            mixOutMs: existingMeta?.mixOutMs ?? calculatedMixOut,
+          );
+
+      setState(() => _statusText = "🥁 Indexando Caché...");
+      await ref
+          .read(dspWorkerProvider)
+          .generateStaticBpmCache(Directory(currentPath).parent.path);
+
+      setState(() => _statusText = "✅ ¡Track inyectado y listo para Automix!");
+    } catch (e) {
+      setState(
+        () => _statusText = "⚠️ Descargado, pero falló el Auto-Master: $e",
+      );
+    }
+  }
+
   Future<void> _executeDirectDownload(String targetUrl) async {
     if (_selectedFolderPath.isEmpty) {
       setState(
@@ -486,52 +490,31 @@ class _YoutubeSearchAndDownloadWorkspaceState
           : 'yt-dlp';
       final downloadPath = _selectedFolderPath;
 
-      debugPrint("🟢 [TRACKER I/O] Directorio Temporal: ${tempDir.path}");
-      debugPrint("🟢 [TRACKER I/O] Ruta yt-dlp configurada: $ytdlpPath");
-      if (Platform.isWindows) {
-        debugPrint(
-          "🟢 [TRACKER I/O] yt-dlp existe en temp?: ${File(ytdlpPath).existsSync()}",
-        );
-      }
-
       if (!Directory(downloadPath).existsSync()) {
-        debugPrint(
-          "🟢 [TRACKER I/O] Creando directorio destino: $downloadPath",
-        );
         Directory(downloadPath).createSync(recursive: true);
       }
 
       setState(
         () => _statusText = "Resolviendo manifiesto para nombrar archivo...",
       );
-      debugPrint("🟢 [TRACKER YT] Interceptando metadatos para: $targetUrl");
       final videoId = VideoId(targetUrl);
       final video = await _yt.videos.get(videoId);
       final safeTitle = video.title
           .replaceAll(RegExp(r'[\\/:*?"<>|]'), '')
           .trim();
-      debugPrint("🟢 [TRACKER YT] Título resuelto: $safeTitle");
 
       final tempRawPath =
           '${tempDir.path}${Platform.pathSeparator}raw_vr_audio.m4a';
-      final finalMp3Path =
-          '$downloadPath${Platform.pathSeparator}$safeTitle.mp3';
+      final tempMp3Path =
+          '${tempDir.path}${Platform.pathSeparator}$safeTitle.mp3';
 
-      // 1. Limpieza de estado residual atómica
-      if (File(tempRawPath).existsSync()) {
-        debugPrint(
-          "🟢 [TRACKER I/O] Borrando residuo anterior en: $tempRawPath",
-        );
-        File(tempRawPath).deleteSync();
-      }
+      if (File(tempRawPath).existsSync()) File(tempRawPath).deleteSync();
 
       setState(
         () => _statusText =
             "Descargando stream crudo vía Android VR (Anti-Throttle)...",
       );
 
-      // 2. Extracción blindada con yt-dlp usando la firma ganadora
-      debugPrint("🟢 [TRACKER CLI] Levantando proceso yt-dlp...");
       final process = await Process.start(ytdlpPath, [
         '--rm-cache-dir',
         '-f',
@@ -544,93 +527,105 @@ class _YoutubeSearchAndDownloadWorkspaceState
       ]);
 
       String errorTrace = "";
-      process.stdout.listen((bytes) {
-        debugPrint(
-          "🔵 [TRACKER yt-dlp stdout]: ${String.fromCharCodes(bytes)}",
-        );
-      });
+      process.stdout.listen((_) {});
       process.stderr.listen((bytes) {
-        final err = String.fromCharCodes(bytes);
-        errorTrace += err;
-        debugPrint("🔴 [TRACKER yt-dlp stderr]: $err");
+        errorTrace += String.fromCharCodes(bytes);
       });
 
       final exitCode = await process.exitCode;
-      debugPrint("🟢 [TRACKER CLI] yt-dlp finalizó con ExitCode: $exitCode");
-      debugPrint(
-        "🟢 [TRACKER I/O] Archivo raw existe?: ${File(tempRawPath).existsSync()}",
-      );
 
       if (exitCode != 0 || !File(tempRawPath).existsSync()) {
         throw Exception("Fallo CLI Extractor. Traza: $errorTrace");
       }
 
-      // 3. Transcodificación forzada a MP3 (320kbps)
-      setState(
-        () => _statusText = "Transcodificando a MP3 (320kbps) vía FFmpeg...",
-      );
+      setState(() => _statusText = "Transcodificando a MP3 Temp vía FFmpeg...");
 
-      final ffmpegBin = _getFfmpegPath();
-      debugPrint("🟢 [TRACKER CLI] Ejecutando FFmpeg: $ffmpegBin");
-      final ffmpegProcess = await Process.run(ffmpegBin, [
+      final ffmpegProcess = await Process.run(_getFfmpegPath(), [
         '-y',
-        '-i', tempRawPath,
-        '-vn', // Ignorar canales de video residuales
-        '-b:a', '320k', // Forzar bitrate
-        finalMp3Path,
+        '-i',
+        tempRawPath,
+        '-vn',
+        '-b:a',
+        '320k',
+        tempMp3Path,
       ]);
 
-      debugPrint(
-        "🟢 [TRACKER CLI] FFmpeg finalizó con ExitCode: ${ffmpegProcess.exitCode}",
-      );
       if (ffmpegProcess.exitCode != 0) {
-        debugPrint(
-          "🔴 [TRACKER FFMPEG stderr]: ${ffmpegProcess.stderr.toString()}",
-        );
         throw Exception(
           "Fallo en motor FFmpeg: ${ffmpegProcess.stderr.toString()}",
         );
       }
 
-      // 4. Recolección de basura (Garbage Collection)
       try {
-        if (File(tempRawPath).existsSync()) {
-          debugPrint(
-            "🟢 [TRACKER I/O] Ejecutando Garbage Collection de raw_vr_audio.m4a",
-          );
-          File(tempRawPath).deleteSync();
-        }
-      } catch (e) {
-        debugPrint("⚠️ [TRACKER I/O] Fallo en Garbage Collection: $e");
+        if (File(tempRawPath).existsSync()) File(tempRawPath).deleteSync();
+      } catch (_) {}
+
+      // 🛠️ FASE PRE-INGESTA: Scraping en Cuarentena
+      setState(
+        () => _statusText = "Extrayendo metadatos y letras preliminares...",
+      );
+      final tempLrcPath = tempMp3Path.replaceAll('.mp3', '.lrc');
+
+      await ref.read(nlpWorkerProvider).processSingleFile(tempMp3Path);
+      if (!File(tempLrcPath).existsSync()) {
+        await _extractLyricsFromYoutube(targetUrl, tempMp3Path);
+      }
+
+      String prelimLrc = "";
+      if (File(tempLrcPath).existsSync()) {
+        prelimLrc = File(tempLrcPath).readAsStringSync();
+      }
+
+      // Detener Pipeline y solicitar Veto de Usuario
+      if (!mounted) return;
+      final result = await showDialog<Map<String, String>>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) =>
+            PreIngestModal(initialTitle: safeTitle, initialLrc: prelimLrc),
+      );
+
+      if (result == null) {
+        // Descarte Absoluto
+        try {
+          if (File(tempMp3Path).existsSync()) File(tempMp3Path).deleteSync();
+          if (File(tempLrcPath).existsSync()) File(tempLrcPath).deleteSync();
+        } catch (_) {}
+        setState(() => _statusText = "Descarga descartada por el usuario.");
+        return;
+      }
+
+      // Volcado Atómico al Destino
+      setState(() => _statusText = "Inyectando archivo final al destino...");
+      final cleanName = result['fileName']!
+          .replaceAll(RegExp(r'[\\/:*?"<>|]'), '')
+          .trim();
+      final finalLrcContent = result['lrcContent']!;
+
+      final finalMp3Path =
+          '$downloadPath${Platform.pathSeparator}$cleanName.mp3';
+      final finalLrcPath =
+          '$downloadPath${Platform.pathSeparator}$cleanName.lrc';
+
+      File(tempMp3Path).renameSync(finalMp3Path);
+      if (finalLrcContent.trim().isNotEmpty) {
+        File(finalLrcPath).writeAsStringSync(finalLrcContent);
+      } else {
+        if (File(finalLrcPath).existsSync()) File(finalLrcPath).deleteSync();
       }
 
       _searchController.clear();
 
-      final fileExists = File(finalMp3Path).existsSync();
-      debugPrint(
-        "🟢 [TRACKER I/O] MP3 final existe?: $fileExists ($finalMp3Path)",
-      );
-
-      if (fileExists) {
-        debugPrint("🟢 [TRACKER PIPELINE] Iniciando extracción de LRC...");
-        await _extractLyricsFromYoutube(targetUrl, finalMp3Path);
-
-        if (_autoMasterize) {
-          debugPrint("🟢 [TRACKER PIPELINE] Iniciando Auto-Mastering...");
-          await _runSingleTrackPipeline(finalMp3Path);
-        } else {
-          setState(
-            () => _statusText =
-                "✅ ¡Extracción Completada! MP3 masterizado en disco.",
-          );
-        }
+      if (_autoMasterize) {
+        await _runSingleTrackPipeline(finalMp3Path);
       } else {
-        throw Exception(
-          "Fallo de I/O post-transcodificación. El MP3 no se materializó.",
+        setState(
+          () => _statusText =
+              "✅ ¡Extracción Completada! MP3 ($cleanName) masterizado en disco.",
         );
       }
     } catch (e) {
-      debugPrint("🔴 [TRACKER EXCEPCIÓN] Error en Pipeline Híbrido: $e");
+      debugPrint("🔴 Error en Pipeline Híbrido: $e");
       setState(() => _statusText = "🔴 ERROR FATAL: $e");
     } finally {
       setState(() => _isProcessing = false);
@@ -906,6 +901,145 @@ class _YoutubeSearchAndDownloadWorkspaceState
           ),
         );
       },
+    );
+  }
+}
+
+// ==========================================
+// 🛠️ NUEVO COMPONENTE: MODAL DE PRE-INGESTA
+// ==========================================
+class PreIngestModal extends StatefulWidget {
+  final String initialTitle;
+  final String initialLrc;
+
+  const PreIngestModal({
+    super.key,
+    required this.initialTitle,
+    required this.initialLrc,
+  });
+
+  @override
+  State<PreIngestModal> createState() => _PreIngestModalState();
+}
+
+class _PreIngestModalState extends State<PreIngestModal> {
+  late TextEditingController _titleController;
+  late TextEditingController _lrcController;
+
+  @override
+  void initState() {
+    super.initState();
+    // Limpieza agresiva de strings comerciales de YouTube
+    String cleanTitle = widget.initialTitle
+        .replaceAll(RegExp(r'\(.*?\)'), '')
+        .replaceAll(RegExp(r'\[.*?\]'), '')
+        .replaceAll(RegExp(r'official video', caseSensitive: false), '')
+        .replaceAll(RegExp(r'official audio', caseSensitive: false), '')
+        .replaceAll(RegExp(r'lyric video', caseSensitive: false), '')
+        .trim();
+
+    _titleController = TextEditingController(text: cleanTitle);
+    _lrcController = TextEditingController(text: widget.initialLrc);
+  }
+
+  @override
+  void dispose() {
+    _titleController.dispose();
+    _lrcController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isMobile = MediaQuery.of(context).size.width < 600;
+    return AlertDialog(
+      backgroundColor: const Color(0xFF121212),
+      shape: RoundedRectangleBorder(
+        side: const BorderSide(color: Color(0xFF00FFFF)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      title: const Text(
+        "Laboratorio Pre-Ingesta",
+        style: TextStyle(color: Color(0xFF00FFFF), fontWeight: FontWeight.bold),
+      ),
+      content: SizedBox(
+        width: isMobile ? MediaQuery.of(context).size.width * 0.9 : 600,
+        height: isMobile ? MediaQuery.of(context).size.height * 0.7 : 500,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              "1. Renombrar Archivo (Sin extensión)",
+              style: TextStyle(color: Colors.white70, fontSize: 12),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _titleController,
+              style: const TextStyle(
+                color: Colors.white,
+                fontFamily: 'Consolas',
+              ),
+              decoration: const InputDecoration(
+                filled: true,
+                fillColor: Colors.black,
+                border: OutlineInputBorder(),
+                focusedBorder: OutlineInputBorder(
+                  borderSide: BorderSide(color: Color(0xFF00FFFF)),
+                ),
+              ),
+            ),
+            const SizedBox(height: 15),
+            const Text(
+              "2. Revisión de Letra Sincronizada (.lrc)",
+              style: TextStyle(color: Colors.white70, fontSize: 12),
+            ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: TextField(
+                controller: _lrcController,
+                maxLines: null,
+                expands: true,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontFamily: 'Consolas',
+                ),
+                decoration: const InputDecoration(
+                  filled: true,
+                  fillColor: Color(0xFF0A0A0A),
+                  border: OutlineInputBorder(),
+                  hintText:
+                      "Pista sin letra detectada. Puedes pegar un LRC externo aquí.",
+                  hintStyle: TextStyle(color: Colors.white24),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, null),
+          child: const Text(
+            "Descartar Descarga",
+            style: TextStyle(color: Colors.redAccent),
+          ),
+        ),
+        ElevatedButton.icon(
+          onPressed: () {
+            Navigator.pop(context, {
+              'fileName': _titleController.text.trim(),
+              'lrcContent': _lrcController.text,
+            });
+          },
+          icon: const Icon(Icons.download),
+          label: const Text("Aprobar e Inyectar"),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFF00FFFF),
+            foregroundColor: Colors.black,
+          ),
+        ),
+      ],
     );
   }
 }
