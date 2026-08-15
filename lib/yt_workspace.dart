@@ -457,95 +457,65 @@ class _YoutubeSearchAndDownloadWorkspaceState
 
     setState(() {
       _isProcessing = true;
-      _statusText = "Resolviendo firmas DRM e iniciando extracción...";
+      _statusText = "Iniciando pipeline nativo (Dart Stream)...";
     });
 
     try {
-      final tempDir = Directory.systemTemp;
-      final ytdlpPath = Platform.isWindows
-          ? '${tempDir.path}${Platform.pathSeparator}yt-dlp.exe'
-          : 'yt-dlp';
+      final videoId = VideoId(targetUrl);
       final downloadPath = _selectedFolderPath;
 
       if (!Directory(downloadPath).existsSync()) {
         Directory(downloadPath).createSync(recursive: true);
       }
 
-      if (Platform.isWindows && !File(ytdlpPath).existsSync()) {
-        setState(
-          () => _statusText = "Descargando motor extractor (yt-dlp.exe)...",
-        );
-        final url = Uri.parse(
-          'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe',
-        );
-        final response = await http.get(url);
-        await File(ytdlpPath).writeAsBytes(response.bodyBytes);
-      }
+      setState(
+        () => _statusText = "Resolviendo firmas de stream y manifiesto...",
+      );
 
-      // 🛠️ VECTOR GANADOR: Bypass DRM forzando firma de Android VR
-      final process = await Process.start(ytdlpPath, [
-        '--rm-cache-dir',
-        '-f',
-        '140/bestaudio',
-        '--extractor-args',
-        'youtube:player_client=android_vr',
-        '-o',
-        '$downloadPath${Platform.pathSeparator}%(title)s.%(ext)s',
-        targetUrl,
-      ]);
+      // 🛠️ FIX ARQUITECTÓNICO: Bypass nativo usando youtube_explode_dart
+      final manifest = await _yt.videos.streamsClient.getManifest(videoId);
+      final streamInfo = manifest.audioOnly.withHighestBitrate();
+      final video = await _yt.videos.get(videoId);
 
-      // 🛠️ FIX TELEMETRÍA: Captura activa del log de errores
-      String errorTrace = "";
-      process.stdout.listen((_) {});
-      process.stderr.listen((bytes) {
-        errorTrace += String.fromCharCodes(bytes);
-      });
+      // Sanitización estricta para I/O Windows/macOS
+      final safeTitle = video.title
+          .replaceAll(RegExp(r'[\\/:*?"<>|]'), '')
+          .trim();
+      final ext =
+          streamInfo.container.name; // Resolverá a mp4 o webm dinámicamente
+      final extractedFilePath =
+          '$downloadPath${Platform.pathSeparator}$safeTitle.$ext';
 
-      final exitCode = await process.exitCode;
+      setState(
+        () => _statusText =
+            "Descargando stream crudo ($ext) a ${streamInfo.bitrate.kiloBitsPerSecond.toInt()} kbps...",
+      );
 
-      if (exitCode == 0) {
-        // 🛠️ FIX ARQUITECTÓNICO: Escaneo agnóstico de formatos multimedia (.m4a, .webm, .mp3)
-        final files = Directory(downloadPath)
-            .listSync()
-            .whereType<File>()
-            .where(
-              (f) =>
-                  f.path.toLowerCase().endsWith('.mp3') ||
-                  f.path.toLowerCase().endsWith('.m4a') ||
-                  f.path.toLowerCase().endsWith('.webm'),
-            )
-            .toList();
+      // I/O Pipe de alta velocidad (sin buffers intermedios)
+      final file = File(extractedFilePath);
+      final fileStream = file.openWrite();
+      await _yt.videos.streamsClient.get(streamInfo).pipe(fileStream);
+      await fileStream.flush();
+      await fileStream.close();
 
-        String? extractedFilePath;
-        if (files.isNotEmpty) {
-          files.sort(
-            (a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()),
-          );
-          extractedFilePath = files.first.path;
-        }
+      _searchController.clear();
 
-        _searchController.clear();
-        if (extractedFilePath != null && File(extractedFilePath).existsSync()) {
-          await _extractLyricsFromYoutube(targetUrl, extractedFilePath);
-          if (_autoMasterize) {
-            await _runSingleTrackPipeline(extractedFilePath);
-          } else {
-            setState(
-              () => _statusText =
-                  "✅ ¡Extracción Completada! Archivo crudo guardado.",
-            );
-          }
+      if (File(extractedFilePath).existsSync()) {
+        await _extractLyricsFromYoutube(targetUrl, extractedFilePath);
+
+        if (_autoMasterize) {
+          await _runSingleTrackPipeline(extractedFilePath);
         } else {
           setState(
-            () => _statusText = "✅ ¡Extracción Completada! (Ruta no trazable)",
+            () => _statusText =
+                "✅ ¡Extracción Completada! Archivo crudo ($ext) guardado.",
           );
         }
       } else {
-        throw Exception(
-          "CLI Exit $exitCode | Traza: ${errorTrace.isNotEmpty ? errorTrace : 'Bloqueo desconocido.'}",
-        );
+        throw Exception("Fallo de escritura I/O. Archivo no generado.");
       }
     } catch (e) {
+      debugPrint("🔴 Error en Dart Stream: $e");
       setState(() => _statusText = "🔴 ERROR FATAL: $e");
     } finally {
       setState(() => _isProcessing = false);

@@ -1,97 +1,87 @@
 import 'dart:io';
 
 void main() async {
+  print("🧪 SANDBOX V2: AUDITORÍA DE BINARIO Y MATRIZ EXTENDIDA ANTI-403\n");
   final url = 'https://www.youtube.com/watch?v=my8Av7W4z9w';
   final tempDir = Directory.systemTemp;
   final ytdlpPath = Platform.isWindows
       ? '${tempDir.path}\\yt-dlp.exe'
       : 'yt-dlp';
 
-  print("🧪 INICIANDO SANDBOX: FUERZA BRUTA ANTI-403");
-  print("Objetivo: $url\n");
+  if (!File(ytdlpPath).existsSync()) {
+    print("🔴 ERROR FATAL: El binario yt-dlp no existe en $ytdlpPath");
+    return;
+  }
 
-  // Matriz de firmas para evadir el DRM (SABR)
+  // 1. Auditoría de Estado
+  var vResult = await Process.run(ytdlpPath, ['--version']);
+  print("📌 Versión actual del motor: ${vResult.stdout.toString().trim()}");
+
+  print("🔄 Forzando actualización del motor (Auto-Patching)...");
+  await Process.run(ytdlpPath, ['-U']);
+  vResult = await Process.run(ytdlpPath, ['--version']);
+  print("📌 Versión tras actualización: ${vResult.stdout.toString().trim()}\n");
+
+  // 2. Matriz de Ataque (Nuevas firmas)
   final strategies = [
     {
-      'name': '1. Cliente Default (Actual)',
+      'name': 'Cliente IOS (Alta prioridad)',
       'args': [
         '--rm-cache-dir',
         '-f',
         '140/bestaudio',
         '--extractor-args',
-        'youtube:player_client=default',
+        'youtube:player_client=ios',
         '-o',
-        '${tempDir.path}\\t1.%(ext)s',
+        '${tempDir.path}\\test_ios.%(ext)s',
         url,
       ],
     },
     {
-      'name': '2. Cliente Android_VR',
+      'name': 'Cliente TV (Evasión de po-token)',
       'args': [
         '--rm-cache-dir',
         '-f',
         '140/bestaudio',
         '--extractor-args',
-        'youtube:player_client=android_vr',
+        'youtube:player_client=tv',
         '-o',
-        '${tempDir.path}\\t2.%(ext)s',
+        '${tempDir.path}\\test_tv.%(ext)s',
         url,
       ],
     },
     {
-      'name': '3. Cliente Android + Web',
+      'name': 'Cliente ANDROID,WEB (Fallback)',
       'args': [
         '--rm-cache-dir',
         '-f',
-        'bestaudio',
+        '140/bestaudio',
         '--extractor-args',
         'youtube:player_client=android,web',
         '-o',
-        '${tempDir.path}\\t3.%(ext)s',
-        url,
-      ],
-    },
-    {
-      'name': '4. Sin Spoofing (Firma nativa de yt-dlp)',
-      'args': [
-        '--rm-cache-dir',
-        '-f',
-        'bestaudio',
-        '-o',
-        '${tempDir.path}\\t4.%(ext)s',
+        '${tempDir.path}\\test_web.%(ext)s',
         url,
       ],
     },
   ];
 
-  for (var i = 0; i < strategies.length; i++) {
-    final strategy = strategies[i];
-    print("🚀 Probando: ${strategy['name']}");
-
-    final result = await Process.run(
-      ytdlpPath,
-      strategy['args'] as List<String>,
-    );
+  for (var s in strategies) {
+    print("🚀 Lanzando ataque con firma: ${s['name']}");
+    final result = await Process.run(ytdlpPath, s['args'] as List<String>);
 
     if (result.exitCode == 0) {
-      print("✅ ÉXITO. Bypass logrado.");
-      print("--------------------------------------------------");
-      print(result.stdout.toString().split('\n').take(4).join('\n'));
-      print("--------------------------------------------------\n");
-      return; // Detenemos la ejecución al encontrar la firma ganadora
+      print("✅ VULNERABILIDAD ENCONTRADA. Bypass exitoso.\n");
+      return; // Detenemos al encontrar la vía libre
     } else {
-      print("🔴 FALLO.");
-      final stderr = result.stderr.toString().trim();
-      final errorLines = stderr
-          .split('\n')
-          .where((l) => l.contains('ERROR') || l.contains('HTTP Error 403'))
-          .toList();
-      if (errorLines.isNotEmpty) {
-        print("Causa: ${errorLines.last}\n");
-      } else {
-        print("Causa: $stderr\n");
-      }
+      final err = result.stderr.toString();
+      final lines = err.split('\n').where((l) => l.contains('ERROR')).toList();
+      print(
+        "🔴 Repelido: ${lines.isNotEmpty ? lines.first : 'Error de I/O'}\n",
+      );
     }
   }
-  print("💀 Bloqueo total. El DRM de YouTube repelió todos los ataques.");
+
+  print(
+    "💀 Bloqueo absoluto. Evaluar Arquitectura Alternativa (Cookies / API externa).",
+  );
 }
