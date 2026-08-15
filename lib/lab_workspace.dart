@@ -86,11 +86,24 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
         .whereType<File>()
         .map((e) => e.uri.pathSegments.last)
         .toList();
+
+    // 1. Purga unidireccional: Elimina del JSON lo que ya no está en el disco
     _registry.removeWhere((key, value) => !physicalFiles.contains(key));
 
-    if (registryFile.existsSync()) {
-      registryFile.writeAsStringSync(jsonEncode(_registry));
+    // 2. 🛠️ FIX: Reconciliación Bidireccional (Inyección de reemplazos OS)
+    final validExtensions = ['.mp3', '.m4a', '.webm', '.wav', '.flac'];
+    for (var fileName in physicalFiles) {
+      final isAudio = validExtensions.any(
+        (ext) => fileName.toLowerCase().endsWith(ext),
+      );
+      if (isAudio && !_registry.containsKey(fileName)) {
+        // Archivo inyectado o renombrado manualmente fuera del flujo nativo
+        _registry[fileName] = 'Origen Desconocido (Inyección Manual OS)';
+      }
     }
+
+    // Sobrescritura forzosa para persistir los archivos recuperados
+    registryFile.writeAsStringSync(jsonEncode(_registry));
 
     setState(() => _isLoading = false);
   }
