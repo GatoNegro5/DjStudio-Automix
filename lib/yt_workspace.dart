@@ -103,6 +103,15 @@ class _YoutubeSearchAndDownloadWorkspaceState
   // ---------------------------------------------------------
   // 🛠️ MÓDULO DE TELEMETRÍA Y COMPENSACIÓN VECTORIAL
   // ---------------------------------------------------------
+  String _getFfmpegPath() {
+    if (Platform.isAndroid || Platform.isIOS) return 'ffmpeg';
+    final exeDir = File(Platform.resolvedExecutable).parent.path;
+    final localPath = Platform.isWindows
+        ? '$exeDir\\ffmpeg.exe'
+        : '$exeDir/ffmpeg';
+    return File(localPath).existsSync() ? localPath : 'ffmpeg';
+  }
+
   String _getFfprobePath() {
     if (Platform.isAndroid || Platform.isIOS) return 'ffprobe';
     final exeDir = File(Platform.resolvedExecutable).parent.path;
@@ -472,50 +481,81 @@ class _YoutubeSearchAndDownloadWorkspaceState
         () => _statusText = "Resolviendo firmas de stream y manifiesto...",
       );
 
-      // 🛠️ FIX ARQUITECTÓNICO: Bypass nativo usando youtube_explode_dart
       final manifest = await _yt.videos.streamsClient.getManifest(videoId);
       final streamInfo = manifest.audioOnly.withHighestBitrate();
       final video = await _yt.videos.get(videoId);
 
-      // Sanitización estricta para I/O Windows/macOS
       final safeTitle = video.title
           .replaceAll(RegExp(r'[\\/:*?"<>|]'), '')
           .trim();
-      final ext =
-          streamInfo.container.name; // Resolverá a mp4 o webm dinámicamente
-      final extractedFilePath =
-          '$downloadPath${Platform.pathSeparator}$safeTitle.$ext';
+      final rawExt = streamInfo.container.name;
+
+      // 1. Descarga del Stream crudo a zona temporal (Blindado Anti-Deadlock)
+      final tempRawPath =
+          '${Directory.systemTemp.path}${Platform.pathSeparator}raw_audio_temp.$rawExt';
+      final finalMp3Path =
+          '$downloadPath${Platform.pathSeparator}$safeTitle.mp3';
 
       setState(
         () => _statusText =
-            "Descargando stream crudo ($ext) a ${streamInfo.bitrate.kiloBitsPerSecond.toInt()} kbps...",
+            "Extrayendo contenedor nativo ($rawExt) vía Chunks (Anti-Throttling)...",
       );
 
-      // I/O Pipe de alta velocidad (sin buffers intermedios)
-      final file = File(extractedFilePath);
+      final file = File(tempRawPath);
       final fileStream = file.openWrite();
-      await _yt.videos.streamsClient.get(streamInfo).pipe(fileStream);
-      await fileStream.flush();
-      await fileStream.close();
+
+      try {
+        // 🛠️ FIX ARQUITECTÓNICO: Iteración manual de bytes. Evita el Deadlock de .pipe()
+        final stream = _yt.videos.streamsClient.get(streamInfo);
+        await for (final chunk in stream) {
+          fileStream.add(chunk);
+        }
+      } finally {
+        // Garantizamos la liberación en memoria ram sin importar si el stream colapsa
+        await fileStream.flush();
+        await fileStream.close();
+      }
+
+      // 2. Transcodificación forzada a MP3 (320kbps)
+      setState(
+        () => _statusText = "Transcodificando a MP3 (320kbps) vía FFmpeg...",
+      );
+
+      final process = await Process.run(_getFfmpegPath(), [
+        '-y',
+        '-i', tempRawPath,
+        '-vn', // Ignorar cualquier track de video residual
+        '-b:a', '320k', // Forzar bitrate a 320kbps
+        finalMp3Path,
+      ]);
+
+      if (process.exitCode != 0) {
+        throw Exception("Fallo en motor FFmpeg: ${process.stderr.toString()}");
+      }
+
+      // Limpieza atómica del contenedor crudo
+      try {
+        if (File(tempRawPath).existsSync()) File(tempRawPath).deleteSync();
+      } catch (_) {}
 
       _searchController.clear();
 
-      if (File(extractedFilePath).existsSync()) {
-        await _extractLyricsFromYoutube(targetUrl, extractedFilePath);
+      if (File(finalMp3Path).existsSync()) {
+        await _extractLyricsFromYoutube(targetUrl, finalMp3Path);
 
         if (_autoMasterize) {
-          await _runSingleTrackPipeline(extractedFilePath);
+          await _runSingleTrackPipeline(finalMp3Path);
         } else {
           setState(
             () => _statusText =
-                "✅ ¡Extracción Completada! Archivo crudo ($ext) guardado.",
+                "✅ ¡Extracción Completada! MP3 guardado en disco.",
           );
         }
       } else {
-        throw Exception("Fallo de escritura I/O. Archivo no generado.");
+        throw Exception("Fallo de escritura I/O post-transcodificación.");
       }
     } catch (e) {
-      debugPrint("🔴 Error en Dart Stream: $e");
+      debugPrint("🔴 Error en Pipeline Nativo: $e");
       setState(() => _statusText = "🔴 ERROR FATAL: $e");
     } finally {
       setState(() => _isProcessing = false);
