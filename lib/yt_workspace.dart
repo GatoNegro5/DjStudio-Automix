@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import 'package:http/http.dart' as http;
-import 'package:file_picker/file_picker.dart';
+import 'package:file_selector/file_selector.dart';
 
 // 🛠️ INYECTADO: Backend FFI Nativo y Providers para Auto-Masterización
 import 'package:djstudio_player/src/rust/api/core_dsp.dart' as rust_dsp;
@@ -73,14 +73,12 @@ class _YoutubeSearchAndDownloadWorkspaceState
     });
   }
 
-  // 🛠️ PROFESIONAL: Uso de API Nativa del OS para Selección de Carpetas
+  // 🛠️ PROFESIONAL: Uso de API Nativa Oficial de Google (file_selector)
   Future<void> _showFolderSelectionDialog() async {
     try {
-      final String? selectedDirectory = await FilePicker.platform
-          .getDirectoryPath(
-            dialogTitle: 'Seleccionar Carpeta Destino',
-            lockParentWindow: true,
-          );
+      final String? selectedDirectory = await getDirectoryPath(
+        confirmButtonText: 'Seleccionar Carpeta',
+      );
 
       if (selectedDirectory != null) {
         setState(() {
