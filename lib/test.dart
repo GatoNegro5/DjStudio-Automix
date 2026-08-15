@@ -1,52 +1,97 @@
 import 'dart:io';
-import 'dart:convert';
 
-void main() {
-  print("🧪 INICIANDO SANDBOX: I/O AUDIT DEL ARCHIVO LRC\n");
+void main() async {
+  final url = 'https://www.youtube.com/watch?v=my8Av7W4z9w';
+  final tempDir = Directory.systemTemp;
+  final ytdlpPath = Platform.isWindows
+      ? '${tempDir.path}\\yt-dlp.exe'
+      : 'yt-dlp';
 
-  final audioPath =
-      r"C:\Users\ASUS\Music\DjStudio_LAB\Los Dukes - 20 Años Menos.m4a";
-  final regex = RegExp(r'\.(mp3|m4a|webm|wav|flac)$', caseSensitive: false);
-  final lrcPath = audioPath.replaceAll(regex, '.lrc');
+  print("🧪 INICIANDO SANDBOX: FUERZA BRUTA ANTI-403");
+  print("Objetivo: $url\n");
 
-  print("📂 Buscando letra física en: $lrcPath");
+  // Matriz de firmas para evadir el DRM (SABR)
+  final strategies = [
+    {
+      'name': '1. Cliente Default (Actual)',
+      'args': [
+        '--rm-cache-dir',
+        '-f',
+        '140/bestaudio',
+        '--extractor-args',
+        'youtube:player_client=default',
+        '-o',
+        '${tempDir.path}\\t1.%(ext)s',
+        url,
+      ],
+    },
+    {
+      'name': '2. Cliente Android_VR',
+      'args': [
+        '--rm-cache-dir',
+        '-f',
+        '140/bestaudio',
+        '--extractor-args',
+        'youtube:player_client=android_vr',
+        '-o',
+        '${tempDir.path}\\t2.%(ext)s',
+        url,
+      ],
+    },
+    {
+      'name': '3. Cliente Android + Web',
+      'args': [
+        '--rm-cache-dir',
+        '-f',
+        'bestaudio',
+        '--extractor-args',
+        'youtube:player_client=android,web',
+        '-o',
+        '${tempDir.path}\\t3.%(ext)s',
+        url,
+      ],
+    },
+    {
+      'name': '4. Sin Spoofing (Firma nativa de yt-dlp)',
+      'args': [
+        '--rm-cache-dir',
+        '-f',
+        'bestaudio',
+        '-o',
+        '${tempDir.path}\\t4.%(ext)s',
+        url,
+      ],
+    },
+  ];
 
-  final lrcFile = File(lrcPath);
+  for (var i = 0; i < strategies.length; i++) {
+    final strategy = strategies[i];
+    print("🚀 Probando: ${strategy['name']}");
 
-  if (!lrcFile.existsSync()) {
-    print("\n🔴 FATAL: El archivo .lrc NO EXISTE físicamente en el disco.");
-    print(
-      "-> El proceso de rescate nunca lo creó para esta canción, o se borró en el proceso atómico.",
+    final result = await Process.run(
+      ytdlpPath,
+      strategy['args'] as List<String>,
     );
-    return;
-  }
 
-  print("🟢 ¡Archivo encontrado! Procediendo a decodificación UTF-8...\n");
-
-  try {
-    final content = lrcFile.readAsLinesSync(encoding: utf8);
-
-    if (content.isEmpty) {
-      print(
-        "⚠️ ALERTA: El archivo existe pero está de tamaño 0 bytes (VACÍO).",
-      );
-      return;
-    }
-
-    print("📜 VOLCADO DE MEMORIA (${content.length} líneas detectadas):");
-    print("-" * 50);
-    for (var i = 0; i < content.length; i++) {
-      if (i >= 20) {
-        print(
-          "... [+ ${content.length - 20} líneas adicionales omitidas en consola]",
-        );
-        break;
+    if (result.exitCode == 0) {
+      print("✅ ÉXITO. Bypass logrado.");
+      print("--------------------------------------------------");
+      print(result.stdout.toString().split('\n').take(4).join('\n'));
+      print("--------------------------------------------------\n");
+      return; // Detenemos la ejecución al encontrar la firma ganadora
+    } else {
+      print("🔴 FALLO.");
+      final stderr = result.stderr.toString().trim();
+      final errorLines = stderr
+          .split('\n')
+          .where((l) => l.contains('ERROR') || l.contains('HTTP Error 403'))
+          .toList();
+      if (errorLines.isNotEmpty) {
+        print("Causa: ${errorLines.last}\n");
+      } else {
+        print("Causa: $stderr\n");
       }
-      print(content[i]);
     }
-    print("-" * 50);
-    print("✅ I/O Audit exitoso. Los datos están intactos en el disco.");
-  } catch (e) {
-    print("\n💥 CRASH DE DECODIFICACIÓN I/O: $e");
   }
+  print("💀 Bloqueo total. El DRM de YouTube repelió todos los ataques.");
 }

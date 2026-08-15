@@ -482,12 +482,13 @@ class _YoutubeSearchAndDownloadWorkspaceState
         await File(ytdlpPath).writeAsBytes(response.bodyBytes);
       }
 
+      // 🛠️ VECTOR GANADOR: Bypass DRM forzando firma de Android VR
       final process = await Process.start(ytdlpPath, [
         '--rm-cache-dir',
         '-f',
         '140/bestaudio',
         '--extractor-args',
-        'youtube:player_client=default',
+        'youtube:player_client=android_vr',
         '-o',
         '$downloadPath${Platform.pathSeparator}%(title)s.%(ext)s',
         targetUrl,
