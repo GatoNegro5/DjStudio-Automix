@@ -540,16 +540,13 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
       statusNotifier.value =
           "1/6. Descargando stream crudo nativo (Bypass DRM)...";
 
-      // 🛠️ VECTOR GANADOR: Bypass DRM forzando firma de Android VR
+      // 🛠️ VECTOR GANADOR: Bypass DRM forzando firma de Android VR (Variables corregidas)
       final process = await Process.start(ytdlpPath, [
         '--rm-cache-dir',
-        '-f',
-        '140/bestaudio',
-        '--extractor-args',
-        'youtube:player_client=android_vr',
-        '-o',
-        '$downloadPath${Platform.pathSeparator}%(title)s.%(ext)s',
-        targetUrl,
+        '-f', '140/bestaudio',
+        '--extractor-args', 'youtube:player_client=android_vr',
+        '-o', '$tempAudioPrefix.%(ext)s', // ⚠️ Variable del Laboratorio
+        url, // ⚠️ Variable del Laboratorio
       ]);
 
       String errorTrace = "";
