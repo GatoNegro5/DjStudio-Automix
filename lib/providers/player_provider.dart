@@ -107,8 +107,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
     _playerA = Player();
     _playerB = Player();
 
-    // 🛠️ INYECCIÓN DSP: MASTERIZACIÓN PSICOACÚSTICA TIPO SPOTIFY
-    // loudnorm + acompressor + Sub-Bass(60Hz) + Air(12kHz) + Ensanchador Estéreo (1.15)
     (_playerA.platform as dynamic)?.setProperty(
       'af',
       'loudnorm=I=-14:LRA=6:TP=-1.0,acompressor=threshold=-14dB:ratio=3.5:attack=3:release=50:makeup=2,equalizer=f=60:width_type=o:w=1:g=2.5,equalizer=f=12000:width_type=o:w=1:g=3.0,extrastereo=m=1.15',
@@ -186,7 +184,13 @@ class PlayerNotifier extends Notifier<PlayerState> {
         await _loadTrackMetadata(playlist[index]);
         await _activePlayer.open(Media(playlist[index]), play: false);
 
-        await Future.delayed(const Duration(milliseconds: 300));
+        // 🛠️ FIX: Esperar resolución del decodificador antes de saltar
+        try {
+          await _activePlayer.stream.duration
+              .firstWhere((d) => d.inMilliseconds > 0)
+              .timeout(const Duration(seconds: 2));
+        } catch (_) {}
+
         if (positionMs != null && positionMs > 0) {
           await _activePlayer.seek(Duration(milliseconds: positionMs));
         } else if (state.customCueInMs > 0) {
@@ -322,6 +326,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
     final metadata = await ref
         .read(dbServiceProvider)
         .getTrackMetadata(audioPath);
+
     state = state.copyWith(
       customCueInMs: metadata?.cueInMs ?? -1,
       customMixOutMs: metadata?.mixOutMs ?? -1,
@@ -372,7 +377,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
 
     _durationSub = player.stream.duration.listen((dur) {
       state = state.copyWith(duration: dur);
-      _recalculateMixWindow();
+      _recalculateMixWindow(); // Recalibra conociendo la duración real
     });
 
     _playingSub = player.stream.playing.listen((playing) {
@@ -422,7 +427,12 @@ class PlayerNotifier extends Notifier<PlayerState> {
     await incomingPlayer.open(Media(nextTrack), play: false);
 
     if (cueInMs > 0) {
-      await Future.delayed(const Duration(milliseconds: 300));
+      // 🛠️ FIX: Esperar resolución del decodificador antes del Seek
+      try {
+        await incomingPlayer.stream.duration
+            .firstWhere((d) => d.inMilliseconds > 0)
+            .timeout(const Duration(seconds: 2));
+      } catch (_) {}
       await incomingPlayer.seek(Duration(milliseconds: cueInMs));
     }
 
@@ -500,7 +510,11 @@ class PlayerNotifier extends Notifier<PlayerState> {
     await incomingPlayer.open(Media(nextTrack), play: false);
 
     if (cueInMs > 0) {
-      await Future.delayed(const Duration(milliseconds: 300));
+      try {
+        await incomingPlayer.stream.duration
+            .firstWhere((d) => d.inMilliseconds > 0)
+            .timeout(const Duration(seconds: 2));
+      } catch (_) {}
       await incomingPlayer.seek(Duration(milliseconds: cueInMs));
     }
 
@@ -580,7 +594,11 @@ class PlayerNotifier extends Notifier<PlayerState> {
     await incomingPlayer.open(Media(nextTrack), play: false);
 
     if (cueInMs > 0) {
-      await Future.delayed(const Duration(milliseconds: 300));
+      try {
+        await incomingPlayer.stream.duration
+            .firstWhere((d) => d.inMilliseconds > 0)
+            .timeout(const Duration(seconds: 2));
+      } catch (_) {}
       await incomingPlayer.seek(Duration(milliseconds: cueInMs));
     }
 
@@ -635,7 +653,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
     if (state.duration.inMilliseconds == 0) return;
     final nextIdx = _calculateNextIndex();
     final nextPath = nextIdx != -1 ? state.playlist[nextIdx] : null;
-    state = state.copyWith(nextTrackPath: nextPath);
 
     int dynamicMixDurationMs = 6000;
     if (nextPath != null) {
@@ -645,16 +662,37 @@ class PlayerNotifier extends Notifier<PlayerState> {
       if (nextMeta != null) dynamicMixDurationMs = nextMeta.mixDurationMs;
     }
 
-    if (state.customMixOutMs > 0) {
-      _triggerRemainingMs =
-          state.duration.inMilliseconds - state.customMixOutMs;
-      if (_triggerRemainingMs < dynamicMixDurationMs) {
-        _triggerRemainingMs = dynamicMixDurationMs;
+    int safeMixOutMs = state.customMixOutMs;
+    int safeCueInMs = state.customCueInMs;
+
+    // 🛠️ LIMITADOR GEOMÉTRICO (Out-of-Bounds Failsafe)
+    // Previene que la basura NLP coloque el punto de salida más allá de la duración de la pista.
+    if (safeMixOutMs > 0 &&
+        safeMixOutMs >= state.duration.inMilliseconds - dynamicMixDurationMs) {
+      safeMixOutMs =
+          state.duration.inMilliseconds - dynamicMixDurationMs - 1000;
+    }
+    if (safeCueInMs > 0 && safeCueInMs > state.duration.inMilliseconds ~/ 2) {
+      safeCueInMs =
+          0; // Invalida el Cue si está más allá de la mitad de la canción.
+    }
+
+    int triggerMs = 0;
+    if (safeMixOutMs > 0) {
+      triggerMs = state.duration.inMilliseconds - safeMixOutMs;
+      if (triggerMs < dynamicMixDurationMs) {
+        triggerMs = dynamicMixDurationMs;
       }
     } else {
-      _triggerRemainingMs = dynamicMixDurationMs + 2000;
+      triggerMs = dynamicMixDurationMs + 2000;
     }
-    state = state.copyWith(triggerRemainingMs: _triggerRemainingMs);
+
+    state = state.copyWith(
+      nextTrackPath: nextPath,
+      triggerRemainingMs: triggerMs,
+      customMixOutMs: safeMixOutMs,
+      customCueInMs: safeCueInMs,
+    );
   }
 
   Future<void> loadContextAndPlay(List<String> playlist, int startIndex) async {
@@ -681,7 +719,11 @@ class PlayerNotifier extends Notifier<PlayerState> {
     await _activePlayer.open(Media(path), play: false);
 
     if (cueInMs > 0) {
-      await Future.delayed(const Duration(milliseconds: 300));
+      try {
+        await _activePlayer.stream.duration
+            .firstWhere((d) => d.inMilliseconds > 0)
+            .timeout(const Duration(seconds: 2));
+      } catch (_) {}
       await _activePlayer.seek(Duration(milliseconds: cueInMs));
     }
     await _activePlayer.play();
@@ -861,7 +903,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
     await Future.delayed(const Duration(milliseconds: 600));
   }
 
-  // 🛠️ ORIGINAL: Desplaza todo el bloque desde el milisegundo cero
   Future<void> autoSyncFirstLyric() async {
     if (state.currentTrackPath == null || state.lyrics.isEmpty) return;
 
@@ -879,7 +920,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
     await shiftLyrics(calculatedOffsetMs);
   }
 
-  // 🛠️ NUEVO: Calcula el desplazamiento solo desde la línea actual enfocada
   Future<void> autoSyncFromCurrentLyric() async {
     if (state.currentTrackPath == null || state.lyrics.isEmpty) return;
 
@@ -903,7 +943,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
     await shiftLyricsPartial(calculatedOffsetMs, originalAnchorMs);
   }
 
-  // Desplazamiento Total Histórico
   Future<void> shiftLyrics(int offsetMs) async {
     if (state.currentTrackPath == null) return;
     final lrcPath = state.currentTrackPath!.replaceAll(
@@ -943,7 +982,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
     } catch (_) {}
   }
 
-  // 🛠️ NUEVO: Partición Atómica de Época. Deja intacto lo anterior al thresholdMs.
   Future<void> shiftLyricsPartial(int offsetMs, int thresholdMs) async {
     if (state.currentTrackPath == null) return;
     final lrcPath = state.currentTrackPath!.replaceAll(
@@ -969,7 +1007,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
           int originalMs = (min * 60000) + (sec * 1000) + ms;
           int totalMs = originalMs;
 
-          // Tolerancia de 100ms para asegurar el atrapamiento de la línea
           if (originalMs >= thresholdMs - 100) {
             totalMs += offsetMs;
             if (totalMs < 0) totalMs = 0;
