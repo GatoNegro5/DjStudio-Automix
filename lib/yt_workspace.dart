@@ -462,7 +462,9 @@ class _YoutubeSearchAndDownloadWorkspaceState
 
     try {
       final tempDir = Directory.systemTemp;
-      final ytdlpPath = '${tempDir.path}${Platform.pathSeparator}yt-dlp.exe';
+      final ytdlpPath = Platform.isWindows
+          ? '${tempDir.path}${Platform.pathSeparator}yt-dlp.exe'
+          : 'yt-dlp';
       final downloadPath = _selectedFolderPath;
 
       if (!Directory(downloadPath).existsSync()) {
@@ -491,39 +493,45 @@ class _YoutubeSearchAndDownloadWorkspaceState
         targetUrl,
       ]);
 
-      // 🔴 FIX ARCH: Drenaje pasivo de búferes OS para evitar el Deadlock
+      // 🛠️ FIX TELEMETRÍA: Captura activa del log de errores
+      String errorTrace = "";
       process.stdout.listen((_) {});
-      process.stderr.listen((_) {});
+      process.stderr.listen((bytes) {
+        errorTrace += String.fromCharCodes(bytes);
+      });
 
-      String? extractedMp3Path;
-
-      // Un escaneo de la ruta final a través de la carpeta de destino:
       final exitCode = await process.exitCode;
 
       if (exitCode == 0) {
-        // Dado que yt-dlp guarda la pista con un formato dinámico, escaneamos la carpeta
-        // buscando el archivo más reciente (el que acabamos de descargar).
+        // 🛠️ FIX ARQUITECTÓNICO: Escaneo agnóstico de formatos multimedia (.m4a, .webm, .mp3)
         final files = Directory(downloadPath)
             .listSync()
             .whereType<File>()
-            .where((f) => f.path.endsWith('.mp3'))
+            .where(
+              (f) =>
+                  f.path.toLowerCase().endsWith('.mp3') ||
+                  f.path.toLowerCase().endsWith('.m4a') ||
+                  f.path.toLowerCase().endsWith('.webm'),
+            )
             .toList();
+
+        String? extractedFilePath;
         if (files.isNotEmpty) {
           files.sort(
             (a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()),
           );
-          extractedMp3Path = files.first.path;
+          extractedFilePath = files.first.path;
         }
 
         _searchController.clear();
-        if (extractedMp3Path != null && File(extractedMp3Path).existsSync()) {
-          await _extractLyricsFromYoutube(targetUrl, extractedMp3Path);
+        if (extractedFilePath != null && File(extractedFilePath).existsSync()) {
+          await _extractLyricsFromYoutube(targetUrl, extractedFilePath);
           if (_autoMasterize) {
-            await _runSingleTrackPipeline(extractedMp3Path);
+            await _runSingleTrackPipeline(extractedFilePath);
           } else {
             setState(
               () => _statusText =
-                  "✅ ¡Extracción Completada! MP3 crudo y Letra guardados.",
+                  "✅ ¡Extracción Completada! Archivo crudo guardado.",
             );
           }
         } else {
@@ -532,7 +540,9 @@ class _YoutubeSearchAndDownloadWorkspaceState
           );
         }
       } else {
-        throw Exception("El binario CLI colapsó con código $exitCode.");
+        throw Exception(
+          "CLI Exit $exitCode | Traza: ${errorTrace.isNotEmpty ? errorTrace : 'Bloqueo desconocido.'}",
+        );
       }
     } catch (e) {
       setState(() => _statusText = "🔴 ERROR FATAL: $e");
