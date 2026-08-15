@@ -445,18 +445,17 @@ class DspNlpWorkspace extends ConsumerWidget {
                     calculatedMixOut = idealMixOut;
                   }
 
-                  if (calculatedMixOut != null &&
-                      calculatedCueIn != null &&
-                      calculatedMixOut! <= calculatedCueIn!) {
+                  if (calculatedCueIn != null &&
+                      calculatedMixOut <= calculatedCueIn) {
                     if (durationAfterMs > 0) {
                       calculatedMixOut =
                           durationAfterMs - assignedDuration - 1000;
                     } else {
                       calculatedMixOut =
-                          calculatedCueIn! + assignedDuration; // Fallback ciego
+                          calculatedCueIn + assignedDuration; // Fallback ciego
                     }
                   }
-                  if (calculatedMixOut != null && calculatedMixOut! < 0) {
+                  if (calculatedMixOut < 0) {
                     calculatedMixOut = 0;
                   }
                 }
@@ -481,6 +480,9 @@ class DspNlpWorkspace extends ConsumerWidget {
           debugPrint("🔴 Error aislando pista $originalName: $e");
           pipe.addQuarantine(originalName);
         }
+        / 🛠️ GC YIELD: Obliga a Dart a pausar medio segundo. 
+        // Permite al Disco Duro vaciar su caché y previene el congelamiento de la PC.
+        await Future.delayed(const Duration(milliseconds: 500));
       }
 
       if (!checkAbort()) {

@@ -707,14 +707,17 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
                   RegExp(
                     r'\[musica\]|\(musica\)|\[aplausos\]|\(aplausos\)|instrumental|♪|🎵',
                   ),
-                ))
+                )) {
                   isGarbage = true;
+                }
                 if (normalizedText.startsWith('[') &&
-                    normalizedText.endsWith(']'))
+                    normalizedText.endsWith(']')) {
                   isGarbage = true;
+                }
                 if (normalizedText.startsWith('(') &&
-                    normalizedText.endsWith(')'))
+                    normalizedText.endsWith(')')) {
                   isGarbage = true;
+                }
 
                 final alphaNumOnly = lowerText.replaceAll(
                   RegExp(r'[^a-z0-9]'),
@@ -1021,14 +1024,14 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
                       decoration: const InputDecoration(
                         isDense: true,
                         filled: true,
-                        fillColor: const Color(0xFF2A0000),
+                        fillColor: Color(0xFF2A0000),
                         hintText:
                             "Pega el link de YouTube aquí para descargar/sobrescribir...",
-                        hintStyle: const TextStyle(color: Colors.white38),
-                        border: const OutlineInputBorder(
+                        hintStyle: TextStyle(color: Colors.white38),
+                        border: OutlineInputBorder(
                           borderSide: BorderSide(color: Colors.redAccent),
                         ),
-                        focusedBorder: const OutlineInputBorder(
+                        focusedBorder: OutlineInputBorder(
                           borderSide: BorderSide(color: Colors.redAccent),
                         ),
                       ),

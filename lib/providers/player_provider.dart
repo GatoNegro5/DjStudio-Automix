@@ -99,7 +99,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
   StreamSubscription? _completedSub;
 
   bool _isCrossfading = false;
-  int _triggerRemainingMs = 4000;
+  final int _triggerRemainingMs = 4000;
   bool _isPrepModeBypass = false;
   int _lastSavedPositionMs = 0;
 
@@ -924,8 +924,9 @@ class PlayerNotifier extends Notifier<PlayerState> {
     // 🧠 Búsqueda de proximidad: Adivina matemáticamente qué línea quiso presionar el usuario
     for (int i = 0; i < state.lyrics.length; i++) {
       final l = state.lyrics[i];
-      if (l.text.contains('Letra no encontrada') || l.text.contains('Error'))
+      if (l.text.contains('Letra no encontrada') || l.text.contains('Error')) {
         continue;
+      }
 
       final diff = (l.timestamp.inMilliseconds - currentAudioMs).abs();
       if (diff < minDiff) {
@@ -954,8 +955,9 @@ class PlayerNotifier extends Notifier<PlayerState> {
     // 🧠 Búsqueda de proximidad: Adivina matemáticamente qué línea quiso presionar el usuario
     for (int i = 0; i < state.lyrics.length; i++) {
       final l = state.lyrics[i];
-      if (l.text.contains('Letra no encontrada') || l.text.contains('Error'))
+      if (l.text.contains('Letra no encontrada') || l.text.contains('Error')) {
         continue;
+      }
 
       final diff = (l.timestamp.inMilliseconds - currentAudioMs).abs();
       if (diff < minDiff) {

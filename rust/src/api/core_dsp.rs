@@ -70,14 +70,16 @@ fn get_ffmpeg_path() -> String {
     "ffmpeg".to_string()
 }
 
-// 🛠️ CONSTRUCTOR MAESTRO: Aislamiento estricto de UI (Headless I/O)
+// 🛠️ CONSTRUCTOR MAESTRO: Aislamiento estricto de UI y Límite de CPU
 fn spawn_headless_ffmpeg() -> Command {
     let mut cmd = Command::new(get_ffmpeg_path());
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);
     
-    // 🛠️ FIX: Obliga a FFmpeg a ignorar la entrada de consola, evitando el Deadlock infinito.
-    cmd.arg("-nostdin"); 
+    // 🛠️ FIX CPU STARVATION: 
+    // -nostdin: Evita deadlocks de consola.
+    // -threads 2: Obliga a FFmpeg a usar máximo 2 núcleos. Libera el resto para Windows y WhatsApp.
+    cmd.args(["-nostdin", "-threads", "2"]); 
     cmd
 }
 
