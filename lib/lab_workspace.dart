@@ -379,21 +379,39 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
   // 🛠️ MÓDULO DE TELEMETRÍA Y COMPENSACIÓN VECTORIAL
   // ---------------------------------------------------------
   String _getFfprobePath() {
-    if (Platform.isAndroid || Platform.isIOS) return 'ffprobe';
+    if (Platform.isAndroid || Platform.isIOS) {
+      debugPrint(
+        "🟢 [LAB TRACKER BIN] Plataforma Móvil. Path FFPROBE: 'ffprobe'",
+      );
+      return 'ffprobe';
+    }
     final exeDir = File(Platform.resolvedExecutable).parent.path;
     final localPath = Platform.isWindows
         ? '$exeDir\\ffprobe.exe'
         : '$exeDir/ffprobe';
-    return File(localPath).existsSync() ? localPath : 'ffprobe';
+    final exists = File(localPath).existsSync();
+    debugPrint(
+      "🟢 [LAB TRACKER BIN] Path FFPROBE: $localPath | Existe: $exists",
+    );
+    return exists ? localPath : 'ffprobe';
   }
 
   String _getFfmpegPath() {
-    if (Platform.isAndroid || Platform.isIOS) return 'ffmpeg';
+    if (Platform.isAndroid || Platform.isIOS) {
+      debugPrint(
+        "🟢 [LAB TRACKER BIN] Plataforma Móvil. Path FFMPEG: 'ffmpeg'",
+      );
+      return 'ffmpeg';
+    }
     final exeDir = File(Platform.resolvedExecutable).parent.path;
     final localPath = Platform.isWindows
         ? '$exeDir\\ffmpeg.exe'
         : '$exeDir/ffmpeg';
-    return File(localPath).existsSync() ? localPath : 'ffmpeg';
+    final exists = File(localPath).existsSync();
+    debugPrint(
+      "🟢 [LAB TRACKER BIN] Path FFMPEG: $localPath | Existe: $exists",
+    );
+    return exists ? localPath : 'ffmpeg';
   }
 
   Future<int> _getAudioDurationMs(String path) async {
@@ -460,6 +478,9 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
       "Iniciando conexión...",
     );
 
+    debugPrint("🟢 [LAB TRACKER START] Rescate solicitado para: $url");
+    debugPrint("🟢 [LAB TRACKER START] Target Original: $targetOriginalPath");
+
     // 1. FAIL-FAST: Bloqueo de I/O
     try {
       final testFile = File(targetOriginalPath);
@@ -468,6 +489,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
         raf.closeSync();
       }
     } catch (e) {
+      debugPrint("🔴 [LAB TRACKER I/O] Archivo bloqueado por OS: $e");
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text(
@@ -518,51 +540,95 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
       final tempAudioPrefix =
           '${tempDir.path}${Platform.pathSeparator}lab_rescue_temp';
 
+      debugPrint("🟢 [LAB TRACKER I/O] Directorio Temp: ${tempDir.path}");
+      debugPrint("🟢 [LAB TRACKER I/O] Prefijo Audio: $tempAudioPrefix");
+
       // Limpieza de estados corruptos previos
       try {
         final existingFiles = tempDir.listSync().where(
           (f) => f.path.startsWith(tempAudioPrefix),
         );
         for (var f in existingFiles) {
+          debugPrint("🟢 [LAB TRACKER GC] Borrando basura previa: ${f.path}");
           f.deleteSync();
         }
-      } catch (_) {}
+      } catch (e) {
+        debugPrint("⚠️ [LAB TRACKER GC] Fallo limpieza previa: $e");
+      }
 
       if (Platform.isWindows && !File(ytdlpPath).existsSync()) {
+        debugPrint(
+          "🟢 [LAB TRACKER NET] yt-dlp no existe, forzando descarga remota...",
+        );
         statusNotifier.value = "Descargando motor extractor yt-dlp...";
         final dlUrl = Uri.parse(
           'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe',
         );
         final response = await http.get(dlUrl);
         await File(ytdlpPath).writeAsBytes(response.bodyBytes);
+        debugPrint(
+          "🟢 [LAB TRACKER NET] Descarga de yt-dlp completada. Bytes: ${response.bodyBytes.length}",
+        );
       }
 
       statusNotifier.value =
           "1/6. Descargando stream crudo nativo (Bypass DRM)...";
 
-      // 🛠️ VECTOR GANADOR: Bypass DRM forzando firma de Android VR (Variables corregidas)
+      debugPrint("🟢 [LAB TRACKER CLI] Ejecutando yt-dlp en target...");
       final process = await Process.start(ytdlpPath, [
         '--rm-cache-dir',
-        '-f', '140/bestaudio',
-        '--extractor-args', 'youtube:player_client=android_vr',
-        '-o', '$tempAudioPrefix.%(ext)s', // ⚠️ Variable del Laboratorio
-        url, // ⚠️ Variable del Laboratorio
+        '-f',
+        '140/bestaudio',
+        '--extractor-args',
+        'youtube:player_client=android_vr',
+        '-o',
+        '$tempAudioPrefix.%(ext)s',
+        url,
       ]);
 
       String errorTrace = "";
-      process.stdout.listen((_) {});
+      process.stdout.listen((bytes) {
+        debugPrint(
+          "🔵 [LAB TRACKER yt-dlp stdout]: ${String.fromCharCodes(bytes)}",
+        );
+      });
       process.stderr.listen((bytes) {
-        errorTrace += String.fromCharCodes(bytes);
+        final err = String.fromCharCodes(bytes);
+        errorTrace += err;
+        debugPrint("🔴 [LAB TRACKER yt-dlp stderr]: $err");
       });
 
       final exitCode = await process.exitCode;
+      debugPrint("🟢 [LAB TRACKER CLI] ExitCode yt-dlp: $exitCode");
 
       File? downloadedFile;
       try {
-        downloadedFile = tempDir.listSync().whereType<File>().firstWhere(
-          (f) => f.path.startsWith(tempAudioPrefix) && !f.path.endsWith('.lrc'),
+        // 🛠️ FIX: Prevenir StateError si la lista está vacía
+        final files = tempDir
+            .listSync()
+            .whereType<File>()
+            .where(
+              (f) =>
+                  f.path.startsWith(tempAudioPrefix) &&
+                  !f.path.endsWith('.lrc'),
+            )
+            .toList();
+
+        if (files.isNotEmpty) {
+          downloadedFile = files.first;
+          debugPrint(
+            "🟢 [LAB TRACKER I/O] Archivo descargado detectado: ${downloadedFile.path}",
+          );
+        } else {
+          debugPrint(
+            "🔴 [LAB TRACKER I/O] Cero archivos físicos encontrados tras la descarga.",
+          );
+        }
+      } catch (e) {
+        debugPrint(
+          "🔴 [LAB TRACKER I/O] Error al escanear directorio temp: $e",
         );
-      } catch (_) {}
+      }
 
       if (exitCode == 0 &&
           downloadedFile != null &&
@@ -570,78 +636,91 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
         final ext = downloadedFile.path.split('.').last;
         statusNotifier.value =
             "2/6. Extrayendo y purificando subtítulos VTT...";
+        debugPrint("🟢 [LAB TRACKER I/O] Extensión nativa detectada: $ext");
 
         final yt = YoutubeExplode();
         final videoId = VideoId(url);
-        final manifest = await yt.videos.closedCaptions.getManifest(videoId);
 
         String? tempLrcPath;
-        if (manifest.tracks.isNotEmpty) {
-          ClosedCaptionTrackInfo? selectedTrack;
-          for (var lang in ['es', 'en']) {
-            try {
-              selectedTrack = manifest.tracks.firstWhere(
-                (t) =>
-                    t.language.code.toLowerCase().contains(lang) &&
-                    !t.isAutoGenerated,
-              );
-              break;
-            } catch (_) {}
-          }
-          selectedTrack ??= manifest.tracks.firstWhere(
-            (t) => t.language.code.toLowerCase().contains('es'),
-            orElse: () => manifest.tracks.first,
-          );
+        try {
+          final manifest = await yt.videos.closedCaptions.getManifest(videoId);
 
-          final track = await yt.videos.closedCaptions.get(selectedTrack);
-          final lrcBuffer = StringBuffer();
-
-          for (var caption in track.captions) {
-            final start = caption.offset;
-            final min = start.inMinutes.toString().padLeft(2, '0');
-            final sec = (start.inSeconds % 60).toString().padLeft(2, '0');
-            final ms = ((start.inMilliseconds % 1000) ~/ 10).toString().padLeft(
-              2,
-              '0',
+          if (manifest.tracks.isNotEmpty) {
+            ClosedCaptionTrackInfo? selectedTrack;
+            for (var lang in ['es', 'en']) {
+              try {
+                selectedTrack = manifest.tracks.firstWhere(
+                  (t) =>
+                      t.language.code.toLowerCase().contains(lang) &&
+                      !t.isAutoGenerated,
+                );
+                break;
+              } catch (_) {}
+            }
+            selectedTrack ??= manifest.tracks.firstWhere(
+              (t) => t.language.code.toLowerCase().contains('es'),
+              orElse: () => manifest.tracks.first,
             );
 
-            // 🛠️ NLP GARBAGE FILTER AGRESIVO
-            final text = caption.text
-                .replaceAll('\n', ' ')
-                .replaceAll(RegExp(r'<[^>]*>'), '')
-                .trim();
-            final lowerText = text.toLowerCase();
+            final track = await yt.videos.closedCaptions.get(selectedTrack);
+            final lrcBuffer = StringBuffer();
 
-            final normalizedText = lowerText
-                .replaceAll('ú', 'u')
-                .replaceAll('í', 'i')
-                .replaceAll('ó', 'o');
-            bool isGarbage = false;
+            for (var caption in track.captions) {
+              final start = caption.offset;
+              final min = start.inMinutes.toString().padLeft(2, '0');
+              final sec = (start.inSeconds % 60).toString().padLeft(2, '0');
+              final ms = ((start.inMilliseconds % 1000) ~/ 10)
+                  .toString()
+                  .padLeft(2, '0');
 
-            if (normalizedText.contains(
-              RegExp(
-                r'\[musica\]|\(musica\)|\[aplausos\]|\(aplausos\)|instrumental|♪|🎵',
-              ),
-            ))
-              isGarbage = true;
-            if (normalizedText.startsWith('[') && normalizedText.endsWith(']'))
-              isGarbage = true;
-            if (normalizedText.startsWith('(') && normalizedText.endsWith(')'))
-              isGarbage = true;
+              final text = caption.text
+                  .replaceAll('\n', ' ')
+                  .replaceAll(RegExp(r'<[^>]*>'), '')
+                  .trim();
+              final lowerText = text.toLowerCase();
 
-            final alphaNumOnly = lowerText.replaceAll(RegExp(r'[^a-z0-9]'), '');
-            if (alphaNumOnly.length <= 2) isGarbage = true;
+              final normalizedText = lowerText
+                  .replaceAll('ú', 'u')
+                  .replaceAll('í', 'i')
+                  .replaceAll('ó', 'o');
+              bool isGarbage = false;
 
-            if (!isGarbage && text.isNotEmpty) {
-              lrcBuffer.writeln('[$min:$sec.$ms]$text');
+              if (normalizedText.contains(
+                RegExp(
+                  r'\[musica\]|\(musica\)|\[aplausos\]|\(aplausos\)|instrumental|♪|🎵',
+                ),
+              ))
+                isGarbage = true;
+              if (normalizedText.startsWith('[') &&
+                  normalizedText.endsWith(']'))
+                isGarbage = true;
+              if (normalizedText.startsWith('(') &&
+                  normalizedText.endsWith(')'))
+                isGarbage = true;
+
+              final alphaNumOnly = lowerText.replaceAll(
+                RegExp(r'[^a-z0-9]'),
+                '',
+              );
+              if (alphaNumOnly.length <= 2) isGarbage = true;
+
+              if (!isGarbage && text.isNotEmpty) {
+                lrcBuffer.writeln('[$min:$sec.$ms]$text');
+              }
+            }
+            if (lrcBuffer.isNotEmpty) {
+              tempLrcPath = '$tempAudioPrefix.lrc';
+              await File(tempLrcPath).writeAsString(lrcBuffer.toString());
+              debugPrint("🟢 [LAB TRACKER I/O] Letra generada en $tempLrcPath");
             }
           }
-          if (lrcBuffer.isNotEmpty) {
-            tempLrcPath = '$tempAudioPrefix.lrc';
-            await File(tempLrcPath).writeAsString(lrcBuffer.toString());
-          }
+        } catch (e) {
+          debugPrint(
+            "⚠️ [LAB TRACKER NLP] Scraping de letras falló o vacío: $e",
+          );
+        } finally {
+          yt.close();
         }
-        yt.close();
 
         statusNotifier.value = "3/6. Sobrescritura Atómica en Laboratorio...";
 
@@ -654,17 +733,26 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
         final newFile = File(newTargetFile);
         final targetLrcFile = File('$baseOriginalName.lrc');
 
+        debugPrint(
+          "🟢 [LAB TRACKER FS] Renombrando/moviendo de ${downloadedFile.path} a ${newFile.path}",
+        );
         await downloadedFile.copy(newFile.path);
         await downloadedFile.delete();
 
         if (targetOriginalPath != newTargetFile &&
             targetOriginalFile.existsSync()) {
           try {
+            debugPrint(
+              "🟢 [LAB TRACKER FS] Eliminando originario reemplazado: $targetOriginalPath",
+            );
             targetOriginalFile.deleteSync();
-          } catch (_) {}
+          } catch (e) {
+            debugPrint("🔴 [LAB TRACKER FS] Error borrando original: $e");
+          }
         }
 
         if (tempLrcPath != null && File(tempLrcPath).existsSync()) {
+          debugPrint("🟢 [LAB TRACKER FS] Escribiendo letra en destino.");
           await File(tempLrcPath).copy(targetLrcFile.path);
           await File(tempLrcPath).delete();
         }
@@ -673,9 +761,12 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
 
         statusNotifier.value =
             "4/6. Aplicando Auto-Trim C++ (Cortando silencios)...";
+        debugPrint("🟢 [LAB TRACKER FFI] Pasando al Worker de Metadata...");
         finalPath = await ref
             .read(metadataWorkerProvider)
             .processSingleFile(finalPath);
+
+        debugPrint("🟢 [LAB TRACKER FFI] Calculando DSP...");
         final durationBeforeMs = await _getAudioDurationMs(finalPath);
         await ref.read(dspWorkerProvider).processSingleFile(finalPath);
         final durationAfterMs = await _getAudioDurationMs(finalPath);
@@ -683,6 +774,8 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
         statusNotifier.value =
             "5/6. Compensación del Vector de Tiempo (LRC)...";
         final trimmedMs = durationBeforeMs - durationAfterMs;
+        debugPrint("🟢 [LAB TRACKER DSP] Audio cortado en: $trimmedMs ms");
+
         if (trimmedMs > 50) {
           final lrcToPatch = finalPath.replaceAll(
             RegExp(r'\.mp3$|\.webm$|\.m4a$', caseSensitive: false),
@@ -692,6 +785,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
         }
 
         statusNotifier.value = "6/6. Indexando en Base de Datos ISAR...";
+        debugPrint("🟢 [LAB TRACKER ISAR] Inyectando BD...");
         await rust_dsp.injectWatermark(inputPath: finalPath);
         final rawGenre = await rust_dsp.readAudioGenre(inputPath: finalPath);
         await ref
@@ -708,30 +802,29 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
             .read(dspWorkerProvider)
             .generateStaticBpmCache(Directory(finalPath).parent.path);
 
-        // 🛠️ FIX: Mutación Atómica del Registro (Transfiere el origen del .mp3 al nuevo .m4a)
         final oldFileName = targetOriginalPath
             .split(Platform.pathSeparator)
             .last;
         final finalFileName = finalPath.split(Platform.pathSeparator).last;
 
+        debugPrint(
+          "🟢 [LAB TRACKER JSON] Mutando quarantine_registry.json. Old: $oldFileName -> New: $finalFileName",
+        );
         if (oldFileName != finalFileName &&
             _registry.containsKey(oldFileName)) {
           final originalOrigin = _registry[oldFileName];
           _registry.remove(oldFileName);
 
-          // Muta también la extensión de la ruta original para no colapsar al "Restaurar"
           final newOrigin = originalOrigin.toString().replaceAll(
             RegExp(r'\.mp3$|\.webm$|\.m4a$', caseSensitive: false),
             '.$ext',
           );
           _registry[finalFileName] = newOrigin;
 
-          // Persistencia forzada al disco antes del reload
           File(
             '$_labPath${Platform.pathSeparator}quarantine_registry.json',
           ).writeAsStringSync(jsonEncode(_registry));
 
-          // Evita que la UI pierda el foco si estaba seleccionada
           if (_selectedFileForEdit == oldFileName) {
             _selectedFileForEdit = finalFileName;
           }
@@ -752,10 +845,11 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
         }
       } else {
         throw Exception(
-          "CLI Exit $exitCode | Traza: ${errorTrace.isNotEmpty ? errorTrace : 'Archivo no generado.'}",
+          "CLI Exit $exitCode | Traza: ${errorTrace.isNotEmpty ? errorTrace : 'Archivo físico no generado/localizado.'}",
         );
       }
     } catch (e) {
+      debugPrint("🔴 [LAB TRACKER FATAL] $e");
       if (mounted) {
         Navigator.pop(context);
         ScaffoldMessenger.of(context).showSnackBar(

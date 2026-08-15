@@ -104,21 +104,31 @@ class _YoutubeSearchAndDownloadWorkspaceState
   // 🛠️ MÓDULO DE TELEMETRÍA Y COMPENSACIÓN VECTORIAL
   // ---------------------------------------------------------
   String _getFfmpegPath() {
-    if (Platform.isAndroid || Platform.isIOS) return 'ffmpeg';
+    if (Platform.isAndroid || Platform.isIOS) {
+      debugPrint("🟢 [TRACKER BIN] Plataforma Móvil. Path FFMPEG: 'ffmpeg'");
+      return 'ffmpeg';
+    }
     final exeDir = File(Platform.resolvedExecutable).parent.path;
     final localPath = Platform.isWindows
         ? '$exeDir\\ffmpeg.exe'
         : '$exeDir/ffmpeg';
-    return File(localPath).existsSync() ? localPath : 'ffmpeg';
+    final exists = File(localPath).existsSync();
+    debugPrint("🟢 [TRACKER BIN] Path FFMPEG: $localPath | Existe: $exists");
+    return exists ? localPath : 'ffmpeg';
   }
 
   String _getFfprobePath() {
-    if (Platform.isAndroid || Platform.isIOS) return 'ffprobe';
+    if (Platform.isAndroid || Platform.isIOS) {
+      debugPrint("🟢 [TRACKER BIN] Plataforma Móvil. Path FFPROBE: 'ffprobe'");
+      return 'ffprobe';
+    }
     final exeDir = File(Platform.resolvedExecutable).parent.path;
     final localPath = Platform.isWindows
         ? '$exeDir\\ffprobe.exe'
         : '$exeDir/ffprobe';
-    return File(localPath).existsSync() ? localPath : 'ffprobe';
+    final exists = File(localPath).existsSync();
+    debugPrint("🟢 [TRACKER BIN] Path FFPROBE: $localPath | Existe: $exists");
+    return exists ? localPath : 'ffprobe';
   }
 
   Future<int> _getAudioDurationMs(String path) async {
@@ -476,18 +486,31 @@ class _YoutubeSearchAndDownloadWorkspaceState
           : 'yt-dlp';
       final downloadPath = _selectedFolderPath;
 
+      debugPrint("🟢 [TRACKER I/O] Directorio Temporal: ${tempDir.path}");
+      debugPrint("🟢 [TRACKER I/O] Ruta yt-dlp configurada: $ytdlpPath");
+      if (Platform.isWindows) {
+        debugPrint(
+          "🟢 [TRACKER I/O] yt-dlp existe en temp?: ${File(ytdlpPath).existsSync()}",
+        );
+      }
+
       if (!Directory(downloadPath).existsSync()) {
+        debugPrint(
+          "🟢 [TRACKER I/O] Creando directorio destino: $downloadPath",
+        );
         Directory(downloadPath).createSync(recursive: true);
       }
 
       setState(
         () => _statusText = "Resolviendo manifiesto para nombrar archivo...",
       );
+      debugPrint("🟢 [TRACKER YT] Interceptando metadatos para: $targetUrl");
       final videoId = VideoId(targetUrl);
       final video = await _yt.videos.get(videoId);
       final safeTitle = video.title
           .replaceAll(RegExp(r'[\\/:*?"<>|]'), '')
           .trim();
+      debugPrint("🟢 [TRACKER YT] Título resuelto: $safeTitle");
 
       final tempRawPath =
           '${tempDir.path}${Platform.pathSeparator}raw_vr_audio.m4a';
@@ -495,7 +518,12 @@ class _YoutubeSearchAndDownloadWorkspaceState
           '$downloadPath${Platform.pathSeparator}$safeTitle.mp3';
 
       // 1. Limpieza de estado residual atómica
-      if (File(tempRawPath).existsSync()) File(tempRawPath).deleteSync();
+      if (File(tempRawPath).existsSync()) {
+        debugPrint(
+          "🟢 [TRACKER I/O] Borrando residuo anterior en: $tempRawPath",
+        );
+        File(tempRawPath).deleteSync();
+      }
 
       setState(
         () => _statusText =
@@ -503,6 +531,7 @@ class _YoutubeSearchAndDownloadWorkspaceState
       );
 
       // 2. Extracción blindada con yt-dlp usando la firma ganadora
+      debugPrint("🟢 [TRACKER CLI] Levantando proceso yt-dlp...");
       final process = await Process.start(ytdlpPath, [
         '--rm-cache-dir',
         '-f',
@@ -515,12 +544,22 @@ class _YoutubeSearchAndDownloadWorkspaceState
       ]);
 
       String errorTrace = "";
-      process.stdout.listen((_) {});
+      process.stdout.listen((bytes) {
+        debugPrint(
+          "🔵 [TRACKER yt-dlp stdout]: ${String.fromCharCodes(bytes)}",
+        );
+      });
       process.stderr.listen((bytes) {
-        errorTrace += String.fromCharCodes(bytes);
+        final err = String.fromCharCodes(bytes);
+        errorTrace += err;
+        debugPrint("🔴 [TRACKER yt-dlp stderr]: $err");
       });
 
       final exitCode = await process.exitCode;
+      debugPrint("🟢 [TRACKER CLI] yt-dlp finalizó con ExitCode: $exitCode");
+      debugPrint(
+        "🟢 [TRACKER I/O] Archivo raw existe?: ${File(tempRawPath).existsSync()}",
+      );
 
       if (exitCode != 0 || !File(tempRawPath).existsSync()) {
         throw Exception("Fallo CLI Extractor. Traza: $errorTrace");
@@ -531,7 +570,9 @@ class _YoutubeSearchAndDownloadWorkspaceState
         () => _statusText = "Transcodificando a MP3 (320kbps) vía FFmpeg...",
       );
 
-      final ffmpegProcess = await Process.run(_getFfmpegPath(), [
+      final ffmpegBin = _getFfmpegPath();
+      debugPrint("🟢 [TRACKER CLI] Ejecutando FFmpeg: $ffmpegBin");
+      final ffmpegProcess = await Process.run(ffmpegBin, [
         '-y',
         '-i', tempRawPath,
         '-vn', // Ignorar canales de video residuales
@@ -539,7 +580,13 @@ class _YoutubeSearchAndDownloadWorkspaceState
         finalMp3Path,
       ]);
 
+      debugPrint(
+        "🟢 [TRACKER CLI] FFmpeg finalizó con ExitCode: ${ffmpegProcess.exitCode}",
+      );
       if (ffmpegProcess.exitCode != 0) {
+        debugPrint(
+          "🔴 [TRACKER FFMPEG stderr]: ${ffmpegProcess.stderr.toString()}",
+        );
         throw Exception(
           "Fallo en motor FFmpeg: ${ffmpegProcess.stderr.toString()}",
         );
@@ -547,15 +594,29 @@ class _YoutubeSearchAndDownloadWorkspaceState
 
       // 4. Recolección de basura (Garbage Collection)
       try {
-        if (File(tempRawPath).existsSync()) File(tempRawPath).deleteSync();
-      } catch (_) {}
+        if (File(tempRawPath).existsSync()) {
+          debugPrint(
+            "🟢 [TRACKER I/O] Ejecutando Garbage Collection de raw_vr_audio.m4a",
+          );
+          File(tempRawPath).deleteSync();
+        }
+      } catch (e) {
+        debugPrint("⚠️ [TRACKER I/O] Fallo en Garbage Collection: $e");
+      }
 
       _searchController.clear();
 
-      if (File(finalMp3Path).existsSync()) {
+      final fileExists = File(finalMp3Path).existsSync();
+      debugPrint(
+        "🟢 [TRACKER I/O] MP3 final existe?: $fileExists ($finalMp3Path)",
+      );
+
+      if (fileExists) {
+        debugPrint("🟢 [TRACKER PIPELINE] Iniciando extracción de LRC...");
         await _extractLyricsFromYoutube(targetUrl, finalMp3Path);
 
         if (_autoMasterize) {
+          debugPrint("🟢 [TRACKER PIPELINE] Iniciando Auto-Mastering...");
           await _runSingleTrackPipeline(finalMp3Path);
         } else {
           setState(
@@ -569,7 +630,7 @@ class _YoutubeSearchAndDownloadWorkspaceState
         );
       }
     } catch (e) {
-      debugPrint("🔴 Error en Pipeline Híbrido: $e");
+      debugPrint("🔴 [TRACKER EXCEPCIÓN] Error en Pipeline Híbrido: $e");
       setState(() => _statusText = "🔴 ERROR FATAL: $e");
     } finally {
       setState(() => _isProcessing = false);
