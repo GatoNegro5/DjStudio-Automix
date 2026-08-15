@@ -480,7 +480,8 @@ class DspNlpWorkspace extends ConsumerWidget {
           debugPrint("🔴 Error aislando pista $originalName: $e");
           pipe.addQuarantine(originalName);
         }
-        / 🛠️ GC YIELD: Obliga a Dart a pausar medio segundo. 
+
+        // 🛠️ GC YIELD: Obliga a Dart a pausar medio segundo.
         // Permite al Disco Duro vaciar su caché y previene el congelamiento de la PC.
         await Future.delayed(const Duration(milliseconds: 500));
       }
