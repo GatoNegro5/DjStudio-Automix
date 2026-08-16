@@ -158,24 +158,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
     }
   }
 
-  Future<void> clearMixPoints() async {
-    if (state.currentTrackPath == null) return;
-    await ref
-        .read(dbServiceProvider)
-        .saveTrackMetadata(
-          path: state.currentTrackPath!,
-          clearCues: true,
-          isManualCue:
-              false, // 🛠️ LIBERA BLINDAJE (Retorna a control del Auto-Master)
-        );
-    state = state.copyWith(
-      customCueInMs: -1,
-      customMixOutMs: -1,
-      autoMixArmed: true,
-    );
-    _recalculateMixWindow();
-  }
-
   String _getSessionFilePath() {
     String baseDir = Platform.isWindows
         ? '${Platform.environment['USERPROFILE']}\\Music\\DjPlaylists'
@@ -913,66 +895,117 @@ class PlayerNotifier extends Notifier<PlayerState> {
     await Future.delayed(const Duration(milliseconds: 600));
   }
 
-  // 🛠️ FIX SYNC I/O ROJO: Sync GLOBAL Inteligente
+  Future<void> clearMixPoints() async {
+    if (state.currentTrackPath == null) return;
+    final path = state.currentTrackPath!;
+
+    // 1. Reset visual en RAM
+    state = state.copyWith(customCueInMs: 0, customMixOutMs: 0);
+
+    // 2. Destrucción Física del archivo .lrc corrupto en el disco duro
+    final lrcPath = path.replaceAll(
+      RegExp(r'\.mp3$|\.webm$', caseSensitive: false),
+      '.lrc',
+    );
+    final lrcFile = File(lrcPath);
+    if (lrcFile.existsSync()) {
+      lrcFile.deleteSync();
+    }
+
+    // 3. Reset en Base de Datos ISAR (Sobreescribimos forzando ceros y liberamos candado manual)
+    await ref
+        .read(dbServiceProvider)
+        .saveTrackMetadata(
+          path: path,
+          mixProfile: state.mixStrategy == MixStrategy.sequential
+              ? 'constant_power'
+              : 'eq_kill',
+          durationMs: 6000,
+          genre: 'desconocido',
+          cueInMs: 0,
+          mixOutMs: 0,
+          isManualCue: false,
+        );
+
+    // 4. Invocamos al Scraper NLP para redescargar un archivo completamente virgen y limpio
+    try {
+      await ref.read(nlpWorkerProvider).processSingleFile(path);
+    } catch (_) {}
+
+    // 5. Limpiamos la matriz de letras en pantalla
+    state = state.copyWith(lyrics: [], activeLyricIndex: -1);
+    debugPrint(
+      "🗑️ [PAPELERA] Cues y archivo NLP destruidos y reseteados para: $path",
+    );
+  }
+
   Future<void> autoSyncFirstLyric() async {
     if (state.currentTrackPath == null || state.lyrics.isEmpty) return;
 
-    final int currentAudioMs = state.position.inMilliseconds;
-    LyricLine? anchorLyric;
-    int minDiff = 99999999;
+    final posMs = state.position.inMilliseconds;
+    final targetLine = state.lyrics.first;
 
-    // 🧠 Búsqueda de proximidad: Adivina matemáticamente qué línea quiso presionar el usuario
-    for (int i = 0; i < state.lyrics.length; i++) {
-      final l = state.lyrics[i];
-      if (l.text.contains('Letra no encontrada') || l.text.contains('Error')) {
-        continue;
-      }
+    // Cálculo de Delta bidireccional (Detecta avance o retroceso automático)
+    final deltaMs = posMs - targetLine.timeMs;
 
-      final diff = (l.timestamp.inMilliseconds - currentAudioMs).abs();
-      if (diff < minDiff) {
-        minDiff = diff;
-        anchorLyric = l;
-      }
+    // Desplazamiento vectorial de toda la matriz
+    for (dynamic line in state.lyrics) {
+      line.timeMs += deltaMs;
+      if (line.timeMs < 0) line.timeMs = 0;
     }
 
-    if (anchorLyric == null || anchorLyric.text.isEmpty) return;
-
-    final int originalAnchorMs = anchorLyric.timestamp.inMilliseconds;
-    final int calculatedOffsetMs = currentAudioMs - originalAnchorMs;
-
-    // Al ser Global, aplica el desfase a TODO el archivo LRC
-    await shiftLyrics(calculatedOffsetMs);
+    await _saveLyricsToFile(state.currentTrackPath!, state.lyrics);
+    state = state.copyWith(
+      lyrics: List.from(state.lyrics),
+    ); // Forzar repintado de UI
+    debugPrint("✅ [SYNC GLOBAL] Matriz desplazada por Delta: ${deltaMs}ms");
   }
 
-  // 🛠️ FIX SYNC I/O AZUL CARDENILLO: Sync 2 MED Inteligente
   Future<void> autoSyncFromCurrentLyric() async {
-    if (state.currentTrackPath == null || state.lyrics.isEmpty) return;
+    if (state.currentTrackPath == null ||
+        state.lyrics.isEmpty ||
+        state.activeLyricIndex < 0)
+      return;
 
-    final int currentAudioMs = state.position.inMilliseconds;
-    LyricLine? anchorLyric;
-    int minDiff = 99999999;
+    final posMs = state.position.inMilliseconds;
+    final targetLine = state.lyrics[state.activeLyricIndex];
 
-    // 🧠 Búsqueda de proximidad: Adivina matemáticamente qué línea quiso presionar el usuario
-    for (int i = 0; i < state.lyrics.length; i++) {
-      final l = state.lyrics[i];
-      if (l.text.contains('Letra no encontrada') || l.text.contains('Error')) {
-        continue;
-      }
+    // Cálculo de Delta bidireccional (Acepta valores negativos y positivos)
+    final deltaMs = posMs - targetLine.timeMs;
 
-      final diff = (l.timestamp.inMilliseconds - currentAudioMs).abs();
-      if (diff < minDiff) {
-        minDiff = diff;
-        anchorLyric = l;
-      }
+    // Desplazamiento vectorial de toda la matriz
+    for (dynamic line in state.lyrics) {
+      line.timeMs += deltaMs;
+      if (line.timeMs < 0) line.timeMs = 0;
     }
 
-    if (anchorLyric == null || anchorLyric.text.isEmpty) return;
+    await _saveLyricsToFile(state.currentTrackPath!, state.lyrics);
+    state = state.copyWith(
+      lyrics: List.from(state.lyrics),
+    ); // Forzar repintado de UI
+    debugPrint("✅ [SYNC MED] Matriz desplazada por Delta: ${deltaMs}ms");
+  }
 
-    final int originalAnchorMs = anchorLyric.timestamp.inMilliseconds;
-    final int calculatedOffsetMs = currentAudioMs - originalAnchorMs;
+  Future<void> _saveLyricsToFile(
+    String audioPath,
+    List<dynamic> currentLyrics,
+  ) async {
+    final lrcPath = audioPath.replaceAll(
+      RegExp(r'\.mp3$|\.webm$', caseSensitive: false),
+      '.lrc',
+    );
+    final file = File(lrcPath);
+    final buffer = StringBuffer();
 
-    // 🛡️ INMUTABILIDAD: Desplaza SOLO desde la línea ancla (thresholdMs) hacia el final de la canción
-    await shiftLyricsPartial(calculatedOffsetMs, originalAnchorMs);
+    for (dynamic line in currentLyrics) {
+      final totalMs = line.timeMs as int;
+      final min = (totalMs ~/ 60000).toString().padLeft(2, '0');
+      final sec = ((totalMs % 60000) ~/ 1000).toString().padLeft(2, '0');
+      final ms = ((totalMs % 1000) ~/ 10).toString().padLeft(2, '0');
+      buffer.writeln('[$min:$sec.$ms]${line.text}');
+    }
+
+    await file.writeAsString(buffer.toString());
   }
 
   Future<void> shiftLyrics(int offsetMs) async {

@@ -194,7 +194,6 @@ class DspNlpWorkspace extends ConsumerWidget {
     } catch (_) {}
   }
 
-  // 🛠️ MOTOR UNIVERSAL (AOT Cues + Vector Compensation + Mobile Bypass)
   Future<void> _executeUniversalPipeline(
     BuildContext context,
     WidgetRef ref,
@@ -204,8 +203,7 @@ class DspNlpWorkspace extends ConsumerWidget {
     ref.read(directoryProvider.notifier).scanPath(targetPath);
     bool checkAbort() => ref.read(pipelineProvider).isAborted;
 
-    final bool isMobileOS =
-        Platform.isAndroid || Platform.isIOS; // 🛡️ SENSOR DE KERNEL
+    final bool isMobileOS = Platform.isAndroid || Platform.isIOS;
 
     final Map<String, Map<String, dynamic>> mixProfiles = {
       'reggaeton': {'curve': 'eq_kill', 'durationMs': 4000},
@@ -244,7 +242,6 @@ class DspNlpWorkspace extends ConsumerWidget {
         String currentPath = file.path;
 
         try {
-          // 1. Metadata
           pipe.updateProgress(
             i + 1,
             total,
@@ -259,7 +256,6 @@ class DspNlpWorkspace extends ConsumerWidget {
           final cleanName = currentPath.split(Platform.pathSeparator).last;
           int durationAfterMs = 0;
 
-          // 2 & 3. DSP C++ y Sello (Aislado para Desktop)
           if (!isMobileOS) {
             pipe.updateProgress(
               i + 1,
@@ -306,19 +302,12 @@ class DspNlpWorkspace extends ConsumerWidget {
                 );
             if (checkAbort()) break;
           } else {
-            // 🛡️ BYPASS MÓVIL
-            pipe.updateProgress(
-              i + 1,
-              total,
-              cleanName,
-              "⏭️ Bypass I/O (Plataforma Móvil)",
-            );
+            pipe.updateProgress(i + 1, total, cleanName, "⏭️ Bypass I/O Móvil");
             await Future.delayed(const Duration(milliseconds: 50));
           }
 
           final finalName = currentPath.split(Platform.pathSeparator).last;
 
-          // 4. NLP Letras (Soportado en Móvil vía HTTP)
           pipe.updateProgress(
             i + 1,
             total,
@@ -335,7 +324,6 @@ class DspNlpWorkspace extends ConsumerWidget {
               );
           if (checkAbort()) break;
 
-          // 5. Asignando Curvas (Lectura ID3 aislada en Móvil)
           String rawGenre = 'desconocido';
           if (!isMobileOS) {
             pipe.updateProgress(
@@ -359,108 +347,40 @@ class DspNlpWorkspace extends ConsumerWidget {
             }
           }
 
-          // 6. Cues Estructurales (Motor Heurístico 2.0 Blindado)
           pipe.updateProgress(
             i + 1,
             total,
             finalName,
-            "🎯 Calculando Puntos Estructurales...",
+            "🎯 Calculando Mezcla Estructural V3...",
           );
+
           final existingMeta = await ref
               .read(dbServiceProvider)
               .getTrackMetadata(currentPath);
 
-          int? calculatedCueIn;
-          int? calculatedMixOut;
-
           final isManual = existingMeta?.isManualCue ?? false;
 
+          int calculatedCueIn = 0;
+          int calculatedMixOut = 0;
+
           if (!isManual) {
-            final lrcFile = File(
-              currentPath.replaceAll(
-                RegExp(r'\.mp3$|\.webm$', caseSensitive: false),
-                '.lrc',
-              ),
-            );
-
-            if (lrcFile.existsSync()) {
-              try {
-                final lines = await lrcFile.readAsLines();
-                final regex = RegExp(r'\[(\d{2}):(\d{2})\.(\d{2,3})\](.*)');
-                int firstVocalMs = -1;
-                int lastVocalMs = -1;
-
-                for (var line in lines) {
-                  final match = regex.firstMatch(line);
-                  if (match != null) {
-                    final text = match.group(4)!.trim().toLowerCase();
-                    bool isGarbage = false;
-
-                    if (text.length < 3 ||
-                        text.contains('🎵') ||
-                        text.contains('♪') ||
-                        text.startsWith('(') ||
-                        text.startsWith('[')) {
-                      isGarbage = true;
-                    } else if (text.contains('instrumental') ||
-                        text.contains('sync') ||
-                        text.contains('lyric') ||
-                        text.contains('letra no encontrada') ||
-                        text.contains('error') ||
-                        text.contains('autor') ||
-                        text.contains('sincronizado') ||
-                        text.contains('by ') ||
-                        text.contains('fuente') ||
-                        text.contains(' - ')) {
-                      isGarbage = true;
-                    }
-
-                    if (!isGarbage) {
-                      final min = int.parse(match.group(1)!);
-                      final sec = int.parse(match.group(2)!);
-                      int ms = int.parse(match.group(3)!);
-                      if (match.group(3)!.length == 2) ms *= 10;
-
-                      int currentMs = (min * 60000) + (sec * 1000) + ms;
-                      if (firstVocalMs == -1) firstVocalMs = currentMs;
-                      lastVocalMs = currentMs;
-                    }
-                  }
-                }
-
-                if (firstVocalMs != -1) {
-                  int optimalBuffer = assignedDuration + 2000;
-                  calculatedCueIn = (firstVocalMs >= optimalBuffer)
-                      ? (firstVocalMs - optimalBuffer)
-                      : 0;
-
-                  int idealMixOut = lastVocalMs + 2000;
-
-                  // 🛠️ LIMITADOR GEOMÉTRICO (Requiere duración física. Si es móvil, se salta el bloqueo estricto)
-                  if (durationAfterMs > 0 &&
-                      (idealMixOut + assignedDuration) > durationAfterMs) {
-                    calculatedMixOut =
-                        durationAfterMs - assignedDuration - 1000;
-                  } else {
-                    calculatedMixOut = idealMixOut;
-                  }
-
-                  if (calculatedCueIn != null &&
-                      calculatedMixOut <= calculatedCueIn) {
-                    if (durationAfterMs > 0) {
-                      calculatedMixOut =
-                          durationAfterMs - assignedDuration - 1000;
-                    } else {
-                      calculatedMixOut =
-                          calculatedCueIn + assignedDuration; // Fallback ciego
-                    }
-                  }
-                  if (calculatedMixOut < 0) {
-                    calculatedMixOut = 0;
-                  }
-                }
-              } catch (_) {}
+            int physicalDurationMs = durationAfterMs;
+            if (physicalDurationMs <= 0) {
+              physicalDurationMs = await _getAudioDurationMs(currentPath);
             }
+
+            calculatedCueIn =
+                (rawGenre.contains('electro') || rawGenre.contains('rock'))
+                ? 100
+                : 350;
+
+            if (physicalDurationMs > assignedDuration) {
+              calculatedMixOut = physicalDurationMs - assignedDuration;
+            } else {
+              calculatedMixOut = physicalDurationMs - 2000;
+            }
+
+            if (calculatedMixOut < 0) calculatedMixOut = 0;
           }
 
           await ref
@@ -470,9 +390,7 @@ class DspNlpWorkspace extends ConsumerWidget {
                 mixProfile: assignedProfile,
                 durationMs: assignedDuration,
                 genre: rawGenre,
-                cueInMs: isManual
-                    ? existingMeta!.cueInMs
-                    : (calculatedCueIn ?? 0),
+                cueInMs: isManual ? existingMeta!.cueInMs : calculatedCueIn,
                 mixOutMs: isManual ? existingMeta!.mixOutMs : calculatedMixOut,
                 isManualCue: isManual,
               );
@@ -481,8 +399,6 @@ class DspNlpWorkspace extends ConsumerWidget {
           pipe.addQuarantine(originalName);
         }
 
-        // 🛠️ GC YIELD: Obliga a Dart a pausar medio segundo.
-        // Permite al Disco Duro vaciar su caché y previene el congelamiento de la PC.
         await Future.delayed(const Duration(milliseconds: 500));
       }
 
@@ -493,7 +409,6 @@ class DspNlpWorkspace extends ConsumerWidget {
           "Indexando...",
           "🥁 Calculando Caché BPM Global",
         );
-        // Symphonia es puro Rust, funciona 100% en Android sin FFmpeg
         await ref.read(dspWorkerProvider).generateStaticBpmCache(targetPath);
       }
     } catch (e) {
