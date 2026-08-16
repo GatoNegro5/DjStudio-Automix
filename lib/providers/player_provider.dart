@@ -395,6 +395,16 @@ class PlayerNotifier extends Notifier<PlayerState> {
     await _activePlayer.seek(position);
   }
 
+  double _extractBpm(String? path) {
+    if (path == null) return 0.0;
+    final fileName = path.replaceAll('\\', '/').split('/').last;
+    final match = RegExp(
+      r'(?:\b|_|-)(\d{2,3}(?:\.\d+)?)\s*bpm\b',
+      caseSensitive: false,
+    ).firstMatch(fileName);
+    return match != null ? double.parse(match.group(1)!) : 0.0;
+  }
+
   Future<void> forceTransition(int index) async {
     if (index < 0 || index >= state.playlist.length || _isCrossfading) return;
     _isCrossfading = true;
@@ -420,7 +430,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
     await incomingPlayer.open(Media(nextTrack), play: false);
 
     if (cueInMs > 0) {
-      // 🛠️ FIX: Esperar resolución del decodificador antes del Seek
       try {
         await incomingPlayer.stream.duration
             .firstWhere((d) => d.inMilliseconds > 0)
@@ -428,6 +437,20 @@ class PlayerNotifier extends Notifier<PlayerState> {
       } catch (_) {}
       await incomingPlayer.seek(Duration(milliseconds: cueInMs));
     }
+
+    // 🛠️ MOTOR V4: BEATMATCHING DINÁMICO (TIME-STRETCH)
+    final fadingBpm = _extractBpm(state.currentTrackPath);
+    final incomingBpm = _extractBpm(nextTrack);
+    double incomingRate = 1.0;
+
+    if (fadingBpm > 60 && incomingBpm > 60) {
+      final ratio = fadingBpm / incomingBpm;
+      // Blindaje de deformación acústica (Max 12% Delta)
+      if (ratio >= 0.88 && ratio <= 1.12) {
+        incomingRate = ratio;
+      }
+    }
+    await incomingPlayer.setRate(incomingRate);
 
     await incomingPlayer.play();
     _usePlayerA = !_usePlayerA;
@@ -472,7 +495,30 @@ class PlayerNotifier extends Notifier<PlayerState> {
 
     await fadingPlayer.stop();
     await fadingPlayer.setVolume(100.0);
-    await incomingPlayer.setVolume(100.0);
+    await fadingPlayer.setRate(1.0); // Reseteo de seguridad
+
+    // 🛠️ MOTOR V4: PITCH RELEASE (Liberación gradual de 3 segundos)
+    if (incomingRate != 1.0) {
+      int pitchSteps = 30;
+      int pitchStepTimeMs = 100;
+      double rateDiff = 1.0 - incomingRate;
+      double rateStep = rateDiff / pitchSteps;
+
+      for (int i = 1; i <= pitchSteps; i++) {
+        // Asegurar que el usuario no forzó otra mezcla mientras liberábamos el pitch
+        if ((_usePlayerA && incomingPlayer == _playerA) ||
+            (!_usePlayerA && incomingPlayer == _playerB)) {
+          await incomingPlayer.setRate(
+            (incomingRate + (rateStep * i)).clamp(0.5, 2.0),
+          );
+          await Future.delayed(Duration(milliseconds: pitchStepTimeMs));
+        } else {
+          break;
+        }
+      }
+      await incomingPlayer.setRate(1.0);
+    }
+
     _isCrossfading = false;
   }
 
@@ -511,6 +557,20 @@ class PlayerNotifier extends Notifier<PlayerState> {
       await incomingPlayer.seek(Duration(milliseconds: cueInMs));
     }
 
+    // 🛠️ MOTOR V4: BEATMATCHING DINÁMICO (TIME-STRETCH)
+    final fadingBpm = _extractBpm(state.currentTrackPath);
+    final incomingBpm = _extractBpm(nextTrack);
+    double incomingRate = 1.0;
+
+    if (fadingBpm > 60 && incomingBpm > 60) {
+      final ratio = fadingBpm / incomingBpm;
+      // Blindaje de deformación acústica (Max 12% Delta)
+      if (ratio >= 0.88 && ratio <= 1.12) {
+        incomingRate = ratio;
+      }
+    }
+    await incomingPlayer.setRate(incomingRate);
+
     await incomingPlayer.play();
     _usePlayerA = !_usePlayerA;
     _attachListeners(_activePlayer);
@@ -554,7 +614,29 @@ class PlayerNotifier extends Notifier<PlayerState> {
 
     await fadingPlayer.stop();
     await fadingPlayer.setVolume(100.0);
-    await incomingPlayer.setVolume(100.0);
+    await fadingPlayer.setRate(1.0); // Reseteo de seguridad
+
+    // 🛠️ MOTOR V4: PITCH RELEASE (Liberación gradual de 3 segundos)
+    if (incomingRate != 1.0) {
+      int pitchSteps = 30;
+      int pitchStepTimeMs = 100;
+      double rateDiff = 1.0 - incomingRate;
+      double rateStep = rateDiff / pitchSteps;
+
+      for (int i = 1; i <= pitchSteps; i++) {
+        if ((_usePlayerA && incomingPlayer == _playerA) ||
+            (!_usePlayerA && incomingPlayer == _playerB)) {
+          await incomingPlayer.setRate(
+            (incomingRate + (rateStep * i)).clamp(0.5, 2.0),
+          );
+          await Future.delayed(Duration(milliseconds: pitchStepTimeMs));
+        } else {
+          break;
+        }
+      }
+      await incomingPlayer.setRate(1.0);
+    }
+
     _isCrossfading = false;
   }
 
@@ -594,6 +676,20 @@ class PlayerNotifier extends Notifier<PlayerState> {
       } catch (_) {}
       await incomingPlayer.seek(Duration(milliseconds: cueInMs));
     }
+
+    // 🛠️ MOTOR V4: BEATMATCHING DINÁMICO (TIME-STRETCH)
+    final fadingBpm = _extractBpm(state.currentTrackPath);
+    final incomingBpm = _extractBpm(nextTrack);
+    double incomingRate = 1.0;
+
+    if (fadingBpm > 60 && incomingBpm > 60) {
+      final ratio = fadingBpm / incomingBpm;
+      // Blindaje de deformación acústica (Max 12% Delta)
+      if (ratio >= 0.88 && ratio <= 1.12) {
+        incomingRate = ratio;
+      }
+    }
+    await incomingPlayer.setRate(incomingRate);
 
     await incomingPlayer.play();
     _usePlayerA = !_usePlayerA;
@@ -638,7 +734,29 @@ class PlayerNotifier extends Notifier<PlayerState> {
 
     await fadingPlayer.stop();
     await fadingPlayer.setVolume(100.0);
-    await incomingPlayer.setVolume(100.0);
+    await fadingPlayer.setRate(1.0); // Reseteo de seguridad
+
+    // 🛠️ MOTOR V4: PITCH RELEASE (Liberación gradual de 3 segundos)
+    if (incomingRate != 1.0) {
+      int pitchSteps = 30;
+      int pitchStepTimeMs = 100;
+      double rateDiff = 1.0 - incomingRate;
+      double rateStep = rateDiff / pitchSteps;
+
+      for (int i = 1; i <= pitchSteps; i++) {
+        if ((_usePlayerA && incomingPlayer == _playerA) ||
+            (!_usePlayerA && incomingPlayer == _playerB)) {
+          await incomingPlayer.setRate(
+            (incomingRate + (rateStep * i)).clamp(0.5, 2.0),
+          );
+          await Future.delayed(Duration(milliseconds: pitchStepTimeMs));
+        } else {
+          break; // Abortar si hubo otro salto manual a mitad del release
+        }
+      }
+      await incomingPlayer.setRate(1.0);
+    }
+
     _isCrossfading = false;
   }
 
@@ -947,7 +1065,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
     final targetLine = state.lyrics.first;
 
     // 🛠️ FIX: Acceso correcto a la propiedad Duration de tu modelo
-    final deltaMs = posMs - (targetLine.timestamp.inMilliseconds as int);
+    final deltaMs = posMs - (targetLine.timestamp.inMilliseconds);
 
     // Desplazamiento vectorial de toda la matriz
     for (dynamic line in state.lyrics) {
@@ -966,14 +1084,15 @@ class PlayerNotifier extends Notifier<PlayerState> {
   Future<void> autoSyncFromCurrentLyric() async {
     if (state.currentTrackPath == null ||
         state.lyrics.isEmpty ||
-        state.activeLyricIndex < 0)
+        state.activeLyricIndex < 0) {
       return;
+    }
 
     final posMs = state.position.inMilliseconds;
     final targetLine = state.lyrics[state.activeLyricIndex];
 
     // 🛠️ FIX: Acceso correcto a la propiedad Duration de tu modelo
-    final deltaMs = posMs - (targetLine.timestamp.inMilliseconds as int);
+    final deltaMs = posMs - (targetLine.timestamp.inMilliseconds);
 
     // Desplazamiento vectorial de toda la matriz
     for (dynamic line in state.lyrics) {

@@ -1478,6 +1478,9 @@ class _MixerPanelState extends ConsumerState<MixerPanel> {
     final isRecording = ref.watch(wasapiRecordProvider);
     final playerNotifier = ref.read(playerProvider.notifier);
 
+    // 🛠️ ESCUDO DE HARDWARE: Solo Windows (y Linux) soportan Loopback nativo.
+    final bool canRecord = Platform.isWindows || Platform.isLinux;
+
     ref.listen<int>(playerProvider.select((state) => state.activeLyricIndex), (
       previous,
       next,
@@ -1543,7 +1546,6 @@ class _MixerPanelState extends ConsumerState<MixerPanel> {
                     ),
                     onSync: () => playerNotifier.autoSyncFirstLyric(),
                     onSyncMed: () => playerNotifier.autoSyncFromCurrentLyric(),
-                    // 🛠️ FIX RADICAL: ShaderMask destruido. Renderizado directo a la GPU.
                     lyricsWidget: ListWheelScrollView(
                       controller: _lyricsController,
                       itemExtent: isMobileLandscape ? 22.0 : 32.0,
@@ -1573,7 +1575,6 @@ class _MixerPanelState extends ConsumerState<MixerPanel> {
                               fontSize = isMobileLandscape ? 11 : 14;
                               fontWeight = FontWeight.w600;
                             } else {
-                              // El color ya tiene opacidad (white38), logrando el desvanecimiento sin usar shaders
                               textColor = Colors.white38;
                               fontSize = isMobileLandscape ? 10 : 12;
                               fontWeight = FontWeight.normal;
@@ -1813,7 +1814,7 @@ class _MixerPanelState extends ConsumerState<MixerPanel> {
                                           size: 18,
                                         ),
                                         tooltip:
-                                            "Borrar Cues (Restaurar NLP del Sistema)",
+                                            "Borrar Cues (Restaurar Letra de Internet)",
                                         constraints: const BoxConstraints(),
                                         padding: const EdgeInsets.symmetric(
                                           horizontal: 5,
@@ -1926,42 +1927,46 @@ class _MixerPanelState extends ConsumerState<MixerPanel> {
                         },
                       ),
                     ),
-                    const SizedBox(width: 20),
-                    SizedBox(
-                      width: 70,
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Text(
-                            isRecording ? "REC" : "MASTER",
-                            style: TextStyle(
-                              color: isRecording
-                                  ? Colors.redAccent
-                                  : Colors.white38,
-                              fontSize: 10,
-                              fontWeight: FontWeight.bold,
+
+                    // 🛠️ RENDERIZADO CONDICIONAL: Solo muestra el botón REC si el hardware lo soporta
+                    if (canRecord) ...[
+                      const SizedBox(width: 20),
+                      SizedBox(
+                        width: 70,
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(
+                              isRecording ? "REC" : "MASTER",
+                              style: TextStyle(
+                                color: isRecording
+                                    ? Colors.redAccent
+                                    : Colors.white38,
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                              ),
                             ),
-                          ),
-                          const SizedBox(height: 5),
-                          IconButton(
-                            padding: EdgeInsets.zero,
-                            constraints: const BoxConstraints(),
-                            icon: Icon(
-                              isRecording
-                                  ? Icons.stop_circle
-                                  : Icons.fiber_manual_record,
-                              color: isRecording
-                                  ? Colors.redAccent
-                                  : Colors.white54,
-                              size: 40,
+                            const SizedBox(height: 5),
+                            IconButton(
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(),
+                              icon: Icon(
+                                isRecording
+                                    ? Icons.stop_circle
+                                    : Icons.fiber_manual_record,
+                                color: isRecording
+                                    ? Colors.redAccent
+                                    : Colors.white54,
+                                size: 40,
+                              ),
+                              onPressed: () => ref
+                                  .read(wasapiRecordProvider.notifier)
+                                  .toggleRecording(context),
                             ),
-                            onPressed: () => ref
-                                .read(wasapiRecordProvider.notifier)
-                                .toggleRecording(context),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
-                    ),
+                    ],
                   ],
                 ),
               ),
@@ -2020,8 +2025,8 @@ class _LyricsSyncPanelState extends ConsumerState<LyricsSyncPanel> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            playerState.isPlaying
-                ? "🧪 Iniciando Hot-Swap. Aislando en Laboratorio al terminar crossfade..."
+            playerState.isPlaying && hasNext
+                ? "🧪 Mezclando pista entrante... Se aislará al terminar."
                 : "🧪 Desenganchando pista y aislando en Laboratorio...",
             style: const TextStyle(
               fontWeight: FontWeight.bold,
@@ -2035,9 +2040,11 @@ class _LyricsSyncPanelState extends ConsumerState<LyricsSyncPanel> {
       );
     }
 
+    // 🛠️ FIX ARQUITECTÓNICO: Esperar a que la mezcla dinámica termine antes de mover el archivo
     if (playerState.isPlaying) {
       if (hasNext) {
-        playerNotifier.forceTransition(nextIndex);
+        // Dispara la mezcla con Time-Stretch y ESPERA a que termine el fade-out
+        await playerNotifier.forceTransition(nextIndex);
       } else {
         await playerNotifier.stopAndRelease();
       }
@@ -2069,6 +2076,9 @@ class _LyricsSyncPanelState extends ConsumerState<LyricsSyncPanel> {
 
     bool moved = false;
     int attempts = 0;
+
+    // Retardo mínimo para que el OS limpie el caché del disco tras soltar el reproductor
+    await Future.delayed(const Duration(milliseconds: 500));
 
     while (!moved && attempts < 20) {
       try {
@@ -2117,7 +2127,7 @@ class _LyricsSyncPanelState extends ConsumerState<LyricsSyncPanel> {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text("✅ I/O Liberado: Pista extraída al Laboratorio."),
+            content: Text("✅ Pista extraída al Laboratorio exitosamente."),
             backgroundColor: Color(0xFF39FF14),
             behavior: SnackBarBehavior.floating,
           ),

@@ -194,11 +194,172 @@ class DspNlpWorkspace extends ConsumerWidget {
     } catch (_) {}
   }
 
+  Future<bool> _showPreFlightCheck(BuildContext context) async {
+    final bool isMobile = Platform.isAndroid || Platform.isIOS;
+
+    return await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (ctx) {
+            return AlertDialog(
+              backgroundColor: const Color(0xFF121212),
+              shape: RoundedRectangleBorder(
+                side: const BorderSide(color: Color(0xFF00FFFF), width: 1.5),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              title: Row(
+                children: [
+                  Icon(
+                    isMobile ? Icons.phone_android : Icons.computer,
+                    color: const Color(0xFF00FFFF),
+                  ),
+                  const SizedBox(width: 10),
+                  const Text(
+                    "Revisión antes de iniciar",
+                    style: TextStyle(color: Colors.white, fontSize: 16),
+                  ),
+                ],
+              ),
+              content: SizedBox(
+                width: 400,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      isMobile
+                          ? "Estás en el celular. Haremos una preparación rápida de las canciones:"
+                          : "Estás en la computadora. Aplicaremos la mejora de sonido completa:",
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 12,
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+
+                    _buildCapabilityRow(
+                      Icons.check_circle,
+                      const Color(0xFF39FF14),
+                      "Buscar letras automáticamente",
+                    ),
+                    _buildCapabilityRow(
+                      Icons.check_circle,
+                      const Color(0xFF39FF14),
+                      "Calcular el momento exacto para mezclar",
+                    ),
+                    _buildCapabilityRow(
+                      Icons.check_circle,
+                      const Color(0xFF39FF14),
+                      "Detectar la velocidad (Ritmo)",
+                    ),
+
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 10),
+                      child: Divider(color: Colors.white10),
+                    ),
+
+                    _buildCapabilityRow(
+                      isMobile ? Icons.lock : Icons.check_circle,
+                      isMobile ? Colors.white24 : const Color(0xFF39FF14),
+                      "Igualar el volumen de todas las pistas",
+                      isMobile ? "Usa la compu" : null,
+                    ),
+                    _buildCapabilityRow(
+                      isMobile ? Icons.lock : Icons.check_circle,
+                      isMobile ? Colors.white24 : const Color(0xFF39FF14),
+                      "Recortar espacios vacíos al inicio y final",
+                      isMobile ? "Usa la compu" : null,
+                    ),
+
+                    if (isMobile) ...[
+                      const SizedBox(height: 15),
+                      const Text(
+                        "💡 Tip: Para que tus canciones suenen más fuerte y nítidas, mejóralas primero en tu computadora y luego pásalas al celular.",
+                        style: TextStyle(
+                          color: Colors.orangeAccent,
+                          fontSize: 11,
+                          fontStyle: FontStyle.italic,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: const Text(
+                    "CANCELAR",
+                    style: TextStyle(color: Colors.white54),
+                  ),
+                ),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF00FFFF),
+                    foregroundColor: Colors.black,
+                  ),
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: const Text("INICIAR PREPARACIÓN"),
+                ),
+              ],
+            );
+          },
+        ) ??
+        false;
+  }
+
+  Widget _buildCapabilityRow(
+    IconData icon,
+    Color color,
+    String title, [
+    String? badge,
+  ]) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8.0),
+      child: Row(
+        children: [
+          Icon(icon, color: color, size: 18),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              title,
+              style: TextStyle(
+                color: color == Colors.white24 ? Colors.white54 : Colors.white,
+                fontSize: 13,
+              ),
+            ),
+          ),
+          if (badge != null)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: Colors.white10,
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Text(
+                badge,
+                style: const TextStyle(
+                  color: Colors.white54,
+                  fontSize: 9,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _executeUniversalPipeline(
     BuildContext context,
     WidgetRef ref,
     String targetPath,
   ) async {
+    if (context.mounted) {
+      bool isAuthorized = await _showPreFlightCheck(context);
+      if (!isAuthorized) return;
+    }
+
     final pipe = ref.read(pipelineProvider.notifier);
     ref.read(directoryProvider.notifier).scanPath(targetPath);
     bool checkAbort() => ref.read(pipelineProvider).isAborted;
@@ -246,7 +407,7 @@ class DspNlpWorkspace extends ConsumerWidget {
             i + 1,
             total,
             originalName,
-            "⚙️ Nomenclatura y Regex...",
+            "📝 Limpiando nombres...",
           );
           currentPath = await ref
               .read(metadataWorkerProvider)
@@ -261,7 +422,7 @@ class DspNlpWorkspace extends ConsumerWidget {
               i + 1,
               total,
               cleanName,
-              "🔊 Masterizando Audio (C++)",
+              "🪄 Mejorando calidad de sonido...",
             );
             final durationBeforeMs = await _getAudioDurationMs(currentPath);
 
@@ -271,7 +432,7 @@ class DspNlpWorkspace extends ConsumerWidget {
                 .timeout(
                   const Duration(seconds: 45),
                   onTimeout: () => throw Exception(
-                    "C++ Deadlock: Excedido límite de I/O en Masterización.",
+                    "El proceso se atascó mejorando el audio.",
                   ),
                 );
             if (checkAbort()) break;
@@ -290,19 +451,24 @@ class DspNlpWorkspace extends ConsumerWidget {
               i + 1,
               total,
               cleanName,
-              "🔐 Sellando Watermark",
+              "🔒 Guardando cambios...",
             );
             await rust_dsp
                 .injectWatermark(inputPath: currentPath)
                 .timeout(
                   const Duration(seconds: 15),
                   onTimeout: () => throw Exception(
-                    "C++ Deadlock: Excedido límite de I/O inyectando ID3v2.",
+                    "Hubo un problema al guardar la canción.",
                   ),
                 );
             if (checkAbort()) break;
           } else {
-            pipe.updateProgress(i + 1, total, cleanName, "⏭️ Bypass I/O Móvil");
+            pipe.updateProgress(
+              i + 1,
+              total,
+              cleanName,
+              "📱 Preparando en modo celular...",
+            );
             await Future.delayed(const Duration(milliseconds: 50));
           }
 
@@ -312,7 +478,7 @@ class DspNlpWorkspace extends ConsumerWidget {
             i + 1,
             total,
             finalName,
-            "📝 Scraping de Letras (NLP)",
+            "🎤 Descargando letras...",
           );
           await ref
               .read(nlpWorkerProvider)
@@ -320,7 +486,7 @@ class DspNlpWorkspace extends ConsumerWidget {
               .timeout(
                 const Duration(seconds: 20),
                 onTimeout: () =>
-                    throw Exception("NLP Timeout: El scraper colapsó."),
+                    throw Exception("No pudimos conectar para bajar la letra."),
               );
           if (checkAbort()) break;
 
@@ -330,7 +496,7 @@ class DspNlpWorkspace extends ConsumerWidget {
               i + 1,
               total,
               finalName,
-              "🎛️ Asignando Curvas ISAR",
+              "🎛️ Configurando género musical...",
             );
             rawGenre = await rust_dsp.readAudioGenre(inputPath: currentPath);
           }
@@ -351,7 +517,7 @@ class DspNlpWorkspace extends ConsumerWidget {
             i + 1,
             total,
             finalName,
-            "🎯 Calculando Mezcla Estructural V3...",
+            "🎧 Calculando la mezcla perfecta...",
           );
 
           final existingMeta = await ref
@@ -395,7 +561,7 @@ class DspNlpWorkspace extends ConsumerWidget {
                 isManualCue: isManual,
               );
         } catch (e) {
-          debugPrint("🔴 Error aislando pista $originalName: $e");
+          debugPrint("🔴 Error preparando la pista $originalName: $e");
           pipe.addQuarantine(originalName);
         }
 
@@ -406,20 +572,20 @@ class DspNlpWorkspace extends ConsumerWidget {
         pipe.updateProgress(
           total,
           total,
-          "Indexando...",
-          "🥁 Calculando Caché BPM Global",
+          "Organizando biblioteca...",
+          "🥁 Analizando velocidades (Ritmo)",
         );
         await ref.read(dspWorkerProvider).generateStaticBpmCache(targetPath);
       }
     } catch (e) {
-      debugPrint("🔴 [PIPELINE ERROR FATAL]: $e");
+      debugPrint("🔴 [ERROR AL PREPARAR CARPETA]: $e");
     } finally {
       if (context.mounted) {
         final state = ref.read(pipelineProvider);
         if (state.total > 0) {
           _showSummaryDialog(
             context,
-            "Masterización Universal",
+            "Preparación Completada",
             state.total,
             state.quarantinedTracks,
             isAborted: state.isAborted,
@@ -1351,5 +1517,47 @@ class DspNlpWorkspace extends ConsumerWidget {
     } finally {
       pipe.reset();
     }
+  }
+
+  Widget _buildCapabilityRow(
+    IconData icon,
+    Color color,
+    String title, [
+    String? badge,
+  ]) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8.0),
+      child: Row(
+        children: [
+          Icon(icon, color: color, size: 18),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              title,
+              style: TextStyle(
+                color: color == Colors.white24 ? Colors.white54 : Colors.white,
+                fontSize: 13,
+              ),
+            ),
+          ),
+          if (badge != null)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: Colors.white10,
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Text(
+                badge,
+                style: const TextStyle(
+                  color: Colors.white54,
+                  fontSize: 9,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
   }
 }
