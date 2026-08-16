@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'db_provider.dart';
+import 'nlp_provider.dart';
 import 'package:flutter/foundation.dart';
 
 enum MixStrategy { sequential, random }
