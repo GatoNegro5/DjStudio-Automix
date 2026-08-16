@@ -945,13 +945,14 @@ class PlayerNotifier extends Notifier<PlayerState> {
     final posMs = state.position.inMilliseconds;
     final targetLine = state.lyrics.first;
 
-    // Cálculo de Delta bidireccional (Detecta avance o retroceso automático)
-    final deltaMs = posMs - targetLine.timeMs;
+    // 🛠️ FIX: Acceso correcto a la propiedad Duration de tu modelo
+    final deltaMs = posMs - (targetLine.timestamp.inMilliseconds as int);
 
     // Desplazamiento vectorial de toda la matriz
     for (dynamic line in state.lyrics) {
-      line.timeMs += deltaMs;
-      if (line.timeMs < 0) line.timeMs = 0;
+      int newMs = line.timestamp.inMilliseconds + deltaMs;
+      if (newMs < 0) newMs = 0;
+      line.timestamp = Duration(milliseconds: newMs);
     }
 
     await _saveLyricsToFile(state.currentTrackPath!, state.lyrics);
@@ -970,13 +971,14 @@ class PlayerNotifier extends Notifier<PlayerState> {
     final posMs = state.position.inMilliseconds;
     final targetLine = state.lyrics[state.activeLyricIndex];
 
-    // Cálculo de Delta bidireccional (Acepta valores negativos y positivos)
-    final deltaMs = posMs - targetLine.timeMs;
+    // 🛠️ FIX: Acceso correcto a la propiedad Duration de tu modelo
+    final deltaMs = posMs - (targetLine.timestamp.inMilliseconds as int);
 
     // Desplazamiento vectorial de toda la matriz
     for (dynamic line in state.lyrics) {
-      line.timeMs += deltaMs;
-      if (line.timeMs < 0) line.timeMs = 0;
+      int newMs = line.timestamp.inMilliseconds + deltaMs;
+      if (newMs < 0) newMs = 0;
+      line.timestamp = Duration(milliseconds: newMs);
     }
 
     await _saveLyricsToFile(state.currentTrackPath!, state.lyrics);
@@ -998,7 +1000,8 @@ class PlayerNotifier extends Notifier<PlayerState> {
     final buffer = StringBuffer();
 
     for (dynamic line in currentLyrics) {
-      final totalMs = line.timeMs as int;
+      // 🛠️ FIX: Acceso correcto y extracción para guardado físico
+      final totalMs = line.timestamp.inMilliseconds as int;
       final min = (totalMs ~/ 60000).toString().padLeft(2, '0');
       final sec = ((totalMs % 60000) ~/ 1000).toString().padLeft(2, '0');
       final ms = ((totalMs % 1000) ~/ 10).toString().padLeft(2, '0');
