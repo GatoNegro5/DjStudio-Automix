@@ -1478,7 +1478,6 @@ class _MixerPanelState extends ConsumerState<MixerPanel> {
     final isRecording = ref.watch(wasapiRecordProvider);
     final playerNotifier = ref.read(playerProvider.notifier);
 
-    // 🛠️ ESCUDO DE HARDWARE: Solo Windows (y Linux) soportan Loopback nativo.
     final bool canRecord = Platform.isWindows || Platform.isLinux;
 
     ref.listen<int>(playerProvider.select((state) => state.activeLyricIndex), (
@@ -1568,7 +1567,7 @@ class _MixerPanelState extends ConsumerState<MixerPanel> {
 
                             if (isCurrent) {
                               textColor = const Color(0xFF39FF14);
-                              fontSize = isMobileLandscape ? 13 : 19;
+                              fontSize = isMobileLandscape ? 15 : 24;
                               fontWeight = FontWeight.bold;
                             } else if (isNext) {
                               textColor = Colors.white.withValues(alpha: 0.95);
@@ -1927,8 +1926,6 @@ class _MixerPanelState extends ConsumerState<MixerPanel> {
                         },
                       ),
                     ),
-
-                    // 🛠️ RENDERIZADO CONDICIONAL: Solo muestra el botón REC si el hardware lo soporta
                     if (canRecord) ...[
                       const SizedBox(width: 20),
                       SizedBox(
