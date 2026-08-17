@@ -1518,46 +1518,4 @@ class DspNlpWorkspace extends ConsumerWidget {
       pipe.reset();
     }
   }
-
-  Widget _buildCapabilityRow(
-    IconData icon,
-    Color color,
-    String title, [
-    String? badge,
-  ]) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8.0),
-      child: Row(
-        children: [
-          Icon(icon, color: color, size: 18),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              title,
-              style: TextStyle(
-                color: color == Colors.white24 ? Colors.white54 : Colors.white,
-                fontSize: 13,
-              ),
-            ),
-          ),
-          if (badge != null)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              decoration: BoxDecoration(
-                color: Colors.white10,
-                borderRadius: BorderRadius.circular(4),
-              ),
-              child: Text(
-                badge,
-                style: const TextStyle(
-                  color: Colors.white54,
-                  fontSize: 9,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
 }
