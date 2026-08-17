@@ -1064,48 +1064,57 @@ class PlayerNotifier extends Notifier<PlayerState> {
     final posMs = state.position.inMilliseconds;
     final targetLine = state.lyrics.first;
 
-    // 🛠️ FIX: Acceso correcto a la propiedad Duration de tu modelo
-    final deltaMs = posMs - (targetLine.timestamp.inMilliseconds);
+    final deltaMs = posMs - targetLine.timestamp.inMilliseconds;
 
-    // Desplazamiento vectorial de toda la matriz
-    for (dynamic line in state.lyrics) {
+    // 🛠️ FIX: Reconstrucción inmutable de la matriz para evitar choque con variables 'final'
+    final List<LyricLine> newLyrics = [];
+
+    for (var line in state.lyrics) {
       int newMs = line.timestamp.inMilliseconds + deltaMs;
       if (newMs < 0) newMs = 0;
-      line.timestamp = Duration(milliseconds: newMs);
+
+      newLyrics.add(
+        LyricLine(
+          timestamp: Duration(milliseconds: newMs),
+          text: line.text,
+        ),
+      );
     }
 
-    await _saveLyricsToFile(state.currentTrackPath!, state.lyrics);
-    state = state.copyWith(
-      lyrics: List.from(state.lyrics),
-    ); // Forzar repintado de UI
-    debugPrint("✅ [SYNC GLOBAL] Matriz desplazada por Delta: ${deltaMs}ms");
+    await _saveLyricsToFile(state.currentTrackPath!, newLyrics);
+    state = state.copyWith(lyrics: newLyrics);
+    debugPrint("✅ [SYNC GLOBAL] Matriz reconstruida por Delta: ${deltaMs}ms");
   }
 
   Future<void> autoSyncFromCurrentLyric() async {
     if (state.currentTrackPath == null ||
         state.lyrics.isEmpty ||
-        state.activeLyricIndex < 0) {
+        state.activeLyricIndex < 0)
       return;
-    }
 
     final posMs = state.position.inMilliseconds;
     final targetLine = state.lyrics[state.activeLyricIndex];
 
-    // 🛠️ FIX: Acceso correcto a la propiedad Duration de tu modelo
-    final deltaMs = posMs - (targetLine.timestamp.inMilliseconds);
+    final deltaMs = posMs - targetLine.timestamp.inMilliseconds;
 
-    // Desplazamiento vectorial de toda la matriz
-    for (dynamic line in state.lyrics) {
+    // 🛠️ FIX: Reconstrucción inmutable de la matriz para evitar choque con variables 'final'
+    final List<LyricLine> newLyrics = [];
+
+    for (var line in state.lyrics) {
       int newMs = line.timestamp.inMilliseconds + deltaMs;
       if (newMs < 0) newMs = 0;
-      line.timestamp = Duration(milliseconds: newMs);
+
+      newLyrics.add(
+        LyricLine(
+          timestamp: Duration(milliseconds: newMs),
+          text: line.text,
+        ),
+      );
     }
 
-    await _saveLyricsToFile(state.currentTrackPath!, state.lyrics);
-    state = state.copyWith(
-      lyrics: List.from(state.lyrics),
-    ); // Forzar repintado de UI
-    debugPrint("✅ [SYNC MED] Matriz desplazada por Delta: ${deltaMs}ms");
+    await _saveLyricsToFile(state.currentTrackPath!, newLyrics);
+    state = state.copyWith(lyrics: newLyrics);
+    debugPrint("✅ [SYNC MED] Matriz reconstruida por Delta: ${deltaMs}ms");
   }
 
   Future<void> _saveLyricsToFile(
