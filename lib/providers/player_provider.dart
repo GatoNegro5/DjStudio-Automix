@@ -109,13 +109,14 @@ class PlayerNotifier extends Notifier<PlayerState> {
     _playerA = Player();
     _playerB = Player();
 
-    // 🛠️ FIX FIDELIDAD:
-    // 1. aresample=resampler=soxr:precision=28 -> Remuestreo de grado audiófilo.
-    // 2. crystalizer=i=2.0 -> Genera armónicos perdidos por la compresión MP3.
-    // 3. bass=g=3:f=60 -> Realce controlado de sub-graves.
-    // 4. extrastereo=m=1.15 -> Ensanchador espacial.
+    /// 🛠️ FIX FIDELIDAD Y NORMALIZACIÓN EBU R128:
+    // 1. loudnorm=I=-14:TP=-1.5:LRA=11 -> Estándar Spotify. Iguala volúmenes dinámicamente sin saturar picos.
+    // 2. aresample=resampler=soxr:precision=28 -> Remuestreo de grado audiófilo.
+    // 3. crystalizer=i=2.0 -> Genera armónicos perdidos por la compresión MP3.
+    // 4. bass=g=3:f=60 -> Realce controlado de sub-graves.
+    // 5. extrastereo=m=1.15 -> Ensanchador espacial.
     final hifiFilter =
-        'aresample=resampler=soxr:precision=28,crystalizer=i=2.0,bass=g=3:f=60,extrastereo=m=1.15';
+        'loudnorm=I=-14:TP=-1.5:LRA=11,aresample=resampler=soxr:precision=28,crystalizer=i=2.0,bass=g=3:f=60,extrastereo=m=1.15';
 
     (_playerA.platform as dynamic)?.setProperty('af', hifiFilter);
     (_playerB.platform as dynamic)?.setProperty('af', hifiFilter);

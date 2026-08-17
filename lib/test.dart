@@ -1,127 +1,67 @@
-import 'package:flutter/material.dart';
-import 'package:media_kit/media_kit.dart';
 import 'dart:io';
 
 void main() {
-  WidgetsFlutterBinding.ensureInitialized();
-  MediaKit.ensureInitialized();
-  runApp(
-    const MaterialApp(debugShowCheckedModeBanner: false, home: TestSetIn()),
-  );
-}
+  // 🛠️ RUTA DIRECTA AL ARCHIVO DE LETRA (.lrc)
+  // Asegúrate de que este archivo exista en tu carpeta.
+  final path =
+      r"C:\Users\ASUS\Music\ReGenial\80s Ingles\Aerosmith - Walk This Way.lrc";
 
-class TestSetIn extends StatefulWidget {
-  const TestSetIn({super.key});
+  final file = File(path);
+  if (!file.existsSync()) {
+    print("🔴 Archivo LRC no encontrado: $path");
+    return;
+  }
 
-  @override
-  State<TestSetIn> createState() => _TestSetInState();
-}
+  final content = file.readAsStringSync();
+  final regex = RegExp(r'\[(\d{2}):(\d{2})\.(\d{2,3})\](.*)');
 
-class _TestSetInState extends State<TestSetIn> {
-  late final Player _player;
+  int? firstMs;
+  int? lastMs;
 
-  // 🛠️ MOCK DEL AUTO-MASTER: Fingimos que la BD nos dio un SET IN de 25 segundos (25000 ms)
-  final int _customCueInMs = 25000;
-  String _status = "Motor libmpv en espera...";
+  final lines = content.split('\n');
+  for (var line in lines) {
+    final match = regex.firstMatch(line);
+    if (match != null) {
+      final text = match.group(4)!.trim().toLowerCase();
 
-  // 🛠️ FIX ARQUITECTÓNICO: Flag de estado para garantizar un único salto determinista
-  bool _hasSkippedIn = false;
+      // ======================================================
+      // 🛠️ FILTRO ANTI-BASURA: Ignora metadata de sincronización
+      // ======================================================
+      bool isGarbage =
+          text.isEmpty ||
+          text.startsWith('by:') ||
+          text.startsWith('artist:') ||
+          text.startsWith('title:') ||
+          text.contains('synced') ||
+          text.contains('lyric') ||
+          text.contains('www.') ||
+          text.length < 3;
 
-  @override
-  void initState() {
-    super.initState();
-    _player = Player();
+      if (!isGarbage) {
+        final min = int.parse(match.group(1)!);
+        final sec = int.parse(match.group(2)!);
+        int ms = int.parse(match.group(3)!);
+        if (match.group(3)!.length == 2) ms *= 10;
+        final totalMs = (min * 60000) + (sec * 1000) + ms;
 
-    _player.stream.position.listen((Duration pos) {
-      final posMs = pos.inMilliseconds;
-
-      // ==========================================
-      // ALGORITMO AISLADO: ESCUDO DE ENTRADA (SET IN)
-      // ==========================================
-      if (_customCueInMs > 0 && !_hasSkippedIn) {
-        // En cuanto el stream reporta posición y estamos antes de la marca, saltamos.
-        if (posMs < _customCueInMs) {
-          _hasSkippedIn = true; // Bloqueo atómico
-          _player.seek(Duration(milliseconds: _customCueInMs));
-
-          setState(() {
-            _status =
-                "✅ Salto ejecutado correctamente a los ${_customCueInMs}ms";
-          });
-          debugPrint("🟢 TEST: Salto forzado al SET IN -> $_customCueInMs ms");
-        }
+        firstMs ??= totalMs; // Captura la primera sílaba REAL
+        lastMs = totalMs; // Sobreescribe hasta la última
       }
-    });
-  }
-
-  @override
-  void dispose() {
-    _player.dispose();
-    super.dispose();
-  }
-
-  Future<void> _playAerosmith() async {
-    const String path =
-        r"C:\Users\ASUS\Music\ReGenial\80s Ingles\Aerosmith - Walk This Way.mp3";
-
-    if (!File(path).existsSync()) {
-      setState(() => _status = "⚠️ Archivo no encontrado en:\n$path");
-      return;
     }
-
-    // Reset del flag por si se le vuelve a dar Play
-    _hasSkippedIn = false;
-
-    setState(() => _status = "Iniciando pista...");
-    await _player.open(Media(path), play: true);
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF0A0A0A),
-      appBar: AppBar(
-        title: const Text(
-          "Sandbox: Prueba de SET IN",
-          style: TextStyle(color: Colors.white, fontSize: 16),
-        ),
-        backgroundColor: Colors.black,
-        iconTheme: const IconThemeData(color: Colors.white),
-      ),
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            ElevatedButton(
-              onPressed: _playAerosmith,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF39FF14),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 40,
-                  vertical: 20,
-                ),
-              ),
-              child: const Text(
-                "PROBAR AEROSMITH (SET IN)",
-                style: TextStyle(
-                  color: Colors.black,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-            const SizedBox(height: 30),
-            Text(
-              _status,
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 16,
-                fontFamily: 'Consolas',
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
+  print("\n==== DIAGNÓSTICO DE BOUNDING BOX ====");
+  if (firstMs != null) {
+    print("🗣️ Primera palabra cantada REAL en: $firstMs ms");
+    print("🛑 Última palabra cantada REAL en: $lastMs ms");
+
+    int cueIn = firstMs - 5000;
+    if (cueIn < 0) cueIn = 0;
+
+    print("-----------------------------------------");
+    print("🟢 SET IN CALCULADO (Cue In): $cueIn ms");
+    print("-----------------------------------------\n");
+  } else {
+    print("⚠️ No se encontraron vocales válidas en el archivo LRC.");
   }
 }

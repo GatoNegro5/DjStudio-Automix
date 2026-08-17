@@ -39,7 +39,7 @@ class NlpWorker {
     return await http.get(proxyUri).timeout(const Duration(seconds: 8));
   }
 
-  // 🛠️ MÓDULO V4: CÁLCULO DE COLISIÓN VOCAL (VOCAL BOUNDING BOX)
+  // 🛠️ MÓDULO V4.1: CÁLCULO DE COLISIÓN VOCAL CON ESCUDO ANTI-BASURA
   Future<void> _processVocalBoundingBox(
     String audioPath,
     String syncedLyrics,
@@ -54,16 +54,31 @@ class NlpWorker {
       for (var line in lines) {
         final match = regex.firstMatch(line);
         if (match != null) {
-          final text = match.group(4)!.trim();
-          if (text.isNotEmpty) {
+          final text = match.group(4)!.trim().toLowerCase();
+
+          // ======================================================
+          // 🛠️ FILTRO ANTI-BASURA: Ignora metadata y firmas de LRC
+          // ======================================================
+          bool isGarbage =
+              text.isEmpty ||
+              text.startsWith('by:') ||
+              text.startsWith('artist:') ||
+              text.startsWith('title:') ||
+              text.contains('synced') ||
+              text.contains('lyric') ||
+              text.contains('www.') ||
+              text.length < 3;
+
+          if (!isGarbage) {
             final min = int.parse(match.group(1)!);
             final sec = int.parse(match.group(2)!);
             int ms = int.parse(match.group(3)!);
             if (match.group(3)!.length == 2) ms *= 10;
             final totalMs = (min * 60000) + (sec * 1000) + ms;
 
-            firstMs ??= totalMs; // Fija el timestamp de la primera sílaba
-            lastMs = totalMs; // Se sobreescribe hasta llegar a la última sílaba
+            firstMs ??= totalMs; // Fija el timestamp de la primera sílaba REAL
+            lastMs =
+                totalMs; // Se sobreescribe hasta llegar a la última sílaba REAL
           }
         }
       }
@@ -77,23 +92,23 @@ class NlpWorker {
         int mixOut = lastMs + 2000;
         int totalMs = durationSec * 1000;
 
-        // Limitador Geométrico: Evita poner el punto fuera del archivo
+        // Limitador Geométrico
         if (totalMs > 0 && mixOut >= totalMs - 5000) {
           mixOut = totalMs - 6000;
           if (mixOut < 0) mixOut = 0;
         }
 
-        // 3. Inyección Atómica en ISAR Database
+        // 3. Inyección Atómica en ISAR
         try {
           final db = ref.read(dbServiceProvider);
           await db.saveTrackMetadata(
             path: audioPath,
             cueInMs: cueIn,
             mixOutMs: mixOut,
-            isManualCue: false, // Flag de Máquina
+            isManualCue: false,
           );
           debugPrint(
-            "🎛️ [AUTO-MASTER] Cues Inyectados -> IN: ${cueIn}ms | OUT: ${mixOut}ms",
+            "🎛️ [AUTO-MASTER] Cues IN: ${cueIn}ms | OUT: ${mixOut}ms -> $audioPath",
           );
         } catch (e) {
           debugPrint("🔴 Error guardando metadata en BD: $e");
@@ -102,25 +117,6 @@ class NlpWorker {
     } catch (e) {
       debugPrint("🔴 [AUTO-MASTER] Error calculando Bounding Box: $e");
     }
-  }
-
-  Future<int> _getLocalDurationSec(String filePath) async {
-    try {
-      final result = await Process.run('ffprobe', [
-        '-v',
-        'error',
-        '-show_entries',
-        'format=duration',
-        '-of',
-        'default=noprint_wrappers=1:nokey=1',
-        filePath,
-      ]);
-      if (result.exitCode == 0) {
-        return (double.tryParse(result.stdout.toString().trim()) ?? 0.0)
-            .toInt();
-      }
-    } catch (_) {}
-    return 0;
   }
 
   Future<void> processDirectory(
@@ -160,13 +156,13 @@ class NlpWorker {
             !content.contains('Error de conexión') &&
             !content.contains('Error Auto-Healing') &&
             lrcFile.lengthSync() > 20) {
-          // 🛠️ RE-EVALUACIÓN ESTRUCTURAL:
-          // Si el archivo ya existía pero no estaba en BD, lo repasa rápido.
+          // 🛠️ DESTRUCCIÓN DEL BYPASS:
+          // Si el CueIn está en cero (o no existe) y no es manual, FORZAMOS el recálculo
+          // ignorando si el MixOut ya estaba lleno.
           final meta = await ref
               .read(dbServiceProvider)
               .getTrackMetadata(file.path);
-          if (meta == null ||
-              (meta.cueInMs == 0 && meta.mixOutMs == 0 && !meta.isManualCue)) {
+          if (meta == null || (!meta.isManualCue && meta.cueInMs == 0)) {
             final localSec = await _getLocalDurationSec(file.path);
             await _processVocalBoundingBox(file.path, content, localSec);
           }
@@ -181,6 +177,25 @@ class NlpWorker {
       await Future.delayed(const Duration(milliseconds: 150));
     }
     pipe.reset();
+  }
+
+  Future<int> _getLocalDurationSec(String filePath) async {
+    try {
+      final result = await Process.run('ffprobe', [
+        '-v',
+        'error',
+        '-show_entries',
+        'format=duration',
+        '-of',
+        'default=noprint_wrappers=1:nokey=1',
+        filePath,
+      ]);
+      if (result.exitCode == 0) {
+        return (double.tryParse(result.stdout.toString().trim()) ?? 0.0)
+            .toInt();
+      }
+    } catch (_) {}
+    return 0;
   }
 
   Future<List<dynamic>> searchLyricCandidates(
