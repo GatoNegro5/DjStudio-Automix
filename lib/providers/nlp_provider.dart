@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'pipeline_provider.dart';
 import 'package:flutter/foundation.dart';
+import 'db_provider.dart'; // 🛠️ Requerido para inyectar Cues a la BD
 
 final nlpWorkerProvider = Provider((ref) => NlpWorker(ref));
 
@@ -38,7 +39,71 @@ class NlpWorker {
     return await http.get(proxyUri).timeout(const Duration(seconds: 8));
   }
 
-  // 🛠️ INYECCIÓN: Extracción Nativa de Duración Local
+  // 🛠️ MÓDULO V4: CÁLCULO DE COLISIÓN VOCAL (VOCAL BOUNDING BOX)
+  Future<void> _processVocalBoundingBox(
+    String audioPath,
+    String syncedLyrics,
+    int durationSec,
+  ) async {
+    try {
+      final regex = RegExp(r'\[(\d{2}):(\d{2})\.(\d{2,3})\](.*)');
+      int? firstMs;
+      int? lastMs;
+
+      final lines = syncedLyrics.split('\n');
+      for (var line in lines) {
+        final match = regex.firstMatch(line);
+        if (match != null) {
+          final text = match.group(4)!.trim();
+          if (text.isNotEmpty) {
+            final min = int.parse(match.group(1)!);
+            final sec = int.parse(match.group(2)!);
+            int ms = int.parse(match.group(3)!);
+            if (match.group(3)!.length == 2) ms *= 10;
+            final totalMs = (min * 60000) + (sec * 1000) + ms;
+
+            firstMs ??= totalMs; // Fija el timestamp de la primera sílaba
+            lastMs = totalMs; // Se sobreescribe hasta llegar a la última sílaba
+          }
+        }
+      }
+
+      if (firstMs != null && lastMs != null) {
+        // 1. CUE IN: 5 segundos antes de que empiece a cantar
+        int cueIn = firstMs - 5000;
+        if (cueIn < 0) cueIn = 0;
+
+        // 2. MIX OUT: 2 segundos después de la última sílaba
+        int mixOut = lastMs + 2000;
+        int totalMs = durationSec * 1000;
+
+        // Limitador Geométrico: Evita poner el punto fuera del archivo
+        if (totalMs > 0 && mixOut >= totalMs - 5000) {
+          mixOut = totalMs - 6000;
+          if (mixOut < 0) mixOut = 0;
+        }
+
+        // 3. Inyección Atómica en ISAR Database
+        try {
+          final db = ref.read(dbServiceProvider);
+          await db.saveTrackMetadata(
+            path: audioPath,
+            cueInMs: cueIn,
+            mixOutMs: mixOut,
+            isManualCue: false, // Flag de Máquina
+          );
+          debugPrint(
+            "🎛️ [AUTO-MASTER] Cues Inyectados -> IN: ${cueIn}ms | OUT: ${mixOut}ms",
+          );
+        } catch (e) {
+          debugPrint("🔴 Error guardando metadata en BD: $e");
+        }
+      }
+    } catch (e) {
+      debugPrint("🔴 [AUTO-MASTER] Error calculando Bounding Box: $e");
+    }
+  }
+
   Future<int> _getLocalDurationSec(String filePath) async {
     try {
       final result = await Process.run('ffprobe', [
@@ -83,7 +148,6 @@ class NlpWorker {
       final file = files[i];
       final filename = file.uri.pathSegments.last;
 
-      // 🛠️ FIX: Bypass estricto de NLP. Valida el .lrc antes de actualizar el UI y aplicar el delay.
       final lrcPath = file.path.replaceAll(
         RegExp(r'\.mp3$|\.webm$', caseSensitive: false),
         '.lrc',
@@ -96,6 +160,16 @@ class NlpWorker {
             !content.contains('Error de conexión') &&
             !content.contains('Error Auto-Healing') &&
             lrcFile.lengthSync() > 20) {
+          // 🛠️ RE-EVALUACIÓN ESTRUCTURAL:
+          // Si el archivo ya existía pero no estaba en BD, lo repasa rápido.
+          final meta = await ref
+              .read(dbServiceProvider)
+              .getTrackMetadata(file.path);
+          if (meta == null ||
+              (meta.cueInMs == 0 && meta.mixOutMs == 0 && !meta.isManualCue)) {
+            final localSec = await _getLocalDurationSec(file.path);
+            await _processVocalBoundingBox(file.path, content, localSec);
+          }
           continue;
         }
       }
@@ -195,7 +269,14 @@ class NlpWorker {
       '.lrc',
     );
     await File(lrcPath).writeAsString(syncedLyrics);
-    debugPrint("🟢 [NLP Tracker] LRC manual sobreescrito con éxito.");
+
+    // Inyectar el Bounding Box al forzar letra manual
+    final localSec = await _getLocalDurationSec(audioPath);
+    await _processVocalBoundingBox(audioPath, syncedLyrics, localSec);
+
+    debugPrint(
+      "🟢 [NLP Tracker] LRC manual sobreescrito con éxito y Cues calculados.",
+    );
   }
 
   Future<void> _fetchAndSaveLrc(String audioPath, String lrcPath) async {
@@ -205,9 +286,7 @@ class NlpWorker {
           .last
           .replaceAll(RegExp(r'\.mp3$|\.webm$', caseSensitive: false), '');
       final parts = filename.split(' - ');
-      final localSec = await _getLocalDurationSec(
-        audioPath,
-      ); // 🛠️ Lectura Nativa
+      final localSec = await _getLocalDurationSec(audioPath);
 
       if (parts.length >= 2) {
         final artist = parts[0].trim();
@@ -224,7 +303,6 @@ class NlpWorker {
             if (response.statusCode == 200) {
               final parsed = jsonDecode(response.body);
               if (parsed is List && parsed.isNotEmpty) {
-                // 🛠️ ALGORITMO DELTA: Batch
                 parsed.sort((a, b) {
                   final aSync =
                       a['syncedLyrics']?.toString().isNotEmpty ?? false;
@@ -247,8 +325,14 @@ class NlpWorker {
                   if (syncedLyrics != null &&
                       syncedLyrics.toString().trim().isNotEmpty) {
                     await File(lrcPath).writeAsString(syncedLyrics);
+                    await _processVocalBoundingBox(
+                      audioPath,
+                      syncedLyrics,
+                      localSec,
+                    );
+
                     debugPrint(
-                      "🟢 [NLP Tracker] LRC consolidado con Delta O(1): $currentTrackAttempt",
+                      "🟢 [NLP Tracker] LRC consolidado y Bounding Box guardado: $currentTrackAttempt",
                     );
                     return;
                   }
@@ -290,7 +374,15 @@ class NlpWorker {
               if (syncedLyrics != null &&
                   syncedLyrics.toString().trim().isNotEmpty) {
                 await File(lrcPath).writeAsString(syncedLyrics);
-                debugPrint("🟢 [NLP Tracker] LRC salvado vía Failsafe Delta.");
+                await _processVocalBoundingBox(
+                  audioPath,
+                  syncedLyrics,
+                  localSec,
+                );
+
+                debugPrint(
+                  "🟢 [NLP Tracker] LRC y Bounding Box salvados vía Failsafe Delta.",
+                );
                 return;
               }
             }
@@ -316,7 +408,6 @@ class NlpWorker {
     );
     final lrcFile = File(lrcPath);
 
-    // ♻️ LÓGICA DE AUTO-HEALING (Reintento Ciego)
     if (lrcFile.existsSync()) {
       try {
         final content = await lrcFile.readAsString();
@@ -329,7 +420,6 @@ class NlpWorker {
           );
           await lrcFile.delete();
         } else {
-          // La letra existe y es válida. Bypass atómico.
           return;
         }
       } catch (e) {
@@ -340,14 +430,10 @@ class NlpWorker {
       }
     }
 
-    // 📝 EJECUCIÓN DEL SCRAPER
     try {
-      // AQUÍ SE MANTIENE TU LLAMADA NATIVA/ORIGINAL DE SCRAPING NLP
-      // Ejemplo: await rust_nlp.extractSemanticLyrics(inputPath: filePath);
+      await _fetchAndSaveLrc(filePath, lrcPath);
     } catch (e) {
       debugPrint("🔴 [NLP Scraper Fatal Error]: $e");
-      // Failsafe: Si el motor de scraping crashea, creamos un stub
-      // para que el Módulo de Auditoría lo detecte en el Dashboard.
       if (!lrcFile.existsSync()) {
         await lrcFile.writeAsString("[00:00.00] Letra no encontrada\n");
       }

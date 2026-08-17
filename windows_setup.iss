@@ -1,6 +1,6 @@
 [Setup]
 AppName=DjStudio
-AppVersion=1.0.49
+AppVersion=1.0.52
 DefaultDirName={autopf}\DjStudio
 DefaultGroupName=DjStudio
 OutputDir=.\
