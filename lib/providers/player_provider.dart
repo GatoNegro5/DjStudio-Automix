@@ -334,7 +334,34 @@ class PlayerNotifier extends Notifier<PlayerState> {
     _playingSub?.cancel();
     _completedSub?.cancel();
 
-    _positionSub = player.stream.position.listen((pos) {
+    _positionSub = player.stream.position.listen((Duration pos) {
+      final posMs = pos.inMilliseconds;
+
+      // ===================================================
+      // 1. ESCUDO SET IN (Corta el inicio y salta a la voz)
+      // ===================================================
+      if (state.customCueInMs > 0 &&
+          posMs < state.customCueInMs &&
+          posMs < 1000) {
+        player.seek(Duration(milliseconds: state.customCueInMs));
+        return; // Cortamos el frame I/O para evitar parpadeos y dobles ejecuciones
+      }
+
+      // ===================================================
+      // 2. DISPARADOR SET OUT DINÁMICO (Auto-Master Bounding Box)
+      // ===================================================
+      if (state.autoMixArmed &&
+          state.customMixOutMs > 0 &&
+          state.nextTrackPath != null) {
+        // Holgura de 150ms para compensar saltos de frames en buffers VBR
+        if (posMs >= (state.customMixOutMs - 150)) {
+          if (!_isCrossfading && !_isPrepModeBypass) {
+            _triggerCrossfade();
+          }
+        }
+      }
+
+      // Sincronización de Letras (Búsqueda Inversa Optimizada)
       int newLyricIndex = -1;
       if (state.lyrics.isNotEmpty) {
         for (int i = state.lyrics.length - 1; i >= 0; i--) {
@@ -345,18 +372,24 @@ class PlayerNotifier extends Notifier<PlayerState> {
         }
       }
 
+      // Actualización Atómica de Estado (UI)
       state = state.copyWith(
         position: pos,
         activeLyricIndex: newLyricIndex,
         triggerRemainingMs: _triggerRemainingMs,
       );
 
+      // Persistencia Periodica (Throttle de 5 segundos)
       if ((pos.inMilliseconds - _lastSavedPositionMs).abs() > 5000) {
         _lastSavedPositionMs = pos.inMilliseconds;
         _saveSnapshot();
       }
 
+      // ===================================================
+      // 3. FALLBACK FÍSICO (Para pistas sin NLP procesado)
+      // ===================================================
       if (state.autoMixArmed &&
+          state.customMixOutMs <= 0 &&
           !_isCrossfading &&
           state.duration.inMilliseconds > 0 &&
           state.nextTrackPath != null) {
@@ -370,7 +403,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
 
     _durationSub = player.stream.duration.listen((dur) {
       state = state.copyWith(duration: dur);
-      _recalculateMixWindow(); // Recalibra conociendo la duración real
+      _recalculateMixWindow();
     });
 
     _playingSub = player.stream.playing.listen((playing) {
