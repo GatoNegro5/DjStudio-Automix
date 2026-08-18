@@ -1123,8 +1123,9 @@ class PlayerNotifier extends Notifier<PlayerState> {
   Future<void> autoSyncFromCurrentLyric() async {
     if (state.currentTrackPath == null ||
         state.lyrics.isEmpty ||
-        state.activeLyricIndex < 0)
+        state.activeLyricIndex < 0) {
       return;
+    }
 
     final posMs = state.position.inMilliseconds;
     final targetLine = state.lyrics[state.activeLyricIndex];
