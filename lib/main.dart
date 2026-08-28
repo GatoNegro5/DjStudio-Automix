@@ -15,7 +15,6 @@ import 'dsp_workspace.dart';
 import 'yt_workspace.dart';
 import 'lab_workspace.dart';
 import 'lan_sync_workspace.dart';
-import 'radio_workspace.dart';
 
 // ==========================================
 // ENRUTADOR DE ESTADO (SPA - Single Page App)
@@ -330,32 +329,6 @@ class MainWorkspace extends ConsumerWidget {
                             onTap: () =>
                                 ref.read(routerProvider.notifier).setRoute(4),
                           ),
-                          ListTile(
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 15,
-                            ),
-                            leading: Icon(
-                              Icons.radio,
-                              size: 20,
-                              color: currentRoute == 5
-                                  ? Colors.purpleAccent
-                                  : Colors.white70,
-                            ),
-                            title: Text(
-                              "Radio YT",
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: currentRoute == 5
-                                    ? Colors.purpleAccent
-                                    : Colors.white70,
-                                fontWeight: currentRoute == 5
-                                    ? FontWeight.bold
-                                    : FontWeight.normal,
-                              ),
-                            ),
-                            onTap: () =>
-                                ref.read(routerProvider.notifier).setRoute(5),
-                          ),
                         ],
                       ),
                     ),
@@ -416,7 +389,6 @@ class MainWorkspace extends ConsumerWidget {
                   YoutubeSearchAndDownloadWorkspace(),
                   LabWorkspace(),
                   LanSyncWorkspace(),
-                  RadioWorkspace(),
                 ],
               ),
             ),

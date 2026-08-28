@@ -439,6 +439,74 @@ class PlayerNotifier extends Notifier<PlayerState> {
     return match != null ? double.parse(match.group(1)!) : 0.0;
   }
 
+  Future<void> _executeMixEngine({
+    required Player fadingPlayer,
+    required Player incomingPlayer,
+    required int mixDurationMs,
+    required String mixProfile,
+    required double incomingRate,
+  }) async {
+    final stopwatch = Stopwatch()..start();
+
+    // 🛠️ MOTOR V4.1: Interpolación de volumen basada en Wall-Clock (Ignora el Jitter de Dart)
+    while (stopwatch.elapsedMilliseconds < mixDurationMs) {
+      final double progress = (stopwatch.elapsedMilliseconds / mixDurationMs)
+          .clamp(0.0, 1.0);
+      double volOut = 100.0, volIn = 100.0;
+
+      if (mixProfile == 'linear') {
+        volOut = (1.0 - progress) * 100.0;
+        volIn = progress * 100.0;
+      } else if (mixProfile == 'sharp') {
+        volOut = progress < 0.9
+            ? 100.0
+            : (1.0 - (progress - 0.9) * 10.0) * 100.0;
+        volIn = progress > 0.1 ? 100.0 : (progress * 10.0) * 100.0;
+      } else if (mixProfile == 'eq_kill') {
+        volOut = pow(1.0 - progress, 2.5) * 100.0;
+        volIn = 70.0 + (progress * 30.0);
+      } else {
+        // constant_power
+        volOut = cos(progress * (pi / 2)) * 100.0;
+        volIn = sin(progress * (pi / 2)) * 100.0;
+      }
+
+      await fadingPlayer.setVolume(volOut.clamp(0.0, 100.0));
+      await incomingPlayer.setVolume(volIn.clamp(0.0, 100.0));
+
+      // 🛠️ Frecuencia de actualización ~60Hz (16ms). No dependemos de su exactitud.
+      await Future.delayed(const Duration(milliseconds: 16));
+    }
+
+    await fadingPlayer.stop();
+    await fadingPlayer.setVolume(100.0);
+    await fadingPlayer.setRate(1.0); // Reseteo de seguridad
+
+    // 🛠️ MOTOR V4.1: PITCH RELEASE (Liberación Wall-Clock Inmune al Jitter)
+    if (incomingRate != 1.0) {
+      final pitchStopwatch = Stopwatch()..start();
+      const int pitchReleaseDurationMs = 3000;
+      final double rateDiff = 1.0 - incomingRate;
+
+      while (pitchStopwatch.elapsedMilliseconds < pitchReleaseDurationMs) {
+        // Asegurar que el usuario no forzó otra mezcla manual a mitad del release
+        if ((_usePlayerA && incomingPlayer == _playerA) ||
+            (!_usePlayerA && incomingPlayer == _playerB)) {
+          final double p =
+              (pitchStopwatch.elapsedMilliseconds / pitchReleaseDurationMs)
+                  .clamp(0.0, 1.0);
+          final double currentRate = incomingRate + (rateDiff * p);
+
+          await incomingPlayer.setRate(currentRate.clamp(0.5, 2.0));
+          await Future.delayed(const Duration(milliseconds: 50));
+        } else {
+          break;
+        }
+      }
+      await incomingPlayer.setRate(1.0);
+    }
+  }
+
   Future<void> forceTransition(int index) async {
     if (index < 0 || index >= state.playlist.length || _isCrossfading) return;
     _isCrossfading = true;
@@ -472,14 +540,12 @@ class PlayerNotifier extends Notifier<PlayerState> {
       await incomingPlayer.seek(Duration(milliseconds: cueInMs));
     }
 
-    // 🛠️ MOTOR V4: BEATMATCHING DINÁMICO (TIME-STRETCH)
     final fadingBpm = _extractBpm(state.currentTrackPath);
     final incomingBpm = _extractBpm(nextTrack);
     double incomingRate = 1.0;
 
     if (fadingBpm > 60 && incomingBpm > 60) {
       final ratio = fadingBpm / incomingBpm;
-      // Blindaje de deformación acústica (Max 12% Delta)
       if (ratio >= 0.88 && ratio <= 1.12) {
         incomingRate = ratio;
       }
@@ -500,58 +566,13 @@ class PlayerNotifier extends Notifier<PlayerState> {
     await _loadTrackMetadata(nextTrack);
     _saveSnapshot();
 
-    int steps = mixDurationMs ~/ 100;
-    if (steps < 10) steps = 10;
-    final int stepTimeMs = mixDurationMs ~/ steps;
-
-    for (int i = 0; i < steps; i++) {
-      double progress = i / steps;
-      double volOut = 100.0, volIn = 100.0;
-      if (mixProfile == 'linear') {
-        volOut = (1.0 - progress) * 100.0;
-        volIn = progress * 100.0;
-      } else if (mixProfile == 'sharp') {
-        volOut = progress < 0.9
-            ? 100.0
-            : (1.0 - (progress - 0.9) * 10.0) * 100.0;
-        volIn = progress > 0.1 ? 100.0 : (progress * 10.0) * 100.0;
-      } else if (mixProfile == 'eq_kill') {
-        volOut = pow(1.0 - progress, 2.5) * 100.0;
-        volIn = 70.0 + (progress * 30.0);
-      } else {
-        volOut = cos(progress * (pi / 2)) * 100.0;
-        volIn = sin(progress * (pi / 2)) * 100.0;
-      }
-      await fadingPlayer.setVolume(volOut.clamp(0.0, 100.0));
-      await incomingPlayer.setVolume(volIn.clamp(0.0, 100.0));
-      await Future.delayed(Duration(milliseconds: stepTimeMs));
-    }
-
-    await fadingPlayer.stop();
-    await fadingPlayer.setVolume(100.0);
-    await fadingPlayer.setRate(1.0); // Reseteo de seguridad
-
-    // 🛠️ MOTOR V4: PITCH RELEASE (Liberación gradual de 3 segundos)
-    if (incomingRate != 1.0) {
-      int pitchSteps = 30;
-      int pitchStepTimeMs = 100;
-      double rateDiff = 1.0 - incomingRate;
-      double rateStep = rateDiff / pitchSteps;
-
-      for (int i = 1; i <= pitchSteps; i++) {
-        // Asegurar que el usuario no forzó otra mezcla mientras liberábamos el pitch
-        if ((_usePlayerA && incomingPlayer == _playerA) ||
-            (!_usePlayerA && incomingPlayer == _playerB)) {
-          await incomingPlayer.setRate(
-            (incomingRate + (rateStep * i)).clamp(0.5, 2.0),
-          );
-          await Future.delayed(Duration(milliseconds: pitchStepTimeMs));
-        } else {
-          break;
-        }
-      }
-      await incomingPlayer.setRate(1.0);
-    }
+    await _executeMixEngine(
+      fadingPlayer: fadingPlayer,
+      incomingPlayer: incomingPlayer,
+      mixDurationMs: mixDurationMs,
+      mixProfile: mixProfile,
+      incomingRate: incomingRate,
+    );
 
     _isCrossfading = false;
   }
@@ -591,14 +612,12 @@ class PlayerNotifier extends Notifier<PlayerState> {
       await incomingPlayer.seek(Duration(milliseconds: cueInMs));
     }
 
-    // 🛠️ MOTOR V4: BEATMATCHING DINÁMICO (TIME-STRETCH)
     final fadingBpm = _extractBpm(state.currentTrackPath);
     final incomingBpm = _extractBpm(nextTrack);
     double incomingRate = 1.0;
 
     if (fadingBpm > 60 && incomingBpm > 60) {
       final ratio = fadingBpm / incomingBpm;
-      // Blindaje de deformación acústica (Max 12% Delta)
       if (ratio >= 0.88 && ratio <= 1.12) {
         incomingRate = ratio;
       }
@@ -619,57 +638,13 @@ class PlayerNotifier extends Notifier<PlayerState> {
     await _loadTrackMetadata(nextTrack);
     _saveSnapshot();
 
-    int steps = mixDurationMs ~/ 100;
-    if (steps < 10) steps = 10;
-    final int stepTimeMs = mixDurationMs ~/ steps;
-
-    for (int i = 0; i < steps; i++) {
-      double progress = i / steps;
-      double volOut = 100.0, volIn = 100.0;
-      if (mixProfile == 'linear') {
-        volOut = (1.0 - progress) * 100.0;
-        volIn = progress * 100.0;
-      } else if (mixProfile == 'sharp') {
-        volOut = progress < 0.9
-            ? 100.0
-            : (1.0 - (progress - 0.9) * 10.0) * 100.0;
-        volIn = progress > 0.1 ? 100.0 : (progress * 10.0) * 100.0;
-      } else if (mixProfile == 'eq_kill') {
-        volOut = pow(1.0 - progress, 2.5) * 100.0;
-        volIn = 70.0 + (progress * 30.0);
-      } else {
-        volOut = cos(progress * (pi / 2)) * 100.0;
-        volIn = sin(progress * (pi / 2)) * 100.0;
-      }
-      await fadingPlayer.setVolume(volOut.clamp(0.0, 100.0));
-      await incomingPlayer.setVolume(volIn.clamp(0.0, 100.0));
-      await Future.delayed(Duration(milliseconds: stepTimeMs));
-    }
-
-    await fadingPlayer.stop();
-    await fadingPlayer.setVolume(100.0);
-    await fadingPlayer.setRate(1.0); // Reseteo de seguridad
-
-    // 🛠️ MOTOR V4: PITCH RELEASE (Liberación gradual de 3 segundos)
-    if (incomingRate != 1.0) {
-      int pitchSteps = 30;
-      int pitchStepTimeMs = 100;
-      double rateDiff = 1.0 - incomingRate;
-      double rateStep = rateDiff / pitchSteps;
-
-      for (int i = 1; i <= pitchSteps; i++) {
-        if ((_usePlayerA && incomingPlayer == _playerA) ||
-            (!_usePlayerA && incomingPlayer == _playerB)) {
-          await incomingPlayer.setRate(
-            (incomingRate + (rateStep * i)).clamp(0.5, 2.0),
-          );
-          await Future.delayed(Duration(milliseconds: pitchStepTimeMs));
-        } else {
-          break;
-        }
-      }
-      await incomingPlayer.setRate(1.0);
-    }
+    await _executeMixEngine(
+      fadingPlayer: fadingPlayer,
+      incomingPlayer: incomingPlayer,
+      mixDurationMs: mixDurationMs,
+      mixProfile: mixProfile,
+      incomingRate: incomingRate,
+    );
 
     _isCrossfading = false;
   }
@@ -711,14 +686,12 @@ class PlayerNotifier extends Notifier<PlayerState> {
       await incomingPlayer.seek(Duration(milliseconds: cueInMs));
     }
 
-    // 🛠️ MOTOR V4: BEATMATCHING DINÁMICO (TIME-STRETCH)
     final fadingBpm = _extractBpm(state.currentTrackPath);
     final incomingBpm = _extractBpm(nextTrack);
     double incomingRate = 1.0;
 
     if (fadingBpm > 60 && incomingBpm > 60) {
       final ratio = fadingBpm / incomingBpm;
-      // Blindaje de deformación acústica (Max 12% Delta)
       if (ratio >= 0.88 && ratio <= 1.12) {
         incomingRate = ratio;
       }
@@ -739,57 +712,13 @@ class PlayerNotifier extends Notifier<PlayerState> {
     await _loadTrackMetadata(nextTrack);
     _saveSnapshot();
 
-    int steps = mixDurationMs ~/ 100;
-    if (steps < 10) steps = 10;
-    final int stepTimeMs = mixDurationMs ~/ steps;
-
-    for (int i = 0; i < steps; i++) {
-      double progress = i / steps;
-      double volOut = 100.0, volIn = 100.0;
-      if (mixProfile == 'linear') {
-        volOut = (1.0 - progress) * 100.0;
-        volIn = progress * 100.0;
-      } else if (mixProfile == 'sharp') {
-        volOut = progress < 0.9
-            ? 100.0
-            : (1.0 - (progress - 0.9) * 10.0) * 100.0;
-        volIn = progress > 0.1 ? 100.0 : (progress * 10.0) * 100.0;
-      } else if (mixProfile == 'eq_kill') {
-        volOut = pow(1.0 - progress, 2.5) * 100.0;
-        volIn = 70.0 + (progress * 30.0);
-      } else {
-        volOut = cos(progress * (pi / 2)) * 100.0;
-        volIn = sin(progress * (pi / 2)) * 100.0;
-      }
-      await fadingPlayer.setVolume(volOut.clamp(0.0, 100.0));
-      await incomingPlayer.setVolume(volIn.clamp(0.0, 100.0));
-      await Future.delayed(Duration(milliseconds: stepTimeMs));
-    }
-
-    await fadingPlayer.stop();
-    await fadingPlayer.setVolume(100.0);
-    await fadingPlayer.setRate(1.0); // Reseteo de seguridad
-
-    // 🛠️ MOTOR V4: PITCH RELEASE (Liberación gradual de 3 segundos)
-    if (incomingRate != 1.0) {
-      int pitchSteps = 30;
-      int pitchStepTimeMs = 100;
-      double rateDiff = 1.0 - incomingRate;
-      double rateStep = rateDiff / pitchSteps;
-
-      for (int i = 1; i <= pitchSteps; i++) {
-        if ((_usePlayerA && incomingPlayer == _playerA) ||
-            (!_usePlayerA && incomingPlayer == _playerB)) {
-          await incomingPlayer.setRate(
-            (incomingRate + (rateStep * i)).clamp(0.5, 2.0),
-          );
-          await Future.delayed(Duration(milliseconds: pitchStepTimeMs));
-        } else {
-          break; // Abortar si hubo otro salto manual a mitad del release
-        }
-      }
-      await incomingPlayer.setRate(1.0);
-    }
+    await _executeMixEngine(
+      fadingPlayer: fadingPlayer,
+      incomingPlayer: incomingPlayer,
+      mixDurationMs: mixDurationMs,
+      mixProfile: mixProfile,
+      incomingRate: incomingRate,
+    );
 
     _isCrossfading = false;
   }
