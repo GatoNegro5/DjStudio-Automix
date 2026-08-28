@@ -81,10 +81,18 @@ jobs:
           pod install
           cd ..
 
+      - name: Setup Android NDK
+        if: matrix.target == 'apk'
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r25c # Versión de producción más estable para Flutter/Rust
+          add-to-path: false
+
       - name: Build Platform
         env:
           CARGOKIT_VERBOSE: 1
-          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }} # Asegura el mapeo nativo
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
           ${{ matrix.build_cmd }}
