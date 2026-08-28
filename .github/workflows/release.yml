@@ -51,9 +51,9 @@ jobs:
         with:
           shared-key: "djstudio-rust-${{ matrix.os }}"
 
-      # 🛠️ INYECCIÓN 2: Descarga Binaria Precompilada (0 minutos de delay, reemplaza a cargo install)
+      # 🛠️ INYECCIÓN 2: Descarga Binaria Precompilada (0 minutos de delay)
       - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall-action@v3
+        uses: cargo-bins/cargo-binstall@main
 
       - name: Install Flutter Rust Bridge Codegen Fast
         run: cargo binstall flutter_rust_bridge_codegen@2.12.0 --no-confirm
