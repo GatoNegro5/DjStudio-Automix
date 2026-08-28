@@ -58,18 +58,6 @@ fn execute_ffmpeg_with_kill_switch(cmd: &mut Command) -> Result<std::process::Ou
     Ok(output)
 }
 
-// 🛠️ RESOLUTOR DINÁMICO: Busca FFmpeg en la carpeta del ejecutable
-fn get_ffmpeg_path() -> String {
-    if let Ok(mut exe_path) = env::current_exe() {
-        exe_path.pop();
-        exe_path.push(if cfg!(target_os = "windows") { "ffmpeg.exe" } else { "ffmpeg" });
-        if exe_path.exists() {
-            return exe_path.to_string_lossy().into_owned();
-        }
-    }
-    "ffmpeg".to_string()
-}
-
 // 🛠️ CONSTRUCTOR MAESTRO: Aislamiento estricto de UI y Límite de CPU
 fn spawn_headless_ffmpeg() -> Command {
     let mut cmd = Command::new(get_ffmpeg_path());
@@ -268,22 +256,136 @@ pub async fn clear_watermark(input_path: String) -> Result<bool, String> {
     }
 }
 
-pub async fn read_audio_genre(input_path: String) -> String {
-    let output = execute_ffmpeg_with_kill_switch(spawn_headless_ffmpeg()
-        .args(["-i", &input_path, "-f", "ffmetadata", "-"]));
+use std::process::Command;
+use std::path::Path;
+
+fn get_ffprobe_path() -> String {
+    if let Ok(mut exe_path) = std::env::current_exe() {
+        exe_path.pop();
+        exe_path.push(if cfg!(target_os = "windows") { "ffprobe.exe" } else { "ffprobe" });
+        if exe_path.exists() {
+            return exe_path.to_string_lossy().into_owned();
+        }
+    }
+    if cfg!(target_os = "macos") {
+        if Path::new("/opt/homebrew/bin/ffprobe").exists() { return "/opt/homebrew/bin/ffprobe".to_string(); }
+        if Path::new("/usr/local/bin/ffprobe").exists() { return "/usr/local/bin/ffprobe".to_string(); }
+    }
+    "ffprobe".to_string()
+}
+
+fn get_ffmpeg_path() -> String {
+    if let Ok(mut exe_path) = std::env::current_exe() {
+        exe_path.pop();
+        exe_path.push(if cfg!(target_os = "windows") { "ffmpeg.exe" } else { "ffmpeg" });
+        if exe_path.exists() {
+            return exe_path.to_string_lossy().into_owned();
+        }
+    }
+    if cfg!(target_os = "macos") {
+        if Path::new("/opt/homebrew/bin/ffmpeg").exists() { return "/opt/homebrew/bin/ffmpeg".to_string(); }
+        if Path::new("/usr/local/bin/ffmpeg").exists() { return "/usr/local/bin/ffmpeg".to_string(); }
+    }
+    "ffmpeg".to_string()
+}
+
+// 🛠️ ANALIZADOR NEURONAL LIGERO (FFMPEG AST)
+fn analyze_transients(file_path: &Path) -> String {
+    // Escaneamos 5 segundos desde la mitad de la canción para evitar las intros sin ritmo.
+    let output = Command::new(get_ffmpeg_path())
+        .args([
+            "-ss", "00:01:30", 
+            "-t", "5",
+            "-i", file_path.to_str().unwrap(),
+            "-af", "astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.Peak_level",
+            "-f", "null", "-"
+        ])
+        .output();
 
     if let Ok(out) = output {
-        let log = format!("{}{}", String::from_utf8_lossy(&out.stderr), String::from_utf8_lossy(&out.stdout));
-        for line in log.to_lowercase().lines() {
-            if line.starts_with("genre=") {
-                return line.replace("genre=", "").trim().to_string();
+        let log = String::from_utf8_lossy(&out.stderr);
+        let mut peak_count = 0;
+        let mut rms_level = 0.0;
+        let mut readings = 0;
+
+        // Parseo de los picos crudos.
+        for line in log.lines() {
+            if line.contains("lavfi.astats.Overall.Peak_level") {
+                if let Some(val_str) = line.split('=').last() {
+                    if let Ok(val) = val_str.trim().parse::<f32>() {
+                        // Un pico por encima de -5dB suele ser una campana o un redoblante seco (Tropical/Rock).
+                        if val > -5.0 { peak_count += 1; }
+                        rms_level += val;
+                        readings += 1;
+                    }
+                }
             }
+        }
+
+        if readings > 0 {
+            let avg_peak = rms_level / readings as f32;
+            
+            // LÓGICA DE DENSIDAD:
+            // - Si hay muchísimos picos súper agresivos y rápidos, es percusión acústica viva.
+            if peak_count > 15 { return "salsa".to_string(); } 
+            
+            // - Si los picos son constantes y aplastados (cerca a 0dB), es un bajo/synth masterizado (Urbano).
+            if avg_peak > -3.0 { return "actualidad".to_string(); }
+            
+            // - Si los picos tienen dinámica variable, suele ser acústico o Rock.
+            return "rock".to_string();
         }
     }
     "desconocido".to_string()
 }
 
 
+pub async fn read_audio_genre(input_path: String) -> String {
+    let path = Path::new(&input_path);
+    let path_str = path.to_string_lossy().to_lowercase();
+
+    // 1. CERO-COST HEURÍSTICA LÉXICA (Para bibliotecas organizadas en disco)
+    if path_str.contains("salsa") { return "salsa".to_string(); }
+    if path_str.contains("merengues") || path_str.contains("merengue") { return "merengue".to_string(); }
+    if path_str.contains("cumbias") || path_str.contains("cumbia") { return "cumbia".to_string(); }
+    if path_str.contains("nacional") { return "nacional".to_string(); }
+    if path_str.contains("vallenatos") || path_str.contains("vallenato") { return "vallenato".to_string(); }
+    if path_str.contains("guaracha") { return "guaracha".to_string(); }
+    if path_str.contains("80s") { return "80s".to_string(); }
+    if path_str.contains("rock") { return "rock".to_string(); }
+    if path_str.contains("baladas") || path_str.contains("balada") { return "balada".to_string(); }
+    if path_str.contains("española") || path_str.contains("espanola") { return "española".to_string(); }
+    if path_str.contains("bachatas") || path_str.contains("bachata") { return "bachata".to_string(); }
+    if path_str.contains("actualidad") { return "actualidad".to_string(); }
+    if path_str.contains("fiesta") { return "fiesta".to_string(); }
+
+    // 2. LECTURA DE ID3v2 
+    let output = Command::new(get_ffprobe_path())
+        .args([
+            "-v", "error",
+            "-show_entries", "format_tags=genre",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            path.to_str().unwrap()
+        ])
+        .output();
+
+    if let Ok(out) = output {
+        let tag = String::from_utf8_lossy(&out.stdout).trim().to_lowercase();
+        if !tag.is_empty() && tag != "unknown" {
+            if tag.contains("salsa") { return "salsa".to_string(); }
+            if tag.contains("merengue") { return "merengue".to_string(); }
+            if tag.contains("cumbia") { return "cumbia".to_string(); }
+            if tag.contains("rock") { return "rock".to_string(); }
+            if tag.contains("electro") || tag.contains("house") || tag.contains("pop") { return "actualidad".to_string(); }
+            return tag;
+        }
+    }
+
+    // 3. ANÁLISIS ESPECTRAL BLINDADO (Si todo lo demás falla)
+    // Si la ruta no dice nada ("Descargas/pista_rara.mp3") y el ID3 está vacío,
+    // usamos FFmpeg nativo en C++ para leer la energía y predecir el comportamiento.
+    analyze_transients(path)
+}
 
 pub async fn auto_detect_and_inject_bpm(input_path: String) -> Result<f64, String> {
     let path = Path::new(&input_path);

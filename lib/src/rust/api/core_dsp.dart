@@ -6,7 +6,7 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `atomic_replace`, `execute_ffmpeg_with_kill_switch`, `extract_bpm_dsp`, `extract_json_value`, `get_ffmpeg_path`, `spawn_headless_ffmpeg`
+// These functions are ignored because they are not marked as `pub`: `analyze_transients`, `atomic_replace`, `execute_ffmpeg_with_kill_switch`, `extract_bpm_dsp`, `extract_json_value`, `get_ffmpeg_path`, `get_ffprobe_path`, `spawn_headless_ffmpeg`
 
 void abortActiveProcess() =>
     RustLib.instance.api.crateApiCoreDspAbortActiveProcess();

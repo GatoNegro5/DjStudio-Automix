@@ -171,7 +171,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
       final home = Platform.environment['HOME'];
       baseDir = home != null ? '$home/Music/DjPlaylists' : '/tmp/DjPlaylists';
     } else {
-      // Fallback seguro para Android / iOS
       baseDir = '/storage/emulated/0/Music/DjPlaylists';
     }
     final dir = Directory(baseDir);
@@ -376,7 +375,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
         await incomingPlayer.seek(Duration(milliseconds: cueInMs));
       } catch (e) {
         debugPrint(
-          "⚠️ [PRE-FLIGHT I/O ERROR]: No se pudo montar el buffer en RAM para $nextTrack",
+          "⚠️ [PRE-FLIGHT ERROR]: No se pudo montar el buffer para $nextTrack",
         );
       }
     }
@@ -390,10 +389,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
       if (ratio >= 0.88 && ratio <= 1.12) incomingRate = ratio;
     }
     await incomingPlayer.setRate(incomingRate);
-
-    debugPrint(
-      "⚡ [SHADOW LOAD]: Codec pre-calentado y anclado en memoria para $nextTrack",
-    );
   }
 
   void _attachListeners(Player player) {
@@ -404,7 +399,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
 
     _positionSub = player.stream.position.listen((Duration pos) {
       final posMs = pos.inMilliseconds;
-      final durMs = state.duration.inMilliseconds;
 
       state = state.copyWith(position: pos);
 
@@ -486,7 +480,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
           state.autoMixArmed &&
           !_isCrossfading &&
           state.nextTrackPath != null) {
-        debugPrint("🔴 [VBR/EOF DETECTADO]: Forzando rescate Automix...");
         _isPrepModeBypass = false;
         _triggerCrossfade();
       }
@@ -509,6 +502,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
     return match != null ? double.parse(match.group(1)!) : 0.0;
   }
 
+  // 🛠️ MOTOR DSP HÍBRIDO (FFmpeg Raw en Windows | Dart-Native en Mac/Android)
   Future<void> _executeMixEngine({
     required Player fadingPlayer,
     required Player incomingPlayer,
@@ -517,77 +511,106 @@ class PlayerNotifier extends Notifier<PlayerState> {
     required double incomingRate,
   }) async {
     final stopwatch = Stopwatch()..start();
-
     final String currentBaseFilter = ref
         .read(equalizerProvider.notifier)
         .currentBaseFilter;
+    final bool useFfmpeg = Platform.isWindows;
 
-    if (mixProfile == 'echo_out') {
-      (fadingPlayer.platform as dynamic)?.setProperty(
+    debugPrint(
+      "🎛️ [MIX ENGINE] Engine: ${useFfmpeg ? 'FFmpeg (C++)' : 'Dart (Native CPU)'} | Curva: $mixProfile",
+    );
+
+    if (mixProfile == 'echo_out' || mixProfile == 'slam_cut') {
+      // 🛠️ TROPICAL & FOLKLORE: Corte Seco y Rebote
+      if (useFfmpeg && mixProfile == 'echo_out') {
+        (fadingPlayer.platform as dynamic)?.setProperty(
+          'af',
+          '$currentBaseFilter,aecho=0.8:0.9:500:0.5',
+        );
+      }
+      await fadingPlayer.setVolume(0.0);
+      await incomingPlayer.setVolume(100.0);
+      // El Delay de 2s solo aplica si FFmpeg inyectó el eco, si no, es un Slam Cut rápido.
+      await Future.delayed(
+        Duration(
+          milliseconds: (useFfmpeg && mixProfile == 'echo_out') ? 2000 : 500,
+        ),
+      );
+      await fadingPlayer.stop();
+    } else if (mixProfile == 'brake_stop') {
+      // 🛠️ CUMBIA & NACIONAL: Simulación de Freno de Vinilo vía interpolación (Universal)
+      double rateOut = 1.0;
+      double volIn = 0.0;
+      int brakeDuration = 800;
+      while (stopwatch.elapsedMilliseconds < brakeDuration) {
+        final progress = (stopwatch.elapsedMilliseconds / brakeDuration).clamp(
+          0.0,
+          1.0,
+        );
+        rateOut = 1.0 - (progress * 0.95);
+        volIn = progress * 100.0;
+
+        await fadingPlayer.setRate(rateOut.clamp(0.05, 1.0));
+        await incomingPlayer.setVolume(volIn.clamp(0.0, 100.0));
+        await Future.delayed(const Duration(milliseconds: 16));
+      }
+      await fadingPlayer.setVolume(0.0);
+      await fadingPlayer.stop();
+      await incomingPlayer.setVolume(100.0);
+    } else {
+      // 🛠️ TRANSICIONES LARGAS (Constant Power, Quick Fade, Bass Swap)
+      if (useFfmpeg && mixProfile == 'bass_swap') {
+        // Suprime el sub-grave del Deck A (Saliente)
+        (fadingPlayer.platform as dynamic)?.setProperty(
+          'af',
+          '$currentBaseFilter,lowshelf=g=-12:f=80',
+        );
+      } else if (useFfmpeg &&
+          (mixProfile == 'eq_kill' || mixProfile == 'quick_fade')) {
+        // Suprime el sub-grave del Deck B (Entrante)
+        (incomingPlayer.platform as dynamic)?.setProperty(
+          'af',
+          '$currentBaseFilter,lowshelf=g=-12:f=120',
+        );
+      }
+
+      while (stopwatch.elapsedMilliseconds < mixDurationMs) {
+        final double progress = (stopwatch.elapsedMilliseconds / mixDurationMs)
+            .clamp(0.0, 1.0);
+        double volOut = 100.0;
+        double volIn = 100.0;
+
+        if (mixProfile == 'eq_kill' || mixProfile == 'quick_fade') {
+          volOut = pow(1.0 - progress, 2.5) * 100.0;
+          volIn = 70.0 + (progress * 30.0);
+        } else {
+          volOut = cos(progress * (pi / 2)) * 100.0;
+          volIn = sin(progress * (pi / 2)) * 100.0;
+        }
+
+        await fadingPlayer.setVolume(volOut.clamp(0.0, 100.0));
+        await incomingPlayer.setVolume(volIn.clamp(0.0, 100.0));
+        await Future.delayed(const Duration(milliseconds: 20));
+      }
+      await fadingPlayer.stop();
+    }
+
+    // 🛠️ LIMPIEZA ATÓMICA DE ESTADOS Y FILTROS
+    await fadingPlayer.setVolume(100.0);
+    await fadingPlayer.setRate(1.0);
+    if (useFfmpeg) {
+      (fadingPlayer.platform as dynamic)?.setProperty('af', currentBaseFilter);
+      (incomingPlayer.platform as dynamic)?.setProperty(
         'af',
-        '$currentBaseFilter,aecho=0.8:0.9:1000:0.5',
+        currentBaseFilter,
       );
     }
 
-    debugPrint("🎛️ [MIX ENGINE] Ejecutando transición: $mixProfile");
-
-    while (stopwatch.elapsedMilliseconds < mixDurationMs) {
-      final double progress = (stopwatch.elapsedMilliseconds / mixDurationMs)
-          .clamp(0.0, 1.0);
-      double volOut = 100.0, volIn = 100.0;
-      double rateOut = 1.0;
-
-      if (mixProfile == 'vinyl_brake') {
-        if (progress < 0.4) {
-          rateOut = 1.0 - (progress / 0.4) * 0.95;
-          volOut = 100.0 - (progress / 0.4) * 80.0;
-          volIn = progress * 100.0;
-        } else {
-          rateOut = 0.05;
-          volOut = 0.0;
-          volIn = 100.0;
-        }
-      } else if (mixProfile == 'echo_out') {
-        volOut = (1.0 - progress) * 100.0;
-        volIn = progress * 100.0;
-      } else if (mixProfile == 'slam_cut') {
-        volIn = progress < 0.1 ? (progress / 0.1) * 100.0 : 100.0;
-        volOut = progress < 0.3 ? 100.0 - (progress / 0.3) * 100.0 : 0.0;
-      } else if (mixProfile == 'eq_kill') {
-        volOut = pow(1.0 - progress, 2.5) * 100.0;
-        volIn = 70.0 + (progress * 30.0);
-      } else if (mixProfile == 'linear') {
-        volOut = (1.0 - progress) * 100.0;
-        volIn = progress * 100.0;
-      } else if (mixProfile == 'sharp') {
-        volOut = progress < 0.9
-            ? 100.0
-            : (1.0 - (progress - 0.9) * 10.0) * 100.0;
-        volIn = progress > 0.1 ? 100.0 : (progress * 10.0) * 100.0;
-      } else {
-        volOut = cos(progress * (pi / 2)) * 100.0;
-        volIn = sin(progress * (pi / 2)) * 100.0;
-      }
-
-      await fadingPlayer.setVolume(volOut.clamp(0.0, 100.0));
-      await incomingPlayer.setVolume(volIn.clamp(0.0, 100.0));
-
-      if (mixProfile == 'vinyl_brake' && rateOut >= 0.05 && rateOut <= 1.0) {
-        await fadingPlayer.setRate(rateOut);
-      }
-
-      await Future.delayed(const Duration(milliseconds: 16));
-    }
-
-    await fadingPlayer.stop();
-    await fadingPlayer.setVolume(100.0);
-    await fadingPlayer.setRate(1.0);
-
-    if (mixProfile == 'echo_out') {
-      (fadingPlayer.platform as dynamic)?.setProperty('af', currentBaseFilter);
-    }
-
-    if (incomingRate != 1.0) {
+    // 🛠️ AJUSTE BEATMATCHING ALGÓRITMICO
+    if (incomingRate != 1.0 &&
+        mixProfile != 'echo_out' &&
+        mixProfile != 'brake_stop' &&
+        mixProfile != 'slam_cut') {
       final pitchStopwatch = Stopwatch()..start();
       const int pitchReleaseDurationMs = 3000;
       final double rateDiff = 1.0 - incomingRate;
@@ -701,9 +724,9 @@ class PlayerNotifier extends Notifier<PlayerState> {
       mixDurationMs = 12000;
       final djEffects = [
         'constant_power',
-        'vinyl_brake',
         'echo_out',
-        'slam_cut',
+        'bass_swap',
+        'brake_stop',
       ];
       mixProfile = djEffects[Random().nextInt(djEffects.length)];
     } else {
@@ -790,9 +813,9 @@ class PlayerNotifier extends Notifier<PlayerState> {
       mixDurationMs = 12000;
       final djEffects = [
         'constant_power',
-        'vinyl_brake',
         'echo_out',
-        'slam_cut',
+        'bass_swap',
+        'brake_stop',
       ];
       mixProfile = djEffects[Random().nextInt(djEffects.length)];
     } else {
@@ -880,9 +903,9 @@ class PlayerNotifier extends Notifier<PlayerState> {
       mixDurationMs = 12000;
       final djEffects = [
         'constant_power',
-        'vinyl_brake',
         'echo_out',
-        'slam_cut',
+        'bass_swap',
+        'brake_stop',
       ];
       mixProfile = djEffects[Random().nextInt(djEffects.length)];
     } else {
@@ -895,9 +918,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
     }
 
     if (!_isStandbyArmed) {
-      debugPrint(
-        "⚠️ [FALLBACK JIT]: El pre-flight no se ejecutó. Cargando de emergencia.",
-      );
       await incomingPlayer.setVolume(0.0);
       await incomingPlayer.open(Media(nextTrack), play: false);
 
@@ -968,8 +988,9 @@ class PlayerNotifier extends Notifier<PlayerState> {
 
     final path = playlist[startIndex];
     await _loadLyrics(path);
-    if (state.automixMode == AutomixMode.semantic)
+    if (state.automixMode == AutomixMode.semantic) {
       await _loadTrackMetadata(path);
+    }
 
     int cueInMs = 0;
     if (state.automixMode == AutomixMode.semantic) {
@@ -1010,6 +1031,41 @@ class PlayerNotifier extends Notifier<PlayerState> {
     return (state.currentIndex + 1) < state.playlist.length
         ? state.currentIndex + 1
         : (state.currentIndex == -1 ? 0 : -1);
+  }
+
+  // 🛠️ FIX MÓVIL: Veto a llamadas CLI de ffprobe
+  Future<int> _getLocalDurationSec(String filePath) async {
+    if (Platform.isAndroid || Platform.isIOS) {
+      final meta = await ref.read(dbServiceProvider).getTrackMetadata(filePath);
+      if (meta != null && meta.mixDurationMs > 0) {
+        return meta.mixDurationMs ~/ 1000;
+      }
+      return 0;
+    }
+
+    try {
+      String ffprobePath = 'ffprobe';
+      if (Platform.isMacOS) {
+        if (File('/opt/homebrew/bin/ffprobe').existsSync())
+          ffprobePath = '/opt/homebrew/bin/ffprobe';
+        else if (File('/usr/local/bin/ffprobe').existsSync())
+          ffprobePath = '/usr/local/bin/ffprobe';
+      }
+      final result = await Process.run(ffprobePath, [
+        '-v',
+        'error',
+        '-show_entries',
+        'format=duration',
+        '-of',
+        'default=noprint_wrappers=1:nokey=1',
+        filePath,
+      ]);
+      if (result.exitCode == 0) {
+        return (double.tryParse(result.stdout.toString().trim()) ?? 0.0)
+            .toInt();
+      }
+    } catch (_) {}
+    return 0;
   }
 
   Future<void> _loadLyrics(String audioPath) async {
@@ -1141,8 +1197,9 @@ class PlayerNotifier extends Notifier<PlayerState> {
     );
     _saveSnapshot();
     await _loadLyrics(newPath);
-    if (state.automixMode == AutomixMode.semantic)
+    if (state.automixMode == AutomixMode.semantic) {
       await _loadTrackMetadata(newPath);
+    }
 
     final Player fadingPlayer = _activePlayer;
     final Player incomingPlayer = _standbyPlayer;
@@ -1200,9 +1257,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
     } catch (_) {}
 
     state = state.copyWith(lyrics: [], activeLyricIndex: -1);
-    debugPrint(
-      "🗑️ [PAPELERA] Cues y archivo NLP destruidos y reseteados para: $path",
-    );
   }
 
   Future<void> autoSyncFirstLyric() async {
@@ -1229,7 +1283,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
 
     await _saveLyricsToFile(state.currentTrackPath!, newLyrics);
     state = state.copyWith(lyrics: newLyrics);
-    debugPrint("✅ [SYNC GLOBAL] Matriz reconstruida por Delta: ${deltaMs}ms");
   }
 
   Future<void> autoSyncFromCurrentLyric() async {
@@ -1260,7 +1313,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
 
     await _saveLyricsToFile(state.currentTrackPath!, newLyrics);
     state = state.copyWith(lyrics: newLyrics);
-    debugPrint("✅ [SYNC MED] Matriz reconstruida por Delta: ${deltaMs}ms");
   }
 
   Future<void> _saveLyricsToFile(

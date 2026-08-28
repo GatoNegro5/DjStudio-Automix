@@ -379,15 +379,20 @@ class DspNlpWorkspace extends ConsumerWidget {
     final bool isMobileOS = Platform.isAndroid || Platform.isIOS;
 
     final Map<String, Map<String, dynamic>> mixProfiles = {
-      'reggaeton': {'curve': 'eq_kill', 'durationMs': 4000},
-      'salsa': {'curve': 'sharp', 'durationMs': 2000},
-      'merengue': {'curve': 'sharp', 'durationMs': 2500},
-      'balada': {'curve': 'linear', 'durationMs': 8000},
-      'rock': {'curve': 'constant_power', 'durationMs': 3500},
-      'cumbia': {'curve': 'constant_power', 'durationMs': 3000},
-      'electro': {'curve': 'eq_kill', 'durationMs': 7000},
-      'latin': {'curve': 'constant_power', 'durationMs': 4500},
-      'pop': {'curve': 'constant_power', 'durationMs': 4000},
+      'salsa': {'curve': 'echo_out', 'durationMs': 0},
+      'merengue': {'curve': 'echo_out', 'durationMs': 0},
+      'cumbia': {'curve': 'brake_stop', 'durationMs': 1000},
+      'nacional': {'curve': 'brake_stop', 'durationMs': 500},
+      'vallenato': {'curve': 'echo_out', 'durationMs': 0},
+      'guaracha': {'curve': 'brake_stop', 'durationMs': 1000},
+      '80s': {'curve': 'quick_fade', 'durationMs': 2500},
+      'rock': {'curve': 'eq_kill', 'durationMs': 2000},
+      'balada': {'curve': 'quick_fade', 'durationMs': 3000},
+      'española': {'curve': 'quick_fade', 'durationMs': 2500},
+      'bachata': {'curve': 'constant_power', 'durationMs': 4000},
+      'actualidad': {'curve': 'bass_swap', 'durationMs': 6000},
+      'fiesta': {'curve': 'bass_swap', 'durationMs': 6000},
+      'descargas': {'curve': 'constant_power', 'durationMs': 5000},
     };
 
     int consecutiveErrors = 0;
