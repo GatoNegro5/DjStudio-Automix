@@ -4,7 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'providers/broadcast_provider.dart';
 import 'providers/directory_provider.dart';
-import 'playerDj.dart'; // Para reutilizar WasapiRecordNotifier
+import 'playerDj.dart';
 
 class BroadcastWorkspace extends ConsumerWidget {
   const BroadcastWorkspace({super.key});
@@ -40,7 +40,7 @@ class BroadcastWorkspace extends ConsumerWidget {
                     color: Colors.white54,
                     size: 18,
                   ),
-                  onPadding: EdgeInsets.zero,
+                  padding: EdgeInsets.zero,
                   constraints: const BoxConstraints(),
                   onPressed: () =>
                       ref.read(directoryProvider.notifier).loadDirectory(),
