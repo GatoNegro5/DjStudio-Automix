@@ -96,8 +96,11 @@ jobs:
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
           if [ "${{ matrix.target }}" == "apk" ]; then
-            echo "🔴 INICIANDO TRACKER DE AISLAMIENTO PARA NDK..."
+            echo "🔴 PARCHEANDO CRLF Y LEVANTANDO TRACKER NDK..."
+            sudo apt-get update && sudo apt-get install -y dos2unix
             cd android
+            dos2unix gradlew
+            chmod +x gradlew
             ./gradlew :rust_lib_djstudio_player:cargokitCargoBuildRust_lib_djstudio_playerRelease --info --stacktrace
           else
             ${{ matrix.build_cmd }}
