@@ -572,6 +572,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
     if (index < 0 || index >= state.playlist.length || _isCrossfading) return;
     _isCrossfading = true;
     _isPrepModeBypass = false;
+    _isStandbyArmed = false; // 🛠️ FIX: Aborto atómico de Pre-Flight residual
 
     final String nextTrack = state.playlist[index];
     final Player fadingPlayer = _activePlayer;
@@ -623,9 +624,11 @@ class PlayerNotifier extends Notifier<PlayerState> {
       position: Duration(milliseconds: cueInMs),
     );
 
-    await _loadLyrics(nextTrack);
-    await _loadTrackMetadata(nextTrack);
-    _saveSnapshot();
+    Future.wait([
+      _loadLyrics(nextTrack),
+      _loadTrackMetadata(nextTrack),
+      _saveSnapshot(),
+    ]);
 
     await _executeMixEngine(
       fadingPlayer: fadingPlayer,
@@ -644,6 +647,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
 
     _isCrossfading = true;
     _isPrepModeBypass = false;
+    _isStandbyArmed = false; // 🛠️ FIX: Aborto atómico de Pre-Flight residual
 
     final String nextTrack = state.playlist[index];
     final Player fadingPlayer = _activePlayer;
@@ -695,9 +699,11 @@ class PlayerNotifier extends Notifier<PlayerState> {
       position: Duration(milliseconds: cueInMs),
     );
 
-    await _loadLyrics(nextTrack);
-    await _loadTrackMetadata(nextTrack);
-    _saveSnapshot();
+    Future.wait([
+      _loadLyrics(nextTrack),
+      _loadTrackMetadata(nextTrack),
+      _saveSnapshot(),
+    ]);
 
     await _executeMixEngine(
       fadingPlayer: fadingPlayer,

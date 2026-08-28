@@ -40,12 +40,24 @@ class NlpWorker {
   }
 
   // 🛠️ MÓDULO V4.1: CÁLCULO DE COLISIÓN VOCAL CON ESCUDO ANTI-BASURA
+  // 🛠️ MÓDULO V4.2: CÁLCULO DE COLISIÓN VOCAL (BLINDADO CONTRA CUES MANUALES)
   Future<void> _processVocalBoundingBox(
     String audioPath,
     String syncedLyrics,
     int durationSec,
   ) async {
     try {
+      final db = ref.read(dbServiceProvider);
+      final existingMeta = await db.getTrackMetadata(audioPath);
+
+      // 🛡️ REGLA MAESTRA: Si el usuario ya fijó puntos en el Laboratorio, el NLP retrocede.
+      if (existingMeta != null && existingMeta.isManualCue) {
+        debugPrint(
+          "⏭️ [AUTO-MASTER] NLP Evadido. Cues manuales detectados para: $audioPath",
+        );
+        return;
+      }
+
       final regex = RegExp(r'\[(\d{2}):(\d{2})\.(\d{2,3})\](.*)');
       int? firstMs;
       int? lastMs;
@@ -56,9 +68,6 @@ class NlpWorker {
         if (match != null) {
           final text = match.group(4)!.trim().toLowerCase();
 
-          // ======================================================
-          // 🛠️ FILTRO ANTI-BASURA: Ignora metadata y firmas de LRC
-          // ======================================================
           bool isGarbage =
               text.isEmpty ||
               text.startsWith('by:') ||
@@ -76,31 +85,34 @@ class NlpWorker {
             if (match.group(3)!.length == 2) ms *= 10;
             final totalMs = (min * 60000) + (sec * 1000) + ms;
 
-            firstMs ??= totalMs; // Fija el timestamp de la primera sílaba REAL
-            lastMs =
-                totalMs; // Se sobreescribe hasta llegar a la última sílaba REAL
+            firstMs ??= totalMs;
+            lastMs = totalMs;
           }
         }
       }
 
       if (firstMs != null && lastMs != null) {
-        // 1. CUE IN: 5 segundos antes de que empiece a cantar
         int cueIn = firstMs - 5000;
         if (cueIn < 0) cueIn = 0;
 
-        // 2. MIX OUT: 2 segundos después de la última sílaba
-        int mixOut = lastMs + 2000;
+        // 🛠️ FIX: Dinámica de Coda para Outpoints.
+        // En lugar de recortar a 6s estáticos, medimos si la canción tiene "Outro" instrumental.
+        int mixOut = lastMs + 1000; // Solo damos 1s de respiro post-letra
         int totalMs = durationSec * 1000;
 
-        // Limitador Geométrico
-        if (totalMs > 0 && mixOut >= totalMs - 5000) {
-          mixOut = totalMs - 6000;
-          if (mixOut < 0) mixOut = 0;
+        if (totalMs > 0) {
+          final timeRemaining = totalMs - mixOut;
+          // Si el instrumental de salida es larguísimo (> 15s), anclamos el mixOut más atrás para no aburrir
+          if (timeRemaining > 15000) {
+            mixOut = lastMs + 4000;
+          } else if (timeRemaining < 3000) {
+            // Si la letra llega hasta el mismísimo final, el mixOut debe retroceder para dar espacio al crossfade de la sig canción
+            mixOut = totalMs - 4000;
+          }
         }
+        if (mixOut < 0) mixOut = 0;
 
-        // 3. Inyección Atómica en ISAR
         try {
-          final db = ref.read(dbServiceProvider);
           await db.saveTrackMetadata(
             path: audioPath,
             cueInMs: cueIn,
