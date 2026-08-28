@@ -127,28 +127,6 @@ pub async fn process_auto_trim(input_path: String) -> Result<bool, String> {
     }
 }
 
-pub async fn inject_watermark(input_path: String) -> Result<bool, String> {
-    // 🛠️ VETO DE EJECUCIÓN
-    if check_watermark(input_path.clone()).await.unwrap_or(false) {
-        return Ok(true);
-    }
-
-    let input = Path::new(&input_path);
-    let temp_path = input.with_file_name("temp_watermark.mp3");
-
-    let output = execute_ffmpeg_with_kill_switch(spawn_headless_ffmpeg()
-        .args(["-y", "-i", input.to_str().unwrap(), "-map", "0", "-c", "copy", "-metadata", "DjStudio_M3_V2=Verified", temp_path.to_str().unwrap()]))
-        .map_err(|e| format!("OS Invocation Error: {}", e))?;
-
-    if output.status.success() {
-        atomic_replace(&temp_path, input)?;
-        Ok(true)
-    } else {
-        if temp_path.exists() { let _ = fs::remove_file(temp_path); }
-        Err(String::from_utf8_lossy(&output.stderr).to_string())
-    }
-}
-
 pub async fn normalize_lufs(input_path: String) -> Result<bool, String> {
     // 🛠️ VETO DE EJECUCIÓN
     if check_watermark(input_path.clone()).await.unwrap_or(false) {
@@ -211,31 +189,86 @@ pub async fn process_full_pipeline(input_path: String) -> Result<bool, String> {
     }
 }
 
-pub async fn check_watermark(input_path: String) -> Result<bool, String> {
-    let input = std::path::Path::new(&input_path);
-    if !input.exists() { 
-        return Ok(false); 
-    }
 
-    // 1. Ejecutamos FFmpeg pidiendo explícitamente volcar los metadatos a la salida (stdout)
-    let output = execute_ffmpeg_with_kill_switch(spawn_headless_ffmpeg()
-        .args(["-i", input.to_str().unwrap(), "-f", "ffmetadata", "-"]))
-        .map_err(|e| format!("Error de I/O nativo: {}", e));
+// Función segura y universal.
+// En móviles, jamás debemos usar Command::new("ffprobe") a menos que estemos seguros
+// de que el binario fue inyectado por un plugin especial de Flutter (ej. ffmpeg_kit_flutter).
+// Para no inflar el APK en 80MB, usamos una heurística 100% en RAM.
+pub async fn read_audio_genre(input_path: String) -> String {
+    let path = Path::new(&input_path);
+    let path_str = path.to_string_lossy().to_lowercase();
 
-    if let Ok(cmd_output) = output {
-        // 2. FFmpeg es caótico: escribe el banner en stderr y ffmetadata en stdout. 
-        // Leemos ambos buffers y los combinamos en minúsculas.
-        let stdout_str = String::from_utf8_lossy(&cmd_output.stdout).to_lowercase();
-        let stderr_str = String::from_utf8_lossy(&cmd_output.stderr).to_lowercase();
-        
-        let combined_log = format!("{}\n{}", stdout_str, stderr_str);
-        
-        // 3. Evaluación agnóstica a saltos de línea o símbolos
-        if combined_log.contains("djstudio_m3_v2") && combined_log.contains("verified") {
-            return Ok(true);
+    // 1. CERO-COST HEURÍSTICA LÉXICA (Ground Truth para tu Disco Duro)
+    // No gasta CPU, no gasta batería. Es instantáneo.
+    if path_str.contains("salsa") { return "salsa".to_string(); }
+    if path_str.contains("merengues") || path_str.contains("merengue") { return "merengue".to_string(); }
+    if path_str.contains("cumbias") || path_str.contains("cumbia") { return "cumbia".to_string(); }
+    if path_str.contains("nacional") { return "nacional".to_string(); }
+    if path_str.contains("vallenatos") || path_str.contains("vallenato") { return "vallenato".to_string(); }
+    if path_str.contains("guaracha") { return "guaracha".to_string(); }
+    if path_str.contains("80s") { return "80s".to_string(); }
+    if path_str.contains("rock") { return "rock".to_string(); }
+    if path_str.contains("baladas") || path_str.contains("balada") { return "balada".to_string(); }
+    if path_str.contains("española") || path_str.contains("espanola") { return "española".to_string(); }
+    if path_str.contains("bachatas") || path_str.contains("bachata") { return "bachata".to_string(); }
+    if path_str.contains("actualidad") { return "actualidad".to_string(); }
+    if path_str.contains("fiesta") { return "fiesta".to_string(); }
+
+    // 2. FALLBACK A METADATOS (ID3v2) - Seguro para Android.
+    // Usamos el paquete puro de Rust `id3` en lugar de invocar a FFprobe.
+    // Asegúrate de tener `id3 = "1.1.2"` en el `Cargo.toml` de la carpeta rust.
+    if let Ok(tag) = id3::Tag::read_from_path(path) {
+        if let Some(genre) = tag.genre() {
+            let genre_lower = genre.to_lowercase();
+            if genre_lower.contains("salsa") { return "salsa".to_string(); }
+            if genre_lower.contains("merengue") { return "merengue".to_string(); }
+            if genre_lower.contains("cumbia") { return "cumbia".to_string(); }
+            if genre_lower.contains("rock") { return "rock".to_string(); }
+            if genre_lower.contains("electro") || genre_lower.contains("house") || genre_lower.contains("pop") { 
+                return "actualidad".to_string(); 
+            }
+            return genre_lower;
         }
     }
+
+    // Si la pista está en "Descargas" y no tiene metadata, asumiremos
+    // un perfil cuantizado seguro (crossfade estándar).
+    "desconocido".to_string()
+}
+
+// Para el inyector del sello de agua (ID3v2).
+pub async fn inject_watermark(input_path: String) -> Result<bool, String> {
+    let path = Path::new(&input_path);
+    if !path.exists() {
+        return Err("File not found".to_string());
+    }
+
+    // Leemos el tag existente o creamos uno nuevo
+    let mut tag = id3::Tag::read_from_path(path).unwrap_or_else(|_| id3::Tag::new());
     
+    // Sello de validación
+    tag.set_comment("ReGenial Master");
+    
+    // Escribimos de vuelta al archivo MP3 de forma nativa (Universal)
+    match tag.write_to_path(path, id3::Version::Id3v24) {
+        Ok(_) => Ok(true),
+        Err(e) => Err(format!("Failed to write ID3 tag: {}", e)),
+    }
+}
+
+pub async fn check_watermark(input_path: String) -> Result<bool, String> {
+    let path = Path::new(&input_path);
+    if !path.exists() {
+        return Err("File not found".to_string());
+    }
+
+    if let Ok(tag) = id3::Tag::read_from_path(path) {
+        if let Some(comment) = tag.comments().next() {
+            if comment.text == "ReGenial Master" {
+                return Ok(true);
+            }
+        }
+    }
     Ok(false)
 }
 
@@ -339,53 +372,6 @@ fn analyze_transients(file_path: &Path) -> String {
     "desconocido".to_string()
 }
 
-
-pub async fn read_audio_genre(input_path: String) -> String {
-    let path = Path::new(&input_path);
-    let path_str = path.to_string_lossy().to_lowercase();
-
-    // 1. CERO-COST HEURÍSTICA LÉXICA (Para bibliotecas organizadas en disco)
-    if path_str.contains("salsa") { return "salsa".to_string(); }
-    if path_str.contains("merengues") || path_str.contains("merengue") { return "merengue".to_string(); }
-    if path_str.contains("cumbias") || path_str.contains("cumbia") { return "cumbia".to_string(); }
-    if path_str.contains("nacional") { return "nacional".to_string(); }
-    if path_str.contains("vallenatos") || path_str.contains("vallenato") { return "vallenato".to_string(); }
-    if path_str.contains("guaracha") { return "guaracha".to_string(); }
-    if path_str.contains("80s") { return "80s".to_string(); }
-    if path_str.contains("rock") { return "rock".to_string(); }
-    if path_str.contains("baladas") || path_str.contains("balada") { return "balada".to_string(); }
-    if path_str.contains("española") || path_str.contains("espanola") { return "española".to_string(); }
-    if path_str.contains("bachatas") || path_str.contains("bachata") { return "bachata".to_string(); }
-    if path_str.contains("actualidad") { return "actualidad".to_string(); }
-    if path_str.contains("fiesta") { return "fiesta".to_string(); }
-
-    // 2. LECTURA DE ID3v2 
-    let output = Command::new(get_ffprobe_path())
-        .args([
-            "-v", "error",
-            "-show_entries", "format_tags=genre",
-            "-of", "default=noprint_wrappers=1:nokey=1",
-            path.to_str().unwrap()
-        ])
-        .output();
-
-    if let Ok(out) = output {
-        let tag = String::from_utf8_lossy(&out.stdout).trim().to_lowercase();
-        if !tag.is_empty() && tag != "unknown" {
-            if tag.contains("salsa") { return "salsa".to_string(); }
-            if tag.contains("merengue") { return "merengue".to_string(); }
-            if tag.contains("cumbia") { return "cumbia".to_string(); }
-            if tag.contains("rock") { return "rock".to_string(); }
-            if tag.contains("electro") || tag.contains("house") || tag.contains("pop") { return "actualidad".to_string(); }
-            return tag;
-        }
-    }
-
-    // 3. ANÁLISIS ESPECTRAL BLINDADO (Si todo lo demás falla)
-    // Si la ruta no dice nada ("Descargas/pista_rara.mp3") y el ID3 está vacío,
-    // usamos FFmpeg nativo en C++ para leer la energía y predecir el comportamiento.
-    analyze_transients(path)
-}
 
 pub async fn auto_detect_and_inject_bpm(input_path: String) -> Result<f64, String> {
     let path = Path::new(&input_path);

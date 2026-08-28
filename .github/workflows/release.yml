@@ -15,14 +15,17 @@ jobs:
             target: apk
             build_cmd: flutter build apk --release
             asset_name: app-release.apk
+            rust_targets: aarch64-linux-android, x86_64-linux-android, armv7-linux-androideabi
           - os: windows-latest
             target: windows
             build_cmd: flutter build windows --release
             asset_name: DjStudio-Windows.zip
+            rust_targets: x86_64-pc-windows-msvc
           - os: macos-latest
             target: macos
             build_cmd: flutter build macos --release
             asset_name: DjStudio-MacOS.zip
+            rust_targets: x86_64-apple-darwin, aarch64-apple-darwin
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -36,6 +39,16 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
+      # 🛠️ INYECCIÓN 1: Instalar Rust y los Targets Nativos por OS
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
+
+      # 🛠️ INYECCIÓN 2: Instalar el Puente Generador FFI en la Máquina Virtual
+      - name: Install Flutter Rust Bridge Codegen
+        run: cargo install flutter_rust_bridge_codegen --version "=2.12.0"
+
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -43,6 +56,21 @@ jobs:
 
       - name: Install Dependencies
         run: flutter pub get
+
+      # 🛠️ INYECCIÓN 3: Generar Memoria FFI (Evita el Linker Error en iOS/Mac/Android)
+      - name: Generate FFI Bindings
+        run: flutter_rust_bridge_codegen generate
+
+      # 🛠️ INYECCIÓN 4: Purgar y enlazar CocoaPods en MacOS antes de compilar
+      - name: Clean & Setup CocoaPods (MacOS Only)
+        if: matrix.target == 'macos'
+        run: |
+          cd macos
+          rm -rf Pods
+          rm -f Podfile.lock
+          pod repo update
+          pod install
+          cd ..
 
       - name: Build Platform
         run: ${{ matrix.build_cmd }}
