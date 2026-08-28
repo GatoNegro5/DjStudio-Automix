@@ -1,6 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:media_kit/media_kit.dart';
-import 'audio_equalizer_service.dart';
+import '../audio_equalizer_service.dart'; // 🛠️ FIX: Ruteo relativo al directorio raíz (lib)
 import 'player_provider.dart';
 import 'broadcast_provider.dart';
 
