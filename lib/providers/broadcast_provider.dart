@@ -280,15 +280,24 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
       }
 
       if (durMs > 0 && !_isCrossfading) {
-        final timeRemainingMs = durMs - posMs;
+        // 🛠️ MOTOR PROPORCIONAL AL 60%: Ignora la lectura NLP/ISAR para el Mix Out.
+        int triggerOutMs = (durMs * 0.60).toInt();
 
-        // Fase 1: Calentamiento de Codec (24 segs)
-        if (timeRemainingMs <= _preFlightTriggerMs && !_isStandbyArmed) {
+        // Límite geométrico de seguridad: Evita desbordes si la pista es anormalmente corta
+        if (triggerOutMs >= durMs - _overlapDurationMs) {
+          triggerOutMs = durMs - _overlapDurationMs - 1000;
+        }
+        if (triggerOutMs < 0) triggerOutMs = 0;
+
+        // Fase 1: Calentamiento de Codec (12 segs antes del trigger proporcional)
+        if (!_isStandbyArmed &&
+            posMs >= (triggerOutMs - 12000) &&
+            triggerOutMs > 12000) {
           _shadowLoadNextTrack();
         }
 
-        // Fase 2: Ejecución Atómica (12 segs)
-        if (timeRemainingMs <= _overlapDurationMs) {
+        // Fase 2: Ejecución Atómica de FX
+        if (posMs >= triggerOutMs) {
           _triggerCrossfade();
         }
       }
