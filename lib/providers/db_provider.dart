@@ -35,14 +35,14 @@ class DatabaseService {
     bool? hasLyrics,
     bool? hasBpm,
     bool? hasCurve,
-    bool? isManualCue, // 🛠️ INYECCIÓN: Escudo protector
+    bool? isManualCue,
   }) async {
     final isar = await ref.read(isarInitProvider.future);
 
-    await isar.writeTxn(() async {
-      final existing = await isar.trackMetadatas.getByFilePath(path);
+    // 🛠️ FIX ISAR: Usar writeTxnSync libera el Event Loop asíncrono y evita el Stuttering de UI
+    isar.writeTxnSync(() {
+      final existing = isar.trackMetadatas.getByFilePathSync(path);
 
-      // Si ya era manual y no se está pasando un override explícito, mantener el blindaje
       final manualStatus = isManualCue ?? existing?.isManualCue ?? false;
 
       final track = TrackMetadata()
@@ -55,11 +55,9 @@ class DatabaseService {
         ..hasLyrics = hasLyrics ?? existing?.hasLyrics ?? false
         ..hasBpm = hasBpm ?? existing?.hasBpm ?? false
         ..hasCurve = hasCurve ?? existing?.hasCurve ?? false
-        ..isManualCue = clearCues
-            ? false
-            : manualStatus; // 🛠️ ASIGNACIÓN ATÓMICA
+        ..isManualCue = clearCues ? false : manualStatus;
 
-      await isar.trackMetadatas.putByFilePath(track);
+      isar.trackMetadatas.putByFilePathSync(track);
     });
   }
 

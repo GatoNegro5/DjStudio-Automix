@@ -1,7 +1,8 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:media_kit/media_kit.dart';
 import 'audio_equalizer_service.dart';
-import 'player_provider.dart'; // 🛠️ INYECCIÓN: Importación del reproductor maestro
+import 'player_provider.dart';
+import 'broadcast_provider.dart';
 
 class EqualizerState {
   final bool enabled;
@@ -46,6 +47,9 @@ class EqualizerNotifier extends StateNotifier<EqualizerState> {
     _sync();
   }
 
+  // EXPOSICIÓN AL AUTOMIX: Permite al Live DJ leer el estado antes de aplicar Ecos/Efectos
+  String get currentBaseFilter => _service.currentBaseFilter;
+
   void toggleEnabled(bool value) {
     state = state.copyWith(enabled: value);
     _sync();
@@ -81,16 +85,19 @@ class EqualizerNotifier extends StateNotifier<EqualizerState> {
   }
 }
 
-// 🛠️ INYECCIÓN DE DEPENDENCIAS: El Provider global
+// INYECCIÓN DE DEPENDENCIAS: El Provider global
 final equalizerProvider = StateNotifierProvider<EqualizerNotifier, EqualizerState>((
   ref,
 ) {
-  // 1. Extraemos la lista con ambos reproductores (Deck A y Deck B) del PlayerNotifier
-  final players = ref.read(playerProvider.notifier).deckPlayers;
+  // Extraemos la lista con AMBOS reproductores (Automix Semántico + Broadcast Radio)
+  final players = [
+    ...ref.read(playerProvider.notifier).deckPlayers,
+    ...ref.read(broadcastProvider.notifier).deckPlayers,
+  ];
 
-  // 2. Inicializamos el servicio Multi-Deck
+  // Inicializamos el servicio Multi-Deck (Afectará a los 4 Decks físicos en RAM)
   final service = AudioEqualizerService(players);
 
-  // 3. Retornamos el controlador del ecualizador
+  // Retornamos el controlador del ecualizador
   return EqualizerNotifier(service);
 });

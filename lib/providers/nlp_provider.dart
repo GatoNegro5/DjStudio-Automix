@@ -19,20 +19,45 @@ class NlpWorker {
 
   Future<http.Response> _resilientGet(String targetUrl) async {
     final directUri = Uri.parse(targetUrl);
-    try {
-      final res = await http
-          .get(directUri, headers: _headers)
-          .timeout(const Duration(seconds: 3));
-      if (res.statusCode == 200) return res;
-      if (res.statusCode >= 500) {
-        return res;
+    int maxRetries = 3;
+    int baseDelayMs = 1500;
+
+    for (int attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        final res = await http
+            .get(directUri, headers: _headers)
+            .timeout(const Duration(seconds: 4));
+
+        if (res.statusCode == 200) return res;
+
+        // 🛠️ EXPONENTIAL BACKOFF: Si es Rate Limit (429) o Server Error (5xx), esperamos y reintentamos.
+        if (res.statusCode == 429 || res.statusCode >= 500) {
+          if (attempt == maxRetries - 1)
+            return res; // Último intento, devolvemos el error.
+
+          final delay = baseDelayMs * (1 << attempt); // 1.5s -> 3s -> 6s
+          debugPrint(
+            "🟡 [NLP Rate Limit] HTTP ${res.statusCode}. Pausando hilo $delay ms (Intento ${attempt + 1})...",
+          );
+          await Future.delayed(Duration(milliseconds: delay));
+          continue;
+        }
+
+        return res; // Para 404 (Not Found) u otros errores de cliente, devolvemos directo.
+      } catch (e) {
+        if (attempt == maxRetries - 1) {
+          debugPrint(
+            "🟡 [NLP Circuit Breaker] Conexión directa falló tras $maxRetries intentos. Saltando a Proxy...",
+          );
+          break;
+        }
+        await Future.delayed(
+          Duration(milliseconds: baseDelayMs * (1 << attempt)),
+        );
       }
-    } catch (e) {
-      debugPrint(
-        "🟡 [NLP Circuit Breaker] Conexión directa falló. Intentando Proxy...",
-      );
     }
 
+    // 🛠️ FALLBACK: Proxy de última instancia
     final proxyUri = Uri.parse(
       'https://api.allorigins.win/raw?url=${Uri.encodeComponent(targetUrl)}',
     );

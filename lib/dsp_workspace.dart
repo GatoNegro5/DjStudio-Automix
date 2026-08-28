@@ -134,6 +134,18 @@ class DspNlpWorkspace extends ConsumerWidget {
   // ---------------------------------------------------------
   String _getFfprobePath() {
     if (Platform.isAndroid || Platform.isIOS) return 'ffprobe';
+
+    // 🛠️ MAC OS FIX: Búsqueda explícita en rutas de Homebrew (Silicon/Intel)
+    if (Platform.isMacOS) {
+      if (File('/opt/homebrew/bin/ffprobe').existsSync()) {
+        return '/opt/homebrew/bin/ffprobe';
+      }
+      if (File('/usr/local/bin/ffprobe').existsSync()) {
+        return '/usr/local/bin/ffprobe';
+      }
+      return 'ffprobe';
+    }
+
     final exeDir = File(Platform.resolvedExecutable).parent.path;
     final localPath = Platform.isWindows
         ? '$exeDir\\ffprobe.exe'
@@ -378,6 +390,60 @@ class DspNlpWorkspace extends ConsumerWidget {
       'pop': {'curve': 'constant_power', 'durationMs': 4000},
     };
 
+    int consecutiveErrors = 0;
+    String? criticalFailureMessage;
+    bool isThermalThrottling = false;
+
+    final checkpointFile = File(
+      '${targetPath}${Platform.pathSeparator}.dj_master_checkpoint.json',
+    );
+    Map<String, dynamic> checkpoint = {
+      'status': 'started',
+      'timestamp': DateTime.now().toIso8601String(),
+      'processed': <String>[],
+      'failed': <String>[],
+    };
+
+    if (checkpointFile.existsSync()) {
+      try {
+        final existingData = jsonDecode(checkpointFile.readAsStringSync());
+        final String lastStatus = existingData['status'] ?? 'unknown';
+
+        if (lastStatus != 'completed') {
+          checkpoint['processed'] = existingData['processed'] ?? <String>[];
+          checkpoint['failed'] = existingData['failed'] ?? <String>[];
+          final int recoveredCount = (checkpoint['processed'] as List).length;
+
+          debugPrint(
+            "🔄 [PROCESS VALIDATOR] Sesión inconclusa detectada ($lastStatus). Recuperando $recoveredCount pistas.",
+          );
+
+          if (context.mounted && recoveredCount > 0) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  '🔄 Validador Activo: Retomando sesión. Se saltarán $recoveredCount pistas.',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: Colors.black,
+                  ),
+                ),
+                backgroundColor: const Color(0xFF00FFFF),
+                duration: const Duration(seconds: 4),
+                behavior: SnackBarBehavior.floating,
+              ),
+            );
+          }
+        } else {
+          checkpointFile.deleteSync();
+        }
+      } catch (e) {
+        debugPrint(
+          "⚠️ [PROCESS VALIDATOR] Checkpoint corrupto. Iniciando en limpio.",
+        );
+      }
+    }
+
     try {
       final dir = Directory(targetPath);
       if (!dir.existsSync()) return;
@@ -395,6 +461,9 @@ class DspNlpWorkspace extends ConsumerWidget {
       int total = files.length;
       if (total == 0) return;
 
+      checkpoint['status'] = 'in_progress';
+      checkpointFile.writeAsStringSync(jsonEncode(checkpoint));
+
       for (int i = 0; i < total; i++) {
         if (checkAbort()) break;
 
@@ -402,7 +471,23 @@ class DspNlpWorkspace extends ConsumerWidget {
         final originalName = file.uri.pathSegments.last;
         String currentPath = file.path;
 
+        // 🛠️ INYECCIÓN: Máquina de estados para auditoría de DLQ
+        String currentStage = "INIT";
+
+        if ((checkpoint['processed'] as List).contains(originalName) ||
+            (checkpoint['failed'] as List).contains(originalName)) {
+          pipe.updateProgress(
+            i + 1,
+            total,
+            originalName,
+            "⏭️ Validador de I/O: Pista ya procesada. Saltando...",
+          );
+          await Future.delayed(const Duration(milliseconds: 10));
+          continue;
+        }
+
         try {
+          currentStage = "METADATA_CLEANUP";
           pipe.updateProgress(
             i + 1,
             total,
@@ -418,6 +503,7 @@ class DspNlpWorkspace extends ConsumerWidget {
           int durationAfterMs = 0;
 
           if (!isMobileOS) {
+            currentStage = "DSP_FFMPEG";
             pipe.updateProgress(
               i + 1,
               total,
@@ -430,9 +516,9 @@ class DspNlpWorkspace extends ConsumerWidget {
                 .read(dspWorkerProvider)
                 .processSingleFile(currentPath)
                 .timeout(
-                  const Duration(seconds: 45),
+                  const Duration(seconds: 180),
                   onTimeout: () => throw Exception(
-                    "El proceso se atascó mejorando el audio.",
+                    "Timeout DSP: Estrangulamiento Térmico FFmpeg.",
                   ),
                 );
             if (checkAbort()) break;
@@ -447,6 +533,7 @@ class DspNlpWorkspace extends ConsumerWidget {
               await _offsetLrcTimeline(lrcFileToPatch, trimmedMs);
             }
 
+            currentStage = "WATERMARK_ID3";
             pipe.updateProgress(
               i + 1,
               total,
@@ -456,9 +543,9 @@ class DspNlpWorkspace extends ConsumerWidget {
             await rust_dsp
                 .injectWatermark(inputPath: currentPath)
                 .timeout(
-                  const Duration(seconds: 15),
+                  const Duration(seconds: 30),
                   onTimeout: () => throw Exception(
-                    "Hubo un problema al guardar la canción.",
+                    "Timeout: Bloqueo de disco al inyectar ID3v2.",
                   ),
                 );
             if (checkAbort()) break;
@@ -474,24 +561,32 @@ class DspNlpWorkspace extends ConsumerWidget {
 
           final finalName = currentPath.split(Platform.pathSeparator).last;
 
+          currentStage = "NLP_LYRICS";
           pipe.updateProgress(
             i + 1,
             total,
             finalName,
             "🎤 Descargando letras...",
           );
-          await ref
-              .read(nlpWorkerProvider)
-              .processSingleFile(currentPath)
-              .timeout(
-                const Duration(seconds: 20),
-                onTimeout: () =>
-                    throw Exception("No pudimos conectar para bajar la letra."),
-              );
+          try {
+            await ref
+                .read(nlpWorkerProvider)
+                .processSingleFile(currentPath)
+                .timeout(
+                  const Duration(seconds: 60),
+                  onTimeout: () => throw Exception("Timeout de Red LRCLib."),
+                );
+          } catch (e) {
+            debugPrint(
+              "⚠️ [NLP Aislando Error] Letra no encontrada para $finalName: $e",
+            );
+            // No rompemos el pipeline por letra faltante, solo logueamos.
+          }
           if (checkAbort()) break;
 
           String rawGenre = 'desconocido';
           if (!isMobileOS) {
+            currentStage = "GENRE_CLASSIFICATION";
             pipe.updateProgress(
               i + 1,
               total,
@@ -513,6 +608,7 @@ class DspNlpWorkspace extends ConsumerWidget {
             }
           }
 
+          currentStage = "DB_ISAR";
           pipe.updateProgress(
             i + 1,
             total,
@@ -523,31 +619,34 @@ class DspNlpWorkspace extends ConsumerWidget {
           final existingMeta = await ref
               .read(dbServiceProvider)
               .getTrackMetadata(currentPath);
-
           final isManual = existingMeta?.isManualCue ?? false;
 
-          int calculatedCueIn = 0;
-          int calculatedMixOut = 0;
+          int physicalDurationMs = durationAfterMs > 0
+              ? durationAfterMs
+              : await _getAudioDurationMs(currentPath);
+          int calculatedCueIn =
+              (rawGenre.contains('electro') || rawGenre.contains('rock'))
+              ? 100
+              : 350;
+          int calculatedMixOut = physicalDurationMs > assignedDuration
+              ? physicalDurationMs - assignedDuration
+              : physicalDurationMs - 2000;
+          if (calculatedMixOut < 0) calculatedMixOut = 0;
 
-          if (!isManual) {
-            int physicalDurationMs = durationAfterMs;
-            if (physicalDurationMs <= 0) {
-              physicalDurationMs = await _getAudioDurationMs(currentPath);
-            }
-
-            calculatedCueIn =
-                (rawGenre.contains('electro') || rawGenre.contains('rock'))
-                ? 100
-                : 350;
-
-            if (physicalDurationMs > assignedDuration) {
-              calculatedMixOut = physicalDurationMs - assignedDuration;
-            } else {
-              calculatedMixOut = physicalDurationMs - 2000;
-            }
-
-            if (calculatedMixOut < 0) calculatedMixOut = 0;
-          }
+          int finalCueIn =
+              existingMeta != null &&
+                  (isManual ||
+                      (existingMeta.cueInMs != null &&
+                          existingMeta.cueInMs! > 0))
+              ? existingMeta.cueInMs!
+              : calculatedCueIn;
+          int finalMixOut =
+              existingMeta != null &&
+                  (isManual ||
+                      (existingMeta.mixOutMs != null &&
+                          existingMeta.mixOutMs! > 0))
+              ? existingMeta.mixOutMs!
+              : calculatedMixOut;
 
           await ref
               .read(dbServiceProvider)
@@ -556,16 +655,128 @@ class DspNlpWorkspace extends ConsumerWidget {
                 mixProfile: assignedProfile,
                 durationMs: assignedDuration,
                 genre: rawGenre,
-                cueInMs: isManual ? existingMeta!.cueInMs : calculatedCueIn,
-                mixOutMs: isManual ? existingMeta!.mixOutMs : calculatedMixOut,
+                cueInMs: finalCueIn,
+                mixOutMs: finalMixOut,
                 isManualCue: isManual,
               );
+
+          consecutiveErrors = 0;
+          (checkpoint['processed'] as List).add(originalName);
+          checkpoint['timestamp'] = DateTime.now().toIso8601String();
+          checkpointFile.writeAsStringSync(jsonEncode(checkpoint));
         } catch (e) {
-          debugPrint("🔴 Error preparando la pista $originalName: $e");
+          debugPrint(
+            "🔴 Error preparando la pista $originalName en stage $currentStage: $e",
+          );
           pipe.addQuarantine(originalName);
+
+          (checkpoint['failed'] as List).add(originalName);
+          checkpoint['timestamp'] = DateTime.now().toIso8601String();
+          checkpointFile.writeAsStringSync(jsonEncode(checkpoint));
+
+          // 🛠️ ENRIQUECIMIENTO DLQ: Diagnóstico semántico para el Laboratorio
+          String errorCode = "ERR_UNKNOWN";
+          String recommendedAction =
+              "Archivo corrupto. Considera eliminarlo y descargar otra versión.";
+
+          if (currentStage == "METADATA_CLEANUP") {
+            errorCode = "ERR_FILE_IO";
+            recommendedAction =
+                "El archivo está bloqueado por otro programa (ej. Rekordbox, Serato o un reproductor). Ciérralos e inténtalo de nuevo.";
+          } else if (currentStage == "DSP_FFMPEG") {
+            errorCode = "ERR_CODEC";
+            recommendedAction =
+                "El codec del archivo MP3/M4A está roto o vacío. Reemplázalo descargando una nueva copia desde YouTube DL.";
+          } else if (currentStage == "WATERMARK_ID3") {
+            errorCode = "ERR_TAGS";
+            recommendedAction =
+                "Fallo al inyectar firmas ID3v2. Las etiquetas originales están corruptas. Intenta limpiar las etiquetas del archivo.";
+          } else if (currentStage == "DB_ISAR") {
+            errorCode = "ERR_DATABASE";
+            recommendedAction =
+                "Fallo al guardar en ISAR Database. Ejecuta un Reset de Fábrica si el problema persiste.";
+          } else if (e.toString().contains("Timeout DSP")) {
+            errorCode = "ERR_TIMEOUT";
+            recommendedAction =
+                "Fallo por alta temperatura de la CPU al normalizar el audio. Intenta masterizar esta pista sola más tarde.";
+          }
+
+          try {
+            final baseDir = Directory(targetPath).parent;
+            final labDir = Directory(
+              '${baseDir.path}${Platform.pathSeparator}DjStudio_LAB',
+            );
+            if (!labDir.existsSync()) labDir.createSync(recursive: true);
+
+            final registryFile = File(
+              '${labDir.path}${Platform.pathSeparator}quarantine_registry.json',
+            );
+            Map<String, dynamic> registry = {};
+            if (registryFile.existsSync()) {
+              try {
+                registry = jsonDecode(registryFile.readAsStringSync());
+              } catch (_) {}
+            }
+
+            final failFile = File(currentPath);
+            if (failFile.existsSync()) {
+              final newPath =
+                  '${labDir.path}${Platform.pathSeparator}$originalName';
+              failFile.renameSync(newPath);
+
+              // 🛠️ INYECCIÓN DLQ: JSON Enriquecido en lugar de simple path
+              registry[originalName] = {
+                "originalPath": currentPath,
+                "errorCode": errorCode,
+                "errorMsg": e.toString(),
+                "recommendedAction": recommendedAction,
+                "failedAtStage": currentStage,
+                "timestamp": DateTime.now().toIso8601String(),
+              };
+
+              final lrcFile = File(
+                currentPath.replaceAll(
+                  RegExp(r'\.mp3$|\.webm$', caseSensitive: false),
+                  '.lrc',
+                ),
+              );
+              if (lrcFile.existsSync()) {
+                lrcFile.renameSync(
+                  '${labDir.path}${Platform.pathSeparator}${originalName.replaceAll(RegExp(r'\.mp3$|\.webm$', caseSensitive: false), '.lrc')}',
+                );
+              }
+              registryFile.writeAsStringSync(jsonEncode(registry));
+              debugPrint(
+                "⚠️ Pista $originalName aislada físicamente en el DLQ con metadata enriquecida.",
+              );
+            }
+          } catch (ioErr) {
+            debugPrint("🔴 Error crítico de I/O al aislar archivo: $ioErr");
+          }
+
+          consecutiveErrors++;
+          final errorMessage = e.toString();
+
+          if (errorMessage.contains("Timeout DSP")) {
+            isThermalThrottling = true;
+            criticalFailureMessage =
+                "🌡️ ALERTA TÉRMICA: Tu procesador se ha sobrecalentado y el motor DSP colapsó.\n\n👉 ACCIÓN: Deja enfriar el equipo unos minutos y luego vuelve a darle a 'Masterización Global'. El Validador de Procesos saltará todo el trabajo anterior y retomará justo donde te quedaste.";
+            checkpoint['status'] = 'thermal_halt';
+            checkpointFile.writeAsStringSync(jsonEncode(checkpoint));
+            pipe.abort();
+            break;
+          } else if (consecutiveErrors >= 3) {
+            isThermalThrottling = false;
+            criticalFailureMessage =
+                "💥 COLAPSO I/O: Se han detectado múltiples fallos consecutivos de disco o base de datos.\n\n👉 ACCIÓN: Es OBLIGATORIO que ejecutes el 'Reset de Fábrica' antes de intentar masterizar. Recuerda borrar manualmente el archivo oculto .dj_master_checkpoint.json en tu carpeta si quieres forzar un re-procesamiento total.";
+            checkpoint['status'] = 'io_crash';
+            checkpointFile.writeAsStringSync(jsonEncode(checkpoint));
+            pipe.abort();
+            break;
+          }
         }
 
-        await Future.delayed(const Duration(milliseconds: 500));
+        await Future.delayed(const Duration(milliseconds: 100));
       }
 
       if (!checkAbort()) {
@@ -576,13 +787,85 @@ class DspNlpWorkspace extends ConsumerWidget {
           "🥁 Analizando velocidades (Ritmo)",
         );
         await ref.read(dspWorkerProvider).generateStaticBpmCache(targetPath);
+
+        if (criticalFailureMessage == null) {
+          checkpoint['status'] = 'completed';
+          checkpoint['timestamp'] = DateTime.now().toIso8601String();
+          checkpointFile.writeAsStringSync(jsonEncode(checkpoint));
+        }
       }
     } catch (e) {
       debugPrint("🔴 [ERROR AL PREPARAR CARPETA]: $e");
     } finally {
       if (context.mounted) {
         final state = ref.read(pipelineProvider);
-        if (state.total > 0) {
+
+        if (criticalFailureMessage != null) {
+          showDialog(
+            context: context,
+            barrierDismissible: false,
+            builder: (ctx) => AlertDialog(
+              backgroundColor: const Color(0xFF121212),
+              shape: RoundedRectangleBorder(
+                side: BorderSide(
+                  color: isThermalThrottling
+                      ? Colors.orangeAccent
+                      : Colors.redAccent,
+                  width: 2,
+                ),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              title: Row(
+                children: [
+                  Icon(
+                    isThermalThrottling
+                        ? Icons.thermostat
+                        : Icons.warning_amber_rounded,
+                    color: isThermalThrottling
+                        ? Colors.orangeAccent
+                        : Colors.redAccent,
+                  ),
+                  const SizedBox(width: 10),
+                  Text(
+                    isThermalThrottling
+                        ? "Corte Térmico (Thermal Throttling)"
+                        : "Colapso del Pipeline",
+                    style: TextStyle(
+                      color: isThermalThrottling
+                          ? Colors.orangeAccent
+                          : Colors.redAccent,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                    ),
+                  ),
+                ],
+              ),
+              content: Text(
+                criticalFailureMessage!,
+                style: const TextStyle(
+                  color: Colors.white70,
+                  fontSize: 13,
+                  height: 1.4,
+                ),
+              ),
+              actions: [
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: isThermalThrottling
+                        ? Colors.orangeAccent
+                        : Colors.redAccent,
+                    foregroundColor: Colors.black,
+                  ),
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text(
+                    "ENTENDIDO",
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ],
+            ),
+          );
+        } else if (state.total > 0) {
           _showSummaryDialog(
             context,
             "Preparación Completada",

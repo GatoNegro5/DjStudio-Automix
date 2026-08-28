@@ -42,8 +42,10 @@ class EqualizerPreset {
 }
 
 class AudioEqualizerService {
-  // 🛠️ FIX ARQUITECTURA: Soporte Multi-Deck. Recibe la lista para afectar a DECK A y DECK B al mismo tiempo.
   final List<Player> players;
+
+  // Estado en memoria para que el Automix consulte la base antes de inyectar FX espaciales
+  String currentBaseFilter = '';
 
   // Frecuencias fijas de 10 bandas (ISO Standard)
   static const List<int> bandFrequencies = [
@@ -59,10 +61,21 @@ class AudioEqualizerService {
     16000,
   ];
 
-  AudioEqualizerService(this.players);
+  AudioEqualizerService(this.players) {
+    // Inicialización del pipeline limpio
+    _buildAndApply(preamp: 0.0, gains: List.filled(10, 0.0), enabled: true);
+  }
 
-  /// Construye y aplica el Grafo DSP Unificado (Hi-Fi Base + EQ Manual) sobre libmpv
+  /// Construye y aplica el Grafo DSP Unificado
   Future<void> applyEqualizer({
+    required double preamp,
+    required List<double> gains,
+    required bool enabled,
+  }) async {
+    await _buildAndApply(preamp: preamp, gains: gains, enabled: enabled);
+  }
+
+  Future<void> _buildAndApply({
     required double preamp,
     required List<double> gains,
     required bool enabled,
@@ -71,37 +84,45 @@ class AudioEqualizerService {
 
     final List<String> filters = [];
 
-    // 1. 💎 CAPA DE FIDELIDAD BASE (ZERO-LOSS & PSICOACÚSTICA)
-    // ❌ PROHIBIDO usar loudnorm y acompressor aquí. El pipeline de Rust ya masterizó el archivo físico a -14 LUFS.
-    // ✅ Inyectamos Remuestreo SoXR de 28-bit y Crystalizer para regenerar armónicos perdidos en la compresión.
+    // 1. CAPA DE HEADROOM Y NORMALIZACIÓN DINÁMICA (AGC EN TIEMPO REAL)
+    filters.add('aformat=sample_fmts=fltp');
+    // dynaudnorm: Ventana deslizante (f=150), ganancia máxima (g=15), target pico (p=0.95)
+    filters.add('dynaudnorm=f=150:g=15:p=0.95');
+    // alimiter: Techo de ladrillo a -1.5dB para evadir clipping tras la compresión
+    filters.add('alimiter=limit=-1.5dB');
+
+    // 2. CAPA DE FIDELIDAD (SOXR & ARMÓNICOS)
     filters.add('aresample=resampler=soxr:precision=28');
     filters.add('crystalizer=i=2.0');
 
-    // 2. 🎛️ CAPA DE ECUALIZACIÓN MANUAL / PRESETS
+    // 3. CAPA DE ECUALIZACIÓN MANUAL / PRESETS
     if (enabled) {
       if (preamp != 0.0) {
         filters.add('volume=volume=${preamp.toStringAsFixed(1)}dB');
       }
 
       for (int i = 0; i < bandFrequencies.length; i++) {
-        final freq = bandFrequencies[i];
         final gain = gains[i].clamp(-12.0, 12.0);
-        filters.add(
-          'equalizer=f=$freq:width_type=o:w=1:g=${gain.toStringAsFixed(1)}',
-        );
+
+        // ZERO-COST OPTIMIZATION: Si el usuario selecciona "Flat", no sobrecargamos la CPU
+        if (gain != 0.0) {
+          final freq = bandFrequencies[i];
+          filters.add(
+            'equalizer=f=$freq:width_type=o:w=1:g=${gain.toStringAsFixed(1)}',
+          );
+        }
       }
     }
 
-    // 3. 🌐 CAPA ESPACIAL Y SUB-GRAVES (Siempre al final de la cadena de fase)
+    // 4. CAPA ESPACIAL Y SUB-GRAVES
     filters.add('bass=g=3:f=60');
     filters.add('extrastereo=m=1.15');
 
-    // Enviar el grafo de filtros directamente al procesador C++ de libmpv
-    final String afString = filters.join(',');
+    currentBaseFilter = filters.join(',');
 
-    // 🛠️ APLICACIÓN SIMULTÁNEA: Asegura que el AutoMix no pierda la ecualización al cruzar pistas
+    // APLICACIÓN SIMULTÁNEA: Asegura que el AutoMix no pierda la ecualización al cruzar pistas
     for (var player in players) {
-      await (player.platform as dynamic)?.setProperty('af', afString);
+      await (player.platform as dynamic)?.setProperty('af', currentBaseFilter);
     }
   }
 }

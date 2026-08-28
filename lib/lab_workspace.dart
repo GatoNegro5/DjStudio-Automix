@@ -10,7 +10,7 @@ import 'providers/player_provider.dart';
 import 'providers/metadata_provider.dart';
 import 'providers/dsp_provider.dart';
 import 'providers/db_provider.dart';
-import 'providers/nlp_provider.dart'; // 🛠️ FIX: Inyección del NLP Provider
+import 'providers/nlp_provider.dart';
 
 class LabWorkspace extends ConsumerStatefulWidget {
   const LabWorkspace({super.key});
@@ -24,12 +24,10 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
   Map<String, dynamic> _registry = {};
   bool _isLoading = true;
 
-  // Controladores del Editor LRC y Búsqueda
   String? _selectedFileForEdit;
   final TextEditingController _lrcController = TextEditingController();
   final TextEditingController _searchQueryController = TextEditingController();
-  final TextEditingController _ytUrlController =
-      TextEditingController(); // 🛠️ NUEVO: Controlador exclusivo para YT
+  final TextEditingController _ytUrlController = TextEditingController();
 
   @override
   void initState() {
@@ -88,22 +86,18 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
         .map((e) => e.uri.pathSegments.last)
         .toList();
 
-    // 1. Purga unidireccional: Elimina del JSON lo que ya no está en el disco
     _registry.removeWhere((key, value) => !physicalFiles.contains(key));
 
-    // 2. 🛠️ FIX: Reconciliación Bidireccional (Inyección de reemplazos OS)
     final validExtensions = ['.mp3', '.m4a', '.webm', '.wav', '.flac'];
     for (var fileName in physicalFiles) {
       final isAudio = validExtensions.any(
         (ext) => fileName.toLowerCase().endsWith(ext),
       );
       if (isAudio && !_registry.containsKey(fileName)) {
-        // Archivo inyectado o renombrado manualmente fuera del flujo nativo
         _registry[fileName] = 'Origen Desconocido (Inyección Manual OS)';
       }
     }
 
-    // Sobrescritura forzosa para persistir los archivos recuperados
     registryFile.writeAsStringSync(jsonEncode(_registry));
 
     setState(() => _isLoading = false);
@@ -130,22 +124,19 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
       if (lrcFile.existsSync()) {
         final content = lrcFile.readAsStringSync(encoding: utf8);
         setState(() {
-          _selectedFileForEdit =
-              fileName; // 🛠️ FIX: Dispara el renderizado del panel derecho
+          _selectedFileForEdit = fileName;
           _lrcController.text = content;
         });
       } else {
         setState(() {
-          _selectedFileForEdit =
-              fileName; // 🛠️ FIX: Abre el panel vacío para permitir pegar texto
+          _selectedFileForEdit = fileName;
           _lrcController.text = "";
         });
       }
     } catch (e) {
       debugPrint("🔴 Error cargando LRC en UI: $e");
       setState(() {
-        _selectedFileForEdit =
-            fileName; // 🛠️ FIX: Muestra el error en el editor
+        _selectedFileForEdit = fileName;
         _lrcController.text = "Error cargando archivo .lrc: $e";
       });
     }
@@ -167,8 +158,25 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
     );
   }
 
-  Future<void> _restoreFile(String fileName, String originalPath) async {
+  Future<void> _restoreFile(String fileName, dynamic registryValue) async {
     try {
+      // 🛠️ FIX: Extracción tolerante para soportar JSON Enriquecido o Strings legacy
+      String originalPath = registryValue is Map
+          ? (registryValue['originalPath']?.toString() ?? '')
+          : registryValue.toString();
+
+      if (originalPath.isEmpty || originalPath.contains('Origen Desconocido')) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              "🔴 ERROR: Ruta original desconocida. Muévelo manualmente.",
+            ),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+        return;
+      }
+
       final file = File('$_labPath${Platform.pathSeparator}$fileName');
       if (file.existsSync()) {
         final targetDir = Directory(File(originalPath).parent.path);
@@ -389,43 +397,36 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
     }
   }
 
-  // ---------------------------------------------------------
-  // 🛠️ MÓDULO DE TELEMETRÍA Y COMPENSACIÓN VECTORIAL
-  // ---------------------------------------------------------
   String _getFfprobePath() {
-    if (Platform.isAndroid || Platform.isIOS) {
-      debugPrint(
-        "🟢 [LAB TRACKER BIN] Plataforma Móvil. Path FFPROBE: 'ffprobe'",
-      );
+    if (Platform.isAndroid || Platform.isIOS) return 'ffprobe';
+    if (Platform.isMacOS) {
+      if (File('/opt/homebrew/bin/ffprobe').existsSync())
+        return '/opt/homebrew/bin/ffprobe';
+      if (File('/usr/local/bin/ffprobe').existsSync())
+        return '/usr/local/bin/ffprobe';
       return 'ffprobe';
     }
     final exeDir = File(Platform.resolvedExecutable).parent.path;
     final localPath = Platform.isWindows
         ? '$exeDir\\ffprobe.exe'
         : '$exeDir/ffprobe';
-    final exists = File(localPath).existsSync();
-    debugPrint(
-      "🟢 [LAB TRACKER BIN] Path FFPROBE: $localPath | Existe: $exists",
-    );
-    return exists ? localPath : 'ffprobe';
+    return File(localPath).existsSync() ? localPath : 'ffprobe';
   }
 
   String _getFfmpegPath() {
-    if (Platform.isAndroid || Platform.isIOS) {
-      debugPrint(
-        "🟢 [LAB TRACKER BIN] Plataforma Móvil. Path FFMPEG: 'ffmpeg'",
-      );
+    if (Platform.isAndroid || Platform.isIOS) return 'ffmpeg';
+    if (Platform.isMacOS) {
+      if (File('/opt/homebrew/bin/ffmpeg').existsSync())
+        return '/opt/homebrew/bin/ffmpeg';
+      if (File('/usr/local/bin/ffmpeg').existsSync())
+        return '/usr/local/bin/ffmpeg';
       return 'ffmpeg';
     }
     final exeDir = File(Platform.resolvedExecutable).parent.path;
     final localPath = Platform.isWindows
         ? '$exeDir\\ffmpeg.exe'
         : '$exeDir/ffmpeg';
-    final exists = File(localPath).existsSync();
-    debugPrint(
-      "🟢 [LAB TRACKER BIN] Path FFMPEG: $localPath | Existe: $exists",
-    );
-    return exists ? localPath : 'ffmpeg';
+    return File(localPath).existsSync() ? localPath : 'ffmpeg';
   }
 
   Future<int> _getAudioDurationMs(String path) async {
@@ -481,13 +482,25 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
     } catch (_) {}
   }
 
-  // ---------------------------------------------------------
-  // 🛠️ MOTOR DE RESCATE ATÓMICO (BYPASS DRM: ESTRATEGIA M4A)
-  // ---------------------------------------------------------
   Future<void> _rescueLabTrackFromYoutube(
     String url,
     String targetOriginalPath,
   ) async {
+    if (Platform.isAndroid || Platform.isIOS) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              '🔴 VETO TÉCNICO: La extracción nativa (yt-dlp) requiere binarios de escritorio. No disponible en móvil.',
+            ),
+            backgroundColor: Colors.redAccent,
+            duration: Duration(seconds: 4),
+          ),
+        );
+      }
+      return;
+    }
+
     final ValueNotifier<String> statusNotifier = ValueNotifier<String>(
       "Iniciando conexión...",
     );
@@ -495,7 +508,6 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
     debugPrint("🟢 [LAB TRACKER START] Rescate solicitado para: $url");
     debugPrint("🟢 [LAB TRACKER START] Target Original: $targetOriginalPath");
 
-    // 1. FAIL-FAST: Bloqueo de I/O
     try {
       final testFile = File(targetOriginalPath);
       if (testFile.existsSync()) {
@@ -503,7 +515,6 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
         raf.closeSync();
       }
     } catch (e) {
-      debugPrint("🔴 [LAB TRACKER I/O] Archivo bloqueado por OS: $e");
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text(
@@ -548,15 +559,22 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
 
     try {
       final tempDir = Directory.systemTemp;
-      final ytdlpPath = Platform.isWindows
-          ? '${tempDir.path}${Platform.pathSeparator}yt-dlp.exe'
-          : 'yt-dlp';
+
+      String ytdlpPath = 'yt-dlp';
+      if (Platform.isWindows) {
+        ytdlpPath = '${tempDir.path}${Platform.pathSeparator}yt-dlp.exe';
+      } else if (Platform.isMacOS) {
+        if (File('/opt/homebrew/bin/yt-dlp').existsSync())
+          ytdlpPath = '/opt/homebrew/bin/yt-dlp';
+        else if (File('/usr/local/bin/yt-dlp').existsSync())
+          ytdlpPath = '/usr/local/bin/yt-dlp';
+      }
+
       final tempAudioPrefix =
           '${tempDir.path}${Platform.pathSeparator}lab_rescue_temp';
 
       debugPrint("🟢 [LAB TRACKER I/O] Directorio Temp: ${tempDir.path}");
 
-      // Limpieza de estados corruptos previos
       try {
         final existingFiles = tempDir.listSync().where(
           (f) => f.path.startsWith(tempAudioPrefix),
@@ -636,7 +654,6 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
           } catch (_) {}
         }
 
-        // 🛠️ CRÍTICO: Eliminar el LRC antiguo. El nuevo audio tendrá un timing distinto.
         if (targetLrcFile.existsSync()) {
           debugPrint("🟢 [LAB TRACKER FS] Purgando LRC antiguo desfasado.");
           targetLrcFile.deleteSync();
@@ -649,11 +666,9 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
             .read(metadataWorkerProvider)
             .processSingleFile(finalPath);
 
-        // 🛠️ FASE 1: Prioridad Absoluta a LRCLIB en el rescate
         debugPrint("🟢 [LAB TRACKER NLP] Invocando LRCLIB Prioritario...");
         await ref.read(nlpWorkerProvider).processSingleFile(finalPath);
 
-        // 🛠️ FASE 2: Fallback a YouTube VTT si LRCLIB no generó archivo
         if (!targetLrcFile.existsSync()) {
           debugPrint("⚠️ [LAB TRACKER NLP] Sin éxito. Usando Fallback VTT...");
           statusNotifier.value = "⚠️ Extrayendo subtítulos de YouTube...";
@@ -753,7 +768,6 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
         final trimmedMs = durationBeforeMs - durationAfterMs;
         debugPrint("🟢 [LAB TRACKER DSP] Audio cortado en: $trimmedMs ms");
 
-        // 🛠️ FASE 3: Realineación con offset correcto tras el corte
         if (trimmedMs > 50) {
           final lrcToPatch = finalPath.replaceAll(
             RegExp(r'\.mp3$|\.webm$|\.m4a$', caseSensitive: false),
@@ -789,11 +803,22 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
           final originalOrigin = _registry[oldFileName];
           _registry.remove(oldFileName);
 
-          final newOrigin = originalOrigin.toString().replaceAll(
-            RegExp(r'\.mp3$|\.webm$|\.m4a$', caseSensitive: false),
-            '.$ext',
-          );
-          _registry[finalFileName] = newOrigin;
+          // 🛠️ Mantenemos la persistencia si era un mapa complejo
+          if (originalOrigin is Map) {
+            originalOrigin['originalPath'] = originalOrigin['originalPath']
+                ?.toString()
+                .replaceAll(
+                  RegExp(r'\.mp3$|\.webm$|\.m4a$', caseSensitive: false),
+                  '.$ext',
+                );
+            _registry[finalFileName] = originalOrigin;
+          } else {
+            final newOrigin = originalOrigin.toString().replaceAll(
+              RegExp(r'\.mp3$|\.webm$|\.m4a$', caseSensitive: false),
+              '.$ext',
+            );
+            _registry[finalFileName] = newOrigin;
+          }
 
           File(
             '$_labPath${Platform.pathSeparator}quarantine_registry.json',
@@ -837,9 +862,115 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
     }
   }
 
-  // ==========================================
-  // WIDGETS DE RENDERIZADO MODULAR
-  // ==========================================
+  // ---------------------------------------------------------
+  // 🛠️ WIDGETS DE RENDERIZADO MODULAR
+  // ---------------------------------------------------------
+
+  Widget _buildDiagnosticCard(Map<String, dynamic> telemetryData) {
+    final errorCode = telemetryData['errorCode'] ?? 'UNKNOWN';
+    final msg = telemetryData['errorMsg'] ?? 'Error desconocido';
+    final action =
+        telemetryData['recommendedAction'] ?? 'Revise manualmente el archivo.';
+    final stage = telemetryData['failedAtStage'] ?? 'N/A';
+
+    Color badgeColor = Colors.redAccent;
+    IconData badgeIcon = Icons.error_outline;
+
+    if (errorCode == 'ERR_TIMEOUT') {
+      badgeColor = Colors.orangeAccent;
+      badgeIcon = Icons.thermostat;
+    } else if (errorCode == 'ERR_CODEC') {
+      badgeColor = Colors.purpleAccent;
+      badgeIcon = Icons.broken_image;
+    } else if (errorCode == 'ERR_FILE_IO') {
+      badgeColor = Colors.yellowAccent;
+      badgeIcon = Icons.lock_outline;
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 15),
+      padding: const EdgeInsets.all(15),
+      decoration: BoxDecoration(
+        color: badgeColor.withValues(alpha: 0.1),
+        border: Border.all(color: badgeColor.withValues(alpha: 0.5)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(badgeIcon, color: badgeColor, size: 20),
+              const SizedBox(width: 10),
+              Text(
+                "Diagnóstico de Falla: $errorCode",
+                style: TextStyle(
+                  color: badgeColor,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13,
+                ),
+              ),
+              const Spacer(),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.black45,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  "Stage: $stage",
+                  style: const TextStyle(
+                    color: Colors.white54,
+                    fontSize: 10,
+                    fontFamily: 'Consolas',
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            msg,
+            style: const TextStyle(
+              color: Colors.white70,
+              fontSize: 11,
+              fontFamily: 'Consolas',
+            ),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+          const SizedBox(height: 10),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: Colors.black26,
+              borderRadius: BorderRadius.circular(4),
+              border: Border.all(color: Colors.white10),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Icon(Icons.lightbulb, color: Colors.yellow, size: 14),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    "Recomendación: $action",
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildLeftPanel(
     List<MapEntry<String, dynamic>> entries,
     bool isMobile,
@@ -854,8 +985,17 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
         itemCount: entries.length,
         itemBuilder: (context, index) {
           final fileName = entries[index].key;
-          final originalPath = entries[index].value.toString();
+          final registryValue = entries[index].value;
           final isSelected = _selectedFileForEdit == fileName;
+
+          // 🛠️ FIX: Extracción tolerante de la ruta original
+          final originalPath = registryValue is Map
+              ? (registryValue['originalPath']?.toString() ??
+                    'Origen desconocido')
+              : registryValue.toString();
+
+          final hasTelemetry =
+              registryValue is Map && registryValue.containsKey('errorCode');
 
           return Container(
             decoration: BoxDecoration(
@@ -867,8 +1007,10 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
             child: ListTile(
               onTap: () => _loadLrcForEdit(fileName),
               leading: Icon(
-                Icons.audio_file,
-                color: isSelected ? Colors.orangeAccent : Colors.white38,
+                hasTelemetry ? Icons.healing : Icons.audio_file,
+                color: isSelected
+                    ? Colors.orangeAccent
+                    : (hasTelemetry ? Colors.redAccent : Colors.white38),
               ),
               title: Text(
                 fileName,
@@ -894,7 +1036,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
                 icon: const Icon(Icons.more_vert, color: Colors.white54),
                 color: const Color(0xFF1A1A1A),
                 onSelected: (value) {
-                  if (value == 'restore') _restoreFile(fileName, originalPath);
+                  if (value == 'restore') _restoreFile(fileName, registryValue);
                   if (value == 'delete') _deleteFile(fileName);
                 },
                 itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
@@ -955,9 +1097,15 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
       );
     }
 
+    final registryValue = _registry[_selectedFileForEdit];
+    final bool hasTelemetry = registryValue is Map;
+
     return Column(
       children: [
-        // 🛠️ BARRA DE HERRAMIENTAS RE-ESTRUCTURADA EN 2 SECCIONES
+        // 🛠️ INYECCIÓN: Tarjeta de Diagnóstico Activa si hay Telemetría DLQ
+        if (hasTelemetry)
+          _buildDiagnosticCard(Map<String, dynamic>.from(registryValue as Map)),
+
         Container(
           padding: EdgeInsets.all(isMobile ? 10 : 15),
           decoration: BoxDecoration(
@@ -983,7 +1131,6 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
               ),
               const SizedBox(height: 15),
 
-              // SECCIÓN 1: LRCLIB / GENIUS
               Row(
                 children: [
                   Expanded(
@@ -1014,7 +1161,6 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
               ),
               const SizedBox(height: 10),
 
-              // SECCIÓN 2: YOUTUBE MASTERIZADO (NUEVA UI)
               Row(
                 children: [
                   Expanded(
@@ -1042,9 +1188,14 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
                     onPressed: () {
                       final url = _ytUrlController.text.trim();
                       if (url.startsWith('http')) {
-                        final targetPath =
-                            '$_labPath${Platform.pathSeparator}$_selectedFileForEdit';
-                        _rescueLabTrackFromYoutube(url, targetPath);
+                        // 🛠️ FIX: Extracción tolerante para inyectar la URL al motor yt-dlp
+                        final originalPath = registryValue is Map
+                            ? (registryValue['originalPath']?.toString() ??
+                                  '$_labPath${Platform.pathSeparator}$_selectedFileForEdit')
+                            : (registryValue?.toString() ??
+                                  '$_labPath${Platform.pathSeparator}$_selectedFileForEdit');
+
+                        _rescueLabTrackFromYoutube(url, originalPath);
                       } else {
                         final q = Uri.encodeComponent(
                           '${_searchQueryController.text} official audio',
@@ -1065,7 +1216,6 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
               ),
               const SizedBox(height: 15),
 
-              // HERRAMIENTAS MANUALES
               Wrap(
                 spacing: 5,
                 runSpacing: 5,
@@ -1126,7 +1276,6 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
           ),
         ),
 
-        // EDITOR LRC
         Expanded(
           child: Container(
             padding: EdgeInsets.all(isMobile ? 10 : 20),

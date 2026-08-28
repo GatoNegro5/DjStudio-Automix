@@ -311,11 +311,12 @@ class PlayedTracksNotifier extends Notifier<Set<String>> {
       baseDir = userProfile != null
           ? '$userProfile\\Music\\DjPlaylists'
           : 'C:\\Music\\DjPlaylists';
-    } else if (Platform.isAndroid) {
-      baseDir = '/storage/emulated/0/Music/DjPlaylists';
-    } else {
+    } else if (Platform.isMacOS || Platform.isLinux) {
       final home = Platform.environment['HOME'];
       baseDir = home != null ? '$home/Music/DjPlaylists' : '/tmp/DjPlaylists';
+    } else {
+      // Android / iOS safe path
+      baseDir = '/storage/emulated/0/Music/DjPlaylists';
     }
     final dir = Directory(baseDir);
     if (!dir.existsSync()) dir.createSync(recursive: true);
@@ -377,11 +378,12 @@ class AutomixQueueNotifier extends Notifier<List<File>> {
       baseDir = userProfile != null
           ? '$userProfile\\Music\\DjPlaylists'
           : 'C:\\Music\\DjPlaylists';
-    } else if (Platform.isAndroid) {
-      baseDir = '/storage/emulated/0/Music/DjPlaylists';
-    } else {
+    } else if (Platform.isMacOS || Platform.isLinux) {
       final home = Platform.environment['HOME'];
       baseDir = home != null ? '$home/Music/DjPlaylists' : '/tmp/DjPlaylists';
+    } else {
+      // Android / iOS safe path
+      baseDir = '/storage/emulated/0/Music/DjPlaylists';
     }
     final dir = Directory(baseDir);
     if (!dir.existsSync()) dir.createSync(recursive: true);
@@ -922,11 +924,12 @@ class AutomixPanel extends ConsumerWidget {
       return userProfile != null
           ? '$userProfile\\Music\\DjPlaylists'
           : 'C:\\Music\\DjPlaylists';
-    } else if (Platform.isAndroid) {
-      return '/storage/emulated/0/Music/DjPlaylists';
-    } else {
+    } else if (Platform.isMacOS || Platform.isLinux) {
       final home = Platform.environment['HOME'];
       return home != null ? '$home/Music/DjPlaylists' : '/tmp/DjPlaylists';
+    } else {
+      // Android / iOS safe path
+      return '/storage/emulated/0/Music/DjPlaylists';
     }
   }
 
@@ -1410,7 +1413,6 @@ class AutomixPanel extends ConsumerWidget {
                                 tooltip: "Quitar",
                               ),
 
-                            // 🛠️ FIX RADICAL: Removido 'isBusy' del condicional. Forzado de HitTest.
                             GestureDetector(
                               behavior: HitTestBehavior.opaque,
                               onTap: () {
@@ -2000,7 +2002,6 @@ class LyricsSyncPanel extends ConsumerStatefulWidget {
 class _LyricsSyncPanelState extends ConsumerState<LyricsSyncPanel> {
   bool isArmed = false;
 
-  // 🛠️ MÓDULO: DESENGANCHE Y HOT-SWAP AL LABORATORIO
   Future<void> _sendCurrentTrackToLab(
     String trackPath,
     BuildContext context,
@@ -2037,10 +2038,8 @@ class _LyricsSyncPanelState extends ConsumerState<LyricsSyncPanel> {
       );
     }
 
-    // 🛠️ FIX ARQUITECTÓNICO: Esperar a que la mezcla dinámica termine antes de mover el archivo
     if (playerState.isPlaying) {
       if (hasNext) {
-        // Dispara la mezcla con Time-Stretch y ESPERA a que termine el fade-out
         await playerNotifier.forceTransition(nextIndex);
       } else {
         await playerNotifier.stopAndRelease();
@@ -2049,9 +2048,18 @@ class _LyricsSyncPanelState extends ConsumerState<LyricsSyncPanel> {
       await playerNotifier.stopAndRelease();
     }
 
-    String baseMusicPath = Platform.isWindows
-        ? '${Platform.environment['USERPROFILE'] ?? 'C:'}\\Music'
-        : '${Platform.environment['HOME'] ?? '/storage/emulated/0'}/Music';
+    // 🛠️ FIX DE RUTA: Blindaje idéntico al de las bases de datos para Android/Mac/Linux
+    String baseMusicPath;
+    if (Platform.isWindows) {
+      final userProfile = Platform.environment['USERPROFILE'];
+      baseMusicPath = userProfile != null ? '$userProfile\\Music' : 'C:\\Music';
+    } else if (Platform.isMacOS || Platform.isLinux) {
+      final home = Platform.environment['HOME'];
+      baseMusicPath = home != null ? '$home/Music' : '/tmp';
+    } else {
+      // Android / iOS safe path
+      baseMusicPath = '/storage/emulated/0/Music';
+    }
 
     final labDir = Directory(
       '$baseMusicPath${Platform.pathSeparator}DjStudio_LAB',
@@ -2074,7 +2082,6 @@ class _LyricsSyncPanelState extends ConsumerState<LyricsSyncPanel> {
     bool moved = false;
     int attempts = 0;
 
-    // Retardo mínimo para que el OS limpie el caché del disco tras soltar el reproductor
     await Future.delayed(const Duration(milliseconds: 500));
 
     while (!moved && attempts < 20) {
@@ -2135,7 +2142,6 @@ class _LyricsSyncPanelState extends ConsumerState<LyricsSyncPanel> {
     }
   }
 
-  // 🛠️ MÓDULO: MODO TEATRO PARA LETRAS (FULLSCREEN)
   void _openFullscreenLyrics() {
     final playerState = ref.read(playerProvider);
     final lyrics = playerState.lyrics;

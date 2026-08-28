@@ -5,6 +5,8 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'db_provider.dart';
+import 'equalizer_provider.dart';
 
 enum BroadcastMixStrategy { sequential, random }
 
@@ -18,6 +20,7 @@ class BroadcastState {
   final int currentIndex;
   final BroadcastMixStrategy mixStrategy;
   final Set<BroadcastMixStyle> activeMixStyles;
+  final int customMixOutMs;
 
   BroadcastState({
     this.isPlaying = false,
@@ -28,9 +31,11 @@ class BroadcastState {
     this.mixStrategy = BroadcastMixStrategy.sequential,
     this.activeMixStyles = const {
       BroadcastMixStyle.smooth,
+      BroadcastMixStyle.vinylBrake,
       BroadcastMixStyle.echoOut,
       BroadcastMixStyle.slamCut,
     },
+    this.customMixOutMs = -1,
   });
 
   BroadcastState copyWith({
@@ -41,6 +46,7 @@ class BroadcastState {
     int? currentIndex,
     BroadcastMixStrategy? mixStrategy,
     Set<BroadcastMixStyle>? activeMixStyles,
+    int? customMixOutMs,
   }) {
     return BroadcastState(
       isPlaying: isPlaying ?? this.isPlaying,
@@ -50,6 +56,7 @@ class BroadcastState {
       currentIndex: currentIndex ?? this.currentIndex,
       mixStrategy: mixStrategy ?? this.mixStrategy,
       activeMixStyles: activeMixStyles ?? this.activeMixStyles,
+      customMixOutMs: customMixOutMs ?? this.customMixOutMs,
     );
   }
 }
@@ -71,21 +78,19 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
   bool _isStandbyArmed = false;
   int _lastSavedPositionMs = 0;
 
-  // 🛠️ CONFIGURACIÓN DE BROADCAST (Hardcoded Best Practices)
-  final int _overlapDurationMs = 12000; // 12 Segundos de cruce estándar
-  final int _preFlightTriggerMs = 24000; // Carga en memoria 24s antes
+  final int _overlapDurationMs = 12000;
+  final int _preFlightTriggerMs = 24000;
 
-  // 🛠️ DSP BASE: Normalización EBU R128 + Ensanchador Estéreo
-  final String _baseHifi =
-      'loudnorm=I=-14:TP=-1.5:LRA=11,aresample=resampler=soxr:precision=28,crystalizer=i=2.0,bass=g=3:f=60,extrastereo=m=1.15';
+  List<Player> get deckPlayers => [_playerA, _playerB];
 
   @override
   BroadcastState build() {
     _playerA = Player();
     _playerB = Player();
 
-    (_playerA.platform as dynamic)?.setProperty('af', _baseHifi);
-    (_playerB.platform as dynamic)?.setProperty('af', _baseHifi);
+    final baseFilter = ref.read(equalizerProvider.notifier).currentBaseFilter;
+    (_playerA.platform as dynamic)?.setProperty('af', baseFilter);
+    (_playerB.platform as dynamic)?.setProperty('af', baseFilter);
 
     _attachListeners(_playerA);
     _initPersistence();
@@ -102,13 +107,20 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
     return BroadcastState();
   }
 
-  // ==========================================
-  // PERSISTENCIA Y RECUPERACIÓN (Sandboxing)
-  // ==========================================
   String _getSessionFilePath() {
-    String baseDir = Platform.isWindows
-        ? '${Platform.environment['USERPROFILE']}\\Music\\DjPlaylists'
-        : '/storage/emulated/0/Music/DjPlaylists';
+    String baseDir;
+    if (Platform.isWindows) {
+      final userProfile = Platform.environment['USERPROFILE'];
+      baseDir = userProfile != null
+          ? '$userProfile\\Music\\DjPlaylists'
+          : 'C:\\Music\\DjPlaylists';
+    } else if (Platform.isMacOS || Platform.isLinux) {
+      final home = Platform.environment['HOME'];
+      baseDir = home != null ? '$home/Music/DjPlaylists' : '/tmp/DjPlaylists';
+    } else {
+      // Fallback seguro para Android / iOS
+      baseDir = '/storage/emulated/0/Music/DjPlaylists';
+    }
     final dir = Directory(baseDir);
     if (!dir.existsSync()) dir.createSync(recursive: true);
     return '${dir.path}${Platform.pathSeparator}_broadcast_session.json';
@@ -165,6 +177,11 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
           index != null &&
           index >= 0 &&
           index < queueFiles.length) {
+        final meta = await ref
+            .read(dbServiceProvider)
+            .getTrackMetadata(queueFiles[index].path);
+        state = state.copyWith(customMixOutMs: meta?.mixOutMs ?? -1);
+
         await _activePlayer.open(Media(queueFiles[index].path), play: false);
         try {
           await _activePlayer.stream.duration
@@ -179,9 +196,6 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
     } catch (_) {}
   }
 
-  // ==========================================
-  // CONTROLES DE COLA Y ESTADO
-  // ==========================================
   void addTrack(File file) {
     if (!state.queue.any((f) => f.path == file.path)) {
       state = state.copyWith(queue: [...state.queue, file]);
@@ -232,9 +246,6 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
     _saveSnapshot();
   }
 
-  // ==========================================
-  // MOTOR AOT (SHADOW LOADING)
-  // ==========================================
   int _calculateNextIndex() {
     if (state.queue.isEmpty) return -1;
     if (state.mixStrategy == BroadcastMixStrategy.random) {
@@ -256,12 +267,23 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
     await _standbyPlayer.setVolume(0.0);
     await _standbyPlayer.open(Media(nextPath), play: false);
 
+    final meta = await ref.read(dbServiceProvider).getTrackMetadata(nextPath);
+    final cueInMs = meta?.cueInMs ?? 0;
+
+    if (cueInMs > 0) {
+      try {
+        await _standbyPlayer.stream.duration
+            .firstWhere((d) => d.inMilliseconds > 0)
+            .timeout(const Duration(seconds: 2));
+        await _standbyPlayer.seek(Duration(milliseconds: cueInMs));
+      } catch (e) {
+        debugPrint("⚠️ [PRE-FLIGHT I/O ERROR]: $e");
+      }
+    }
+
     debugPrint("⚡ [BROADCAST AOT]: Pista cargada en memoria: $nextPath");
   }
 
-  // ==========================================
-  // EVENT LOOP Y GATILLOS
-  // ==========================================
   void _attachListeners(Player player) {
     _positionSub?.cancel();
     _durationSub?.cancel();
@@ -280,23 +302,19 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
       }
 
       if (durMs > 0 && !_isCrossfading) {
-        // 🛠️ MOTOR PROPORCIONAL AL 60%: Ignora la lectura NLP/ISAR para el Mix Out.
         int triggerOutMs = (durMs * 0.60).toInt();
 
-        // Límite geométrico de seguridad: Evita desbordes si la pista es anormalmente corta
         if (triggerOutMs >= durMs - _overlapDurationMs) {
           triggerOutMs = durMs - _overlapDurationMs - 1000;
         }
         if (triggerOutMs < 0) triggerOutMs = 0;
 
-        // Fase 1: Calentamiento de Codec (12 segs antes del trigger proporcional)
         if (!_isStandbyArmed &&
             posMs >= (triggerOutMs - 12000) &&
             triggerOutMs > 12000) {
           _shadowLoadNextTrack();
         }
 
-        // Fase 2: Ejecución Atómica de FX
         if (posMs >= triggerOutMs) {
           _triggerCrossfade();
         }
@@ -319,9 +337,6 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
     });
   }
 
-  // ==========================================
-  // TRANSPORTE MANUAL
-  // ==========================================
   Future<void> togglePlayPause() async {
     if (state.queue.isEmpty) return;
     if (state.currentIndex == -1) {
@@ -337,12 +352,27 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
     _isStandbyArmed = false;
     _isCrossfading = false;
 
-    state = state.copyWith(currentIndex: index);
+    final path = state.queue[index].path;
+    final meta = await ref.read(dbServiceProvider).getTrackMetadata(path);
+    final cueInMs = meta?.cueInMs ?? 0;
+
+    state = state.copyWith(
+      currentIndex: index,
+      customMixOutMs: meta?.mixOutMs ?? -1,
+    );
     _saveSnapshot();
 
-    final path = state.queue[index].path;
     await _activePlayer.setVolume(100.0);
     await _activePlayer.open(Media(path), play: true);
+
+    if (cueInMs > 0) {
+      try {
+        await _activePlayer.stream.duration
+            .firstWhere((d) => d.inMilliseconds > 0)
+            .timeout(const Duration(seconds: 2));
+        await _activePlayer.seek(Duration(milliseconds: cueInMs));
+      } catch (_) {}
+    }
   }
 
   Future<void> forceNext() async {
@@ -358,9 +388,6 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
     await _activePlayer.seek(position);
   }
 
-  // ==========================================
-  // WALL-CLOCK MIX ENGINE (DSP INYECTADO)
-  // ==========================================
   Future<void> _triggerCrossfade({bool forceJit = false}) async {
     if (_isCrossfading) return;
     _isCrossfading = true;
@@ -375,36 +402,42 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
     final Player fadingPlayer = _activePlayer;
     final Player incomingPlayer = _standbyPlayer;
 
-    // Fail-safe si el AOT no se gatilló (Ej. Salto manual)
+    final meta = await ref.read(dbServiceProvider).getTrackMetadata(nextPath);
+    final cueInMs = meta?.cueInMs ?? 0;
+
     if (!_isStandbyArmed || forceJit) {
       await incomingPlayer.setVolume(0.0);
       await incomingPlayer.open(Media(nextPath), play: false);
-      try {
-        await incomingPlayer.stream.duration
-            .firstWhere((d) => d.inMilliseconds > 0)
-            .timeout(const Duration(seconds: 2));
-      } catch (_) {}
+
+      if (cueInMs > 0) {
+        try {
+          await incomingPlayer.stream.duration
+              .firstWhere((d) => d.inMilliseconds > 0)
+              .timeout(const Duration(seconds: 2));
+          await incomingPlayer.seek(Duration(milliseconds: cueInMs));
+        } catch (_) {}
+      }
     }
 
-    // RNG Profile Selection
     final availableStyles = state.activeMixStyles.toList();
     final selectedStyle =
         availableStyles[Random().nextInt(availableStyles.length)];
     int mixDurationMs = _overlapDurationMs;
 
-    // Ajuste dinámico de duración según el estilo
     if (selectedStyle == BroadcastMixStyle.vinylBrake) mixDurationMs = 5000;
     if (selectedStyle == BroadcastMixStyle.slamCut) mixDurationMs = 4000;
 
-    // Inyección Pre-Filtros C++
+    final currentBaseFilter = ref
+        .read(equalizerProvider.notifier)
+        .currentBaseFilter;
+
     if (selectedStyle == BroadcastMixStyle.echoOut) {
       (fadingPlayer.platform as dynamic)?.setProperty(
         'af',
-        '$_baseHifi,aecho=0.8:0.9:1000:0.5',
+        '$currentBaseFilter,aecho=0.8:0.9:1000:0.5',
       );
     }
 
-    // Disparo Atómico Físico (Rate bloqueado a 1.0 = Pureza total)
     await incomingPlayer.setRate(1.0);
     await incomingPlayer.play();
 
@@ -412,7 +445,10 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
     _isStandbyArmed = false;
     _attachListeners(_activePlayer);
 
-    state = state.copyWith(currentIndex: nextIndex);
+    state = state.copyWith(
+      currentIndex: nextIndex,
+      customMixOutMs: meta?.mixOutMs ?? -1,
+    );
     _saveSnapshot();
 
     debugPrint(
@@ -465,12 +501,11 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
       await Future.delayed(const Duration(milliseconds: 16));
     }
 
-    // Purga de colas y reseteo C++
     await fadingPlayer.stop();
     await fadingPlayer.setVolume(100.0);
     await fadingPlayer.setRate(1.0);
     if (selectedStyle == BroadcastMixStyle.echoOut) {
-      (fadingPlayer.platform as dynamic)?.setProperty('af', _baseHifi);
+      (fadingPlayer.platform as dynamic)?.setProperty('af', currentBaseFilter);
     }
 
     _isCrossfading = false;
