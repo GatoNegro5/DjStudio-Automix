@@ -82,7 +82,11 @@ jobs:
           cd ..
 
       - name: Build Platform
-        run: ${{ matrix.build_cmd }}
+        env:
+          CARGOKIT_VERBOSE: 1
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          ${{ matrix.build_cmd }} -v
 
       - name: Compile Windows Installer
         if: matrix.target == 'windows'
