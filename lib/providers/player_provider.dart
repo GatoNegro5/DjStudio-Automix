@@ -100,6 +100,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
   StreamSubscription? _completedSub;
 
   bool _isCrossfading = false;
+  bool _isStandbyArmed = false; // 🛠️ NUEVO: Candado de Aislamiento AOT
   final int _triggerRemainingMs = 4000;
   bool _isPrepModeBypass = false;
   int _lastSavedPositionMs = 0;
@@ -329,6 +330,52 @@ class PlayerNotifier extends Notifier<PlayerState> {
     _recalculateMixWindow();
   }
 
+  Future<void> _shadowLoadNextTrack() async {
+    if (_isStandbyArmed || state.nextTrackPath == null) return;
+
+    // Bloqueo atómico inmediato para evitar race conditions del Event Loop
+    _isStandbyArmed = true;
+
+    final String nextTrack = state.nextTrackPath!;
+    final Player incomingPlayer = _standbyPlayer;
+
+    int cueInMs = 0;
+    final meta = await ref.read(dbServiceProvider).getTrackMetadata(nextTrack);
+    if (meta != null && meta.cueInMs != null) cueInMs = meta.cueInMs!;
+
+    // 🛠️ Carga silenciosa en RAM sin disparar hardware
+    await incomingPlayer.setVolume(0.0);
+    await incomingPlayer.open(Media(nextTrack), play: false);
+
+    if (cueInMs > 0) {
+      try {
+        await incomingPlayer.stream.duration
+            .firstWhere((d) => d.inMilliseconds > 0)
+            .timeout(const Duration(seconds: 2));
+        await incomingPlayer.seek(Duration(milliseconds: cueInMs));
+      } catch (e) {
+        debugPrint(
+          "⚠️ [PRE-FLIGHT I/O ERROR]: No se pudo montar el buffer en RAM para $nextTrack",
+        );
+      }
+    }
+
+    // 🛠️ Pre-cálculo DSP AOT: Ahorramos ciclos de CPU durante el momento crítico de mezcla
+    final fadingBpm = _extractBpm(state.currentTrackPath);
+    final incomingBpm = _extractBpm(nextTrack);
+    double incomingRate = 1.0;
+
+    if (fadingBpm > 60 && incomingBpm > 60) {
+      final ratio = fadingBpm / incomingBpm;
+      if (ratio >= 0.88 && ratio <= 1.12) incomingRate = ratio;
+    }
+    await incomingPlayer.setRate(incomingRate);
+
+    debugPrint(
+      "⚡ [SHADOW LOAD]: Codec pre-calentado y anclado en memoria para $nextTrack",
+    );
+  }
+
   void _attachListeners(Player player) {
     _positionSub?.cancel();
     _durationSub?.cancel();
@@ -345,7 +392,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
           posMs < state.customCueInMs &&
           posMs < 1000) {
         player.seek(Duration(milliseconds: state.customCueInMs));
-        return; // Cortamos el frame I/O para evitar parpadeos y dobles ejecuciones
+        return;
       }
 
       // ===================================================
@@ -354,7 +401,13 @@ class PlayerNotifier extends Notifier<PlayerState> {
       if (state.autoMixArmed &&
           state.customMixOutMs > 0 &&
           state.nextTrackPath != null) {
-        // Holgura de 150ms para compensar saltos de frames en buffers VBR
+        // 🛠️ MOTOR V4.2: Gatillo Pre-Flight (Shadow Load 12 segundos antes del Out)
+        if (!_isStandbyArmed &&
+            posMs >= (state.customMixOutMs - 12000) &&
+            state.customMixOutMs > 12000) {
+          _shadowLoadNextTrack();
+        }
+
         if (posMs >= (state.customMixOutMs - 150)) {
           if (!_isCrossfading && !_isPrepModeBypass) {
             _triggerCrossfade();
@@ -396,6 +449,14 @@ class PlayerNotifier extends Notifier<PlayerState> {
           state.nextTrackPath != null) {
         int timeRemaining = state.duration.inMilliseconds - pos.inMilliseconds;
         if (timeRemaining > _triggerRemainingMs) _isPrepModeBypass = false;
+
+        // 🛠️ MOTOR V4.2: Gatillo Pre-Flight (Shadow Load 12 segundos antes del EOF)
+        if (!_isStandbyArmed &&
+            timeRemaining <= 12000 &&
+            timeRemaining > _triggerRemainingMs) {
+          _shadowLoadNextTrack();
+        }
+
         if (timeRemaining <= _triggerRemainingMs) {
           if (!_isPrepModeBypass) _triggerCrossfade();
         }
@@ -662,62 +723,78 @@ class PlayerNotifier extends Notifier<PlayerState> {
     final Player fadingPlayer = _activePlayer;
     final Player incomingPlayer = _standbyPlayer;
 
-    int cueInMs = 0;
     int mixDurationMs = 6000;
     String mixProfile = 'constant_power';
 
     final meta = await ref.read(dbServiceProvider).getTrackMetadata(nextTrack);
     if (meta != null) {
-      if (meta.cueInMs != null) cueInMs = meta.cueInMs!;
       mixDurationMs = meta.mixDurationMs;
       mixProfile = meta.mixProfile;
     }
-    if (cueInMs < 0) cueInMs = 0;
 
-    await incomingPlayer.setVolume(0.0);
-    await incomingPlayer.open(Media(nextTrack), play: false);
+    // 🛠️ FIX ARQUITECTURA: Si el Shadow Load falló por salto manual del usuario, lo forzamos JIT
+    if (!_isStandbyArmed) {
+      debugPrint(
+        "⚠️ [FALLBACK JIT]: El pre-flight no se ejecutó. Cargando de emergencia.",
+      );
+      int cueInMs = meta?.cueInMs ?? 0;
+      if (cueInMs < 0) cueInMs = 0;
 
-    if (cueInMs > 0) {
-      try {
-        await incomingPlayer.stream.duration
-            .firstWhere((d) => d.inMilliseconds > 0)
-            .timeout(const Duration(seconds: 2));
-      } catch (_) {}
-      await incomingPlayer.seek(Duration(milliseconds: cueInMs));
-    }
+      await incomingPlayer.setVolume(0.0);
+      await incomingPlayer.open(Media(nextTrack), play: false);
 
-    final fadingBpm = _extractBpm(state.currentTrackPath);
-    final incomingBpm = _extractBpm(nextTrack);
-    double incomingRate = 1.0;
-
-    if (fadingBpm > 60 && incomingBpm > 60) {
-      final ratio = fadingBpm / incomingBpm;
-      if (ratio >= 0.88 && ratio <= 1.12) {
-        incomingRate = ratio;
+      if (cueInMs > 0) {
+        try {
+          await incomingPlayer.stream.duration
+              .firstWhere((d) => d.inMilliseconds > 0)
+              .timeout(const Duration(seconds: 2));
+          await incomingPlayer.seek(Duration(milliseconds: cueInMs));
+        } catch (_) {}
       }
-    }
-    await incomingPlayer.setRate(incomingRate);
 
+      final fadingBpm = _extractBpm(state.currentTrackPath);
+      final incomingBpm = _extractBpm(nextTrack);
+      double incomingRate = 1.0;
+
+      if (fadingBpm > 60 && incomingBpm > 60) {
+        final ratio = fadingBpm / incomingBpm;
+        if (ratio >= 0.88 && ratio <= 1.12) incomingRate = ratio;
+      }
+      await incomingPlayer.setRate(incomingRate);
+    }
+
+    // Disparo atómico (0 latencia de Codec si _isStandbyArmed era true)
     await incomingPlayer.play();
+
+    // Transferencia de Punteros Físicos de libmpv
     _usePlayerA = !_usePlayerA;
+    _isStandbyArmed = false; // Reseteo del candado para la siguiente pista
     _attachListeners(_activePlayer);
+
+    // Mantenemos la lógica inmutable del State
+    final actualPosMs =
+        (await incomingPlayer.stream.position.first).inMilliseconds;
 
     state = state.copyWith(
       currentIndex: nextIndex,
       currentTrackPath: nextTrack,
-      position: Duration(milliseconds: cueInMs),
+      position: Duration(milliseconds: actualPosMs),
     );
 
-    await _loadLyrics(nextTrack);
-    await _loadTrackMetadata(nextTrack);
-    _saveSnapshot();
+    // Carga de metadatos de fondo sin bloquear el hilo
+    Future.wait([
+      _loadLyrics(nextTrack),
+      _loadTrackMetadata(nextTrack),
+      _saveSnapshot(),
+    ]);
 
+    // Ejecución del Wall-Clock Interpolar
     await _executeMixEngine(
       fadingPlayer: fadingPlayer,
       incomingPlayer: incomingPlayer,
       mixDurationMs: mixDurationMs,
       mixProfile: mixProfile,
-      incomingRate: incomingRate,
+      incomingRate: (await incomingPlayer.stream.rate.first),
     );
 
     _isCrossfading = false;
