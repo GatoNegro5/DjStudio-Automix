@@ -89,13 +89,20 @@ jobs:
           ndk-version: r25c # Versión de producción más estable para Flutter/Rust
           add-to-path: false
 
-      - name: Build Platform
+      - name: Build Platform (Tracker Sandboxing)
         env:
           CARGOKIT_VERBOSE: 1
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
-          ${{ matrix.build_cmd }}
+          if [ "${{ matrix.target }}" == "apk" ]; then
+            echo "🔴 INICIANDO TRACKER DE AISLAMIENTO PARA NDK..."
+            cd android
+            ./gradlew :rust_lib_djstudio_player:cargokitCargoBuildRust_lib_djstudio_playerRelease --info --stacktrace
+          else
+            ${{ matrix.build_cmd }}
+          fi
+        shell: bash
 
       - name: Compile Windows Installer
         if: matrix.target == 'windows'
