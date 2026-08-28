@@ -10,7 +10,7 @@ import 'package:djstudio_player/src/rust/frb_generated.dart';
 
 // --- IMPORTACIÓN DE MÓDULOS Y PROVIDERS ---
 import 'providers/player_provider.dart';
-import 'providers/theme_provider.dart'; // 🛠️ INYECCIÓN: Motor de Tema Global
+import 'providers/theme_provider.dart';
 import 'playerDj.dart';
 import 'dsp_workspace.dart';
 import 'yt_workspace.dart';
@@ -36,35 +36,65 @@ final routerProvider = NotifierProvider<RouterNotifier, int>(
 );
 
 Future<void> main() async {
-  // 🛠️ BINDING 1: Sellar el hilo de Flutter
-  WidgetsFlutterBinding.ensureInitialized();
+  // 🛠️ REGLA: Cero Deducciones. Atrapamos cualquier colapso pre-runApp.
+  try {
+    WidgetsFlutterBinding.ensureInitialized();
 
-  // 🛠️ FASE 3: Perforación de Scoped Storage en Runtime (Android 11+)
-  if (Platform.isAndroid) {
-    if (await Permission.manageExternalStorage.isDenied) {
-      await Permission.manageExternalStorage.request();
+    // 🛠️ FASE 3: Perforación de Scoped Storage en Runtime (Android 11+)
+    if (Platform.isAndroid) {
+      if (await Permission.manageExternalStorage.isDenied) {
+        await Permission.manageExternalStorage.request();
+      }
+      if (await Permission.storage.isDenied) {
+        await Permission.storage.request();
+      }
     }
-    if (await Permission.storage.isDenied) {
-      await Permission.storage.request();
+
+    // 🛠️ VETO TÉCNICO APLICADO: Escudo protector de Plataforma.
+    // SystemChrome no existe en Desktop y destruye el Isolate si se invoca.
+    if (Platform.isAndroid || Platform.isIOS) {
+      await SystemChrome.setPreferredOrientations([
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]);
     }
+
+    // 🛠️ BINDING 2: Inicialización del Motor Nativo DSP en Rust
+    await RustLib.init();
+
+    // 🛠️ BINDING 3: Inicialización del Motor de Reproducción de Audio (libmpv)
+    MediaKit.ensureInitialized();
+
+    runApp(const ProviderScope(child: DjStudioApp()));
+  } catch (e, stackTrace) {
+    // 🛠️ TRACKER DE KERNEL: Si algo falla a nivel binario, no mostramos pantalla gris.
+    debugPrint("🔴 [FATAL BOOT ERROR]: $e");
+    debugPrint("🔴 [STACK TRACE]: $stackTrace");
+    runApp(
+      MaterialApp(
+        debugShowCheckedModeBanner: false,
+        home: Scaffold(
+          backgroundColor: const Color(0xFF1A0000),
+          body: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(20.0),
+              child: Text(
+                "💥 FATAL BOOT ERROR\nEl núcleo nativo ha colapsado.\n\n$e",
+                style: const TextStyle(
+                  color: Colors.redAccent,
+                  fontFamily: 'Consolas',
+                  fontSize: 14,
+                ),
+                textAlign: TextAlign.center,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
-
-  // 🛠️ FIX: Bloqueo estricto de orientación (Landscape)
-  await SystemChrome.setPreferredOrientations([
-    DeviceOrientation.landscapeLeft,
-    DeviceOrientation.landscapeRight,
-  ]);
-
-  // 🛠️ BINDING 2: Inicialización del Motor Nativo DSP en Rust
-  await RustLib.init();
-
-  // 🛠️ BINDING 3: Inicialización del Motor de Reproducción de Audio (libmpv)
-  MediaKit.ensureInitialized();
-
-  runApp(const ProviderScope(child: DjStudioApp()));
 }
 
-// 🛠️ FIX ARQUITECTURA: Convertido a ConsumerWidget para inyectar Theme Dinámico
 class DjStudioApp extends ConsumerWidget {
   const DjStudioApp({super.key});
 
