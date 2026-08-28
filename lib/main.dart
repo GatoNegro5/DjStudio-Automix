@@ -10,6 +10,7 @@ import 'package:djstudio_player/src/rust/frb_generated.dart';
 
 // --- IMPORTACIÓN DE MÓDULOS Y PROVIDERS ---
 import 'providers/player_provider.dart';
+import 'providers/theme_provider.dart'; // 🛠️ INYECCIÓN: Motor de Tema Global
 import 'playerDj.dart';
 import 'dsp_workspace.dart';
 import 'yt_workspace.dart';
@@ -40,23 +41,21 @@ Future<void> main() async {
 
   // 🛠️ FASE 3: Perforación de Scoped Storage en Runtime (Android 11+)
   if (Platform.isAndroid) {
-    // Solicita acceso crudo al disco duro (MANAGE_EXTERNAL_STORAGE)
     if (await Permission.manageExternalStorage.isDenied) {
       await Permission.manageExternalStorage.request();
     }
-    // Fallback de seguridad para APIs antiguas (Android 10 y menor)
     if (await Permission.storage.isDenied) {
       await Permission.storage.request();
     }
   }
 
-  // 🛠️ FIX: Bloqueo estricto de orientación (Landscape) dentro del hilo principal
+  // 🛠️ FIX: Bloqueo estricto de orientación (Landscape)
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.landscapeLeft,
     DeviceOrientation.landscapeRight,
   ]);
 
-  // 🛠️ BINDING 2: Inicialización del Motor Nativo DSP en Rust (I/O Concurrente)
+  // 🛠️ BINDING 2: Inicialización del Motor Nativo DSP en Rust
   await RustLib.init();
 
   // 🛠️ BINDING 3: Inicialización del Motor de Reproducción de Audio (libmpv)
@@ -65,20 +64,17 @@ Future<void> main() async {
   runApp(const ProviderScope(child: DjStudioApp()));
 }
 
-class DjStudioApp extends StatelessWidget {
+// 🛠️ FIX ARQUITECTURA: Convertido a ConsumerWidget para inyectar Theme Dinámico
+class DjStudioApp extends ConsumerWidget {
   const DjStudioApp({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final appTheme = ref.watch(themeProvider);
+
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      theme: ThemeData.dark().copyWith(
-        scaffoldBackgroundColor: const Color(0xFF121212),
-        colorScheme: const ColorScheme.dark(
-          primary: Color(0xFF39FF14),
-          secondary: Color(0xFFFF007F),
-        ),
-      ),
+      theme: appTheme, // Aplicación del Motor de Temas
       home: const BootloaderScreen(),
     );
   }
@@ -138,18 +134,19 @@ class _BootloaderScreenState extends State<BootloaderScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: DjStudioTheme.bgDark,
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.album, color: Color(0xFF39FF14), size: 70),
+            const Icon(Icons.album, color: DjStudioTheme.syncActive, size: 70),
             const SizedBox(height: 30),
-            const CircularProgressIndicator(color: Color(0xFFFF007F)),
+            const CircularProgressIndicator(color: DjStudioTheme.deckA),
             const SizedBox(height: 20),
             Text(
               _statusText,
               style: const TextStyle(
-                color: Colors.white70,
+                color: DjStudioTheme.textMuted,
                 fontFamily: 'Consolas',
                 fontSize: 12,
               ),
@@ -162,7 +159,7 @@ class _BootloaderScreenState extends State<BootloaderScreen> {
 }
 
 // ==========================================
-// VISTA PRINCIPAL (UI ENRUTADA)
+// VISTA PRINCIPAL (UI ENRUTADA CON DISEÑO HÁPTICO)
 // ==========================================
 class MainWorkspace extends ConsumerWidget {
   const MainWorkspace({super.key});
@@ -175,9 +172,9 @@ class MainWorkspace extends ConsumerWidget {
     return Scaffold(
       body: Row(
         children: [
-          // 1. SIDEBAR IZQUIERDO REDUCIDO E INMUNIZADO
+          // 1. SIDEBAR IZQUIERDO REDUCIDO Y TEMATIZADO
           Material(
-            color: const Color(0xFF000000),
+            color: DjStudioTheme.bgDark,
             child: SizedBox(
               width: 160,
               child: Column(
@@ -190,11 +187,11 @@ class MainWorkspace extends ConsumerWidget {
                       style: TextStyle(
                         fontSize: 20,
                         fontWeight: FontWeight.bold,
-                        color: Color(0xFF39FF14),
+                        color: DjStudioTheme.textMain,
+                        letterSpacing: 1.2,
                       ),
                     ),
                   ),
-                  // 🛠️ FIX GEOMÉTRICO: Scroll para evitar asfixia vertical en móviles
                   Expanded(
                     child: SingleChildScrollView(
                       physics: const BouncingScrollPhysics(),
@@ -208,16 +205,16 @@ class MainWorkspace extends ConsumerWidget {
                               Icons.album,
                               size: 20,
                               color: currentRoute == 0
-                                  ? const Color(0xFF39FF14)
-                                  : Colors.white70,
+                                  ? DjStudioTheme.deckA
+                                  : DjStudioTheme.textHidden,
                             ),
                             title: Text(
                               "Automix",
                               style: TextStyle(
                                 fontSize: 12,
                                 color: currentRoute == 0
-                                    ? const Color(0xFF39FF14)
-                                    : Colors.white70,
+                                    ? DjStudioTheme.deckA
+                                    : DjStudioTheme.textMuted,
                                 fontWeight: currentRoute == 0
                                     ? FontWeight.bold
                                     : FontWeight.normal,
@@ -234,16 +231,16 @@ class MainWorkspace extends ConsumerWidget {
                               Icons.settings,
                               size: 20,
                               color: currentRoute == 1
-                                  ? const Color(0xFFFF007F)
-                                  : Colors.white70,
+                                  ? DjStudioTheme.deckB
+                                  : DjStudioTheme.textHidden,
                             ),
                             title: Text(
                               "Auto-Master",
                               style: TextStyle(
                                 fontSize: 12,
                                 color: currentRoute == 1
-                                    ? const Color(0xFFFF007F)
-                                    : Colors.white70,
+                                    ? DjStudioTheme.deckB
+                                    : DjStudioTheme.textMuted,
                                 fontWeight: currentRoute == 1
                                     ? FontWeight.bold
                                     : FontWeight.normal,
@@ -260,16 +257,16 @@ class MainWorkspace extends ConsumerWidget {
                               Icons.cloud_download,
                               size: 20,
                               color: currentRoute == 2
-                                  ? const Color(0xFF00FFFF)
-                                  : Colors.white70,
+                                  ? DjStudioTheme.cyanAccent
+                                  : DjStudioTheme.textHidden,
                             ),
                             title: Text(
                               "Descargas YT",
                               style: TextStyle(
                                 fontSize: 12,
                                 color: currentRoute == 2
-                                    ? const Color(0xFF00FFFF)
-                                    : Colors.white70,
+                                    ? DjStudioTheme.cyanAccent
+                                    : DjStudioTheme.textMuted,
                                 fontWeight: currentRoute == 2
                                     ? FontWeight.bold
                                     : FontWeight.normal,
@@ -286,16 +283,16 @@ class MainWorkspace extends ConsumerWidget {
                               Icons.science,
                               size: 20,
                               color: currentRoute == 3
-                                  ? Colors.orangeAccent
-                                  : Colors.white70,
+                                  ? DjStudioTheme.alertCritical
+                                  : DjStudioTheme.textHidden,
                             ),
                             title: Text(
                               "Laboratorio",
                               style: TextStyle(
                                 fontSize: 12,
                                 color: currentRoute == 3
-                                    ? Colors.orangeAccent
-                                    : Colors.white70,
+                                    ? DjStudioTheme.alertCritical
+                                    : DjStudioTheme.textMuted,
                                 fontWeight: currentRoute == 3
                                     ? FontWeight.bold
                                     : FontWeight.normal,
@@ -312,16 +309,16 @@ class MainWorkspace extends ConsumerWidget {
                               Icons.wifi_tethering,
                               size: 20,
                               color: currentRoute == 4
-                                  ? Colors.yellowAccent
-                                  : Colors.white70,
+                                  ? DjStudioTheme.masterPeak
+                                  : DjStudioTheme.textHidden,
                             ),
                             title: Text(
-                              "Transferencia LAN",
+                              "LAN Sync",
                               style: TextStyle(
                                 fontSize: 12,
                                 color: currentRoute == 4
-                                    ? Colors.yellowAccent
-                                    : Colors.white70,
+                                    ? DjStudioTheme.masterPeak
+                                    : DjStudioTheme.textMuted,
                                 fontWeight: currentRoute == 4
                                     ? FontWeight.bold
                                     : FontWeight.normal,
@@ -330,7 +327,6 @@ class MainWorkspace extends ConsumerWidget {
                             onTap: () =>
                                 ref.read(routerProvider.notifier).setRoute(4),
                           ),
-                          // 🛠️ MÓDULO ANCLADO A RUTA 5
                           ListTile(
                             contentPadding: const EdgeInsets.symmetric(
                               horizontal: 15,
@@ -339,16 +335,16 @@ class MainWorkspace extends ConsumerWidget {
                               Icons.radio,
                               size: 20,
                               color: currentRoute == 5
-                                  ? Colors.purpleAccent
-                                  : Colors.white70,
+                                  ? DjStudioTheme.syncActive
+                                  : DjStudioTheme.textHidden,
                             ),
                             title: Text(
                               "Live DJ",
                               style: TextStyle(
                                 fontSize: 12,
                                 color: currentRoute == 5
-                                    ? Colors.purpleAccent
-                                    : Colors.white70,
+                                    ? DjStudioTheme.syncActive
+                                    : DjStudioTheme.textMuted,
                                 fontWeight: currentRoute == 5
                                     ? FontWeight.bold
                                     : FontWeight.normal,
@@ -361,11 +357,13 @@ class MainWorkspace extends ConsumerWidget {
                       ),
                     ),
                   ),
-                  // Mini Status Global del Player anclado al fondo
                   if (playerState.currentTrackPath != null)
                     Container(
                       padding: const EdgeInsets.all(15),
-                      color: const Color(0xFF181818),
+                      decoration: const BoxDecoration(
+                        color: DjStudioTheme.bgPanel,
+                        border: Border(top: BorderSide(color: Colors.white10)),
+                      ),
                       width: double.infinity,
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -373,7 +371,7 @@ class MainWorkspace extends ConsumerWidget {
                           const Text(
                             "MOTOR AUDIO",
                             style: TextStyle(
-                              color: Colors.white38,
+                              color: DjStudioTheme.textHidden,
                               fontSize: 10,
                               fontWeight: FontWeight.bold,
                             ),
@@ -385,7 +383,7 @@ class MainWorkspace extends ConsumerWidget {
                                 .split('/')
                                 .last,
                             style: const TextStyle(
-                              color: Color(0xFF39FF14),
+                              color: DjStudioTheme.syncActive,
                               fontSize: 11,
                             ),
                             maxLines: 2,
@@ -399,14 +397,14 @@ class MainWorkspace extends ConsumerWidget {
             ),
           ),
 
-          // 2. ÁREA CENTRAL ENRUTADA DINÁMICAMENTE (ESTADO PERSISTENTE)
+          // 2. ÁREA CENTRAL
           Expanded(
             child: Container(
               decoration: const BoxDecoration(
                 gradient: LinearGradient(
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
-                  colors: [Color(0xFF1E1E1E), Color(0xFF121212)],
+                  colors: [DjStudioTheme.bgPanel, DjStudioTheme.bgDark],
                 ),
               ),
               child: IndexedStack(
@@ -417,7 +415,7 @@ class MainWorkspace extends ConsumerWidget {
                   YoutubeSearchAndDownloadWorkspace(),
                   LabWorkspace(),
                   LanSyncWorkspace(),
-                  BroadcastWorkspace(), // 🛠️ RENDERIZADO AISLADO
+                  BroadcastWorkspace(),
                 ],
               ),
             ),
