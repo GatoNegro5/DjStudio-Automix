@@ -45,9 +45,18 @@ jobs:
         with:
           targets: ${{ matrix.rust_targets }}
 
-      # 🛠️ INYECCIÓN 2: Instalar el Puente Generador FFI en la Máquina Virtual
-      - name: Install Flutter Rust Bridge Codegen
-        run: cargo install flutter_rust_bridge_codegen --version "=2.12.0"
+      # 🛠️ INYECCIÓN 1.5: Caché Global de Rust (Evita recompilar crates nativos en cada push)
+      - name: Cache Rust Dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "djstudio-rust-${{ matrix.os }}"
+
+      # 🛠️ INYECCIÓN 2: Descarga Binaria Precompilada (0 minutos de delay, reemplaza a cargo install)
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall-action@v3
+
+      - name: Install Flutter Rust Bridge Codegen Fast
+        run: cargo binstall flutter_rust_bridge_codegen@2.12.0 --no-confirm
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
