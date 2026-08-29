@@ -117,10 +117,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
     _playerA = Player();
     _playerB = Player();
 
-    final baseFilter = ref.read(equalizerProvider.notifier).currentBaseFilter;
-    (_playerA.platform as dynamic)?.setProperty('af', baseFilter);
-    (_playerB.platform as dynamic)?.setProperty('af', baseFilter);
-
     _attachListeners(_playerA);
     _initPersistence();
 
