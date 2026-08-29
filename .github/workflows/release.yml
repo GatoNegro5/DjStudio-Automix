@@ -89,29 +89,12 @@ jobs:
           ndk-version: r25c # Versión de producción más estable para Flutter/Rust
           add-to-path: false
 
-      - name: Build Platform (Tracker Sandboxing)
+      - name: Build Platform
         env:
-          CARGOKIT_VERBOSE: 1
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
-          if [ "${{ matrix.target }}" == "apk" ]; then
-            echo "🔴 TRACKER ACTIVO: Secuestrando log del compilador..."
-            flutter build apk --release -v > build_log.txt 2>&1 || {
-              echo "======================================================"
-              echo "💥 FALLO DE COMPILACIÓN NATIVA (VOLCADO DE MEMORIA):"
-              echo "======================================================"
-              tail -n 250 build_log.txt
-              echo "======================================================"
-              echo "🔍 FILTRO DE ERRORES C++/RUST:"
-              grep -A 20 -i "error\[" build_log.txt || true
-              grep -A 20 -i "error:" build_log.txt || true
-              exit 1
-            }
-          else
-            ${{ matrix.build_cmd }}
-          fi
-        shell: bash
+          ${{ matrix.build_cmd }}
 
       - name: Compile Windows Installer
         if: matrix.target == 'windows'

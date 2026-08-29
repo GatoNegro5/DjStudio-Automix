@@ -238,18 +238,19 @@ pub async fn read_audio_genre(input_path: String) -> String {
 
 // Para el inyector del sello de agua (ID3v2).
 pub async fn inject_watermark(input_path: String) -> Result<bool, String> {
-    let path = Path::new(&input_path);
+    let path = std::path::Path::new(&input_path);
     if !path.exists() {
         return Err("File not found".to_string());
     }
 
-    // Leemos el tag existente o creamos uno nuevo
     let mut tag = id3::Tag::read_from_path(path).unwrap_or_else(|_| id3::Tag::new());
     
-    // Sello de validación
-    tag.set_comment("ReGenial Master");
+    tag.add_comment(id3::frame::Comment {
+        lang: "spa".to_string(),
+        description: "".to_string(),
+        text: "ReGenial Master".to_string(),
+    });
     
-    // Escribimos de vuelta al archivo MP3 de forma nativa (Universal)
     match tag.write_to_path(path, id3::Version::Id3v24) {
         Ok(_) => Ok(true),
         Err(e) => Err(format!("Failed to write ID3 tag: {}", e)),
@@ -288,9 +289,6 @@ pub async fn clear_watermark(input_path: String) -> Result<bool, String> {
         Err(String::from_utf8_lossy(&output.stderr).to_string())
     }
 }
-
-use std::process::Command;
-use std::path::Path;
 
 fn get_ffprobe_path() -> String {
     if let Ok(mut exe_path) = std::env::current_exe() {
