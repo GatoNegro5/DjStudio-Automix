@@ -1,6 +1,22 @@
 import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+// 1. Nuevo Servicio de Infraestructura (Separación de Concerns)
+class MediaProcessKiller {
+  /// Ejecuta un SIGKILL a nivel OS. Úsese con precaución ya que afecta a procesos globales.
+  static void executeGlobalHardAbort() {
+    try {
+      if (Platform.isWindows) {
+        Process.run('taskkill', ['/F', '/IM', 'ffmpeg.exe']);
+        Process.run('taskkill', ['/F', '/IM', 'yt-dlp.exe']);
+      } else {
+        Process.run('killall', ['-9', 'ffmpeg']);
+        Process.run('killall', ['-9', 'yt-dlp']);
+      }
+    } catch (_) {}
+  }
+}
+
 class PipelineState {
   final bool isIdle;
   final int current;
@@ -78,16 +94,8 @@ class PipelineNotifier extends Notifier<PipelineState> {
       moduleStatus: "🔴 Abortando operación... aniquilando procesos binarios.",
     );
 
-    // Ejecución de SIGKILL a nivel de Sistema Operativo para liberar los I/O Locks al instante
-    try {
-      if (Platform.isWindows) {
-        Process.run('taskkill', ['/F', '/IM', 'ffmpeg.exe']);
-        Process.run('taskkill', ['/F', '/IM', 'yt-dlp.exe']);
-      } else {
-        Process.run('killall', ['-9', 'ffmpeg']);
-        Process.run('killall', ['-9', 'yt-dlp']);
-      }
-    } catch (_) {}
+    // Delegación estricta a la capa de infraestructura. El Notifier ya no maneja binarios.
+    MediaProcessKiller.executeGlobalHardAbort();
   }
 
   void reset() {

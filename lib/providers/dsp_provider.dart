@@ -146,6 +146,10 @@ class DspWorker {
       if (!timestamps.containsKey(absolutePath) ||
           timestamps[absolutePath] != modified) {
         debugPrint("⚙️ [DSP Cache] Escaneando binario ID3: $filename");
+
+        // 🛠️ RESPIRACIÓN OBLIGATORIA: Ceder hilo al Garbage Collector
+        await Future.delayed(const Duration(milliseconds: 30));
+
         final bpm = await _extractBpmFromID3(absolutePath);
 
         if (bpm > 0) {
@@ -252,15 +256,30 @@ class DspWorker {
           }
         }
 
-        final success = await rustTask(file.path);
+        // 🛠️ PROTECCIÓN TÉRMICA: Forzar Yield del hilo principal antes del estrés
+        await Future.delayed(const Duration(milliseconds: 50));
+
+        // 🛠️ LLAMADA FFI con Timeout Duro (10 minutos máx por canción)
+        final success = await rustTask(file.path).timeout(
+          const Duration(minutes: 10),
+          onTimeout: () {
+            debugPrint("🔴 [TIMEOUT FFI]: Colapso C++ en $filename");
+            // Disparar Freno de Emergencia si la FFI se atascó
+            pipe.abort();
+            return false;
+          },
+        );
+
         if (!success) {
           pipe.addQuarantine(filename);
         }
       } catch (e) {
         pipe.updateProgress(i + 1, total, "⚠️ Error DSP", moduleName);
         pipe.addQuarantine(filename);
-        await Future.delayed(const Duration(seconds: 2));
-        continue;
+      } finally {
+        // 🛠️ RESPIRACIÓN OBLIGATORIA: Ceder ciclos al Kernel tras cada track pesado
+        // Esto permite que el recolector de basura limpie y la CPU se enfríe.
+        await Future.delayed(const Duration(milliseconds: 300));
       }
     }
   }
