@@ -7,6 +7,7 @@ import 'providers/directory_provider.dart';
 import 'providers/player_provider.dart';
 import 'providers/pipeline_provider.dart';
 import 'providers/dsp_provider.dart';
+import 'providers/theme_provider.dart';
 
 // =====================================================================
 // ROUTE 0: UNIFIED DJ WORKSPACE (IDE 3-PANEL REKORDBOX STYLE)
@@ -29,7 +30,7 @@ class _UnifiedDjWorkspaceState extends State<UnifiedDjWorkspace> {
     final Widget desktopBottomPanels = Row(
       children: [
         Material(
-          color: const Color(0xFF0A0A0A),
+          color: DjStudioTheme.bgPanel,
           // 🛠️ El Explorador se reduce a 150px en celulares
           child: SizedBox(
             width: isMobileLandscape ? 150 : 220,
@@ -234,7 +235,7 @@ class _LibraryTreePanelState extends ConsumerState<LibraryTreePanel> {
         Container(
           padding: EdgeInsets.all(isMobile ? 6.0 : 12.0), // Compresión Y
           decoration: const BoxDecoration(
-            color: Colors.black,
+            color: DjStudioTheme.bgPanel,
             border: Border(bottom: BorderSide(color: Colors.white10)),
           ),
           child: Row(
@@ -782,7 +783,7 @@ class FolderContentPanel extends ConsumerWidget {
             horizontal: 10,
             vertical: isMobile ? 4 : 8,
           ),
-          color: const Color(0xFF141414),
+          color: DjStudioTheme.bgPanel,
           child: Row(
             children: [
               Expanded(
@@ -1202,7 +1203,7 @@ class AutomixPanel extends ConsumerWidget {
             horizontal: 10,
             vertical: isMobile ? 4 : 8,
           ),
-          color: const Color(0xFF1A1A1A),
+          color: DjStudioTheme.bgPanel,
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -1272,7 +1273,7 @@ class AutomixPanel extends ConsumerWidget {
                       color: Colors.white70,
                       size: isMobile ? 16 : 20,
                     ),
-                    color: const Color(0xFF121212),
+                    color: DjStudioTheme.bgDark,
                     shape: RoundedRectangleBorder(
                       side: const BorderSide(color: Color(0xFFFF007F)),
                       borderRadius: BorderRadius.circular(4),
@@ -1354,7 +1355,7 @@ class AutomixPanel extends ConsumerWidget {
 
                     return Material(
                       color: isPlayingThisTrack
-                          ? const Color(0xFF1F000F)
+                          ? DjStudioTheme.deckA.withValues(alpha: 0.15)
                           : Colors.transparent,
                       child: ListTile(
                         dense: true,
@@ -1520,7 +1521,7 @@ class _MixerPanelState extends ConsumerState<MixerPanel> {
               Expanded(
                 child: Container(
                   decoration: BoxDecoration(
-                    color: const Color(0xFF0A0A0A),
+                    color: DjStudioTheme.bgPanel,
                     borderRadius: BorderRadius.circular(8),
                     border: Border.all(
                       color: isRecording
@@ -1610,7 +1611,7 @@ class _MixerPanelState extends ConsumerState<MixerPanel> {
                   vertical: isMobileLandscape ? 5 : 10,
                 ),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF181818),
+                  color: DjStudioTheme.bgPanel,
                   borderRadius: BorderRadius.circular(8),
                   border: Border.all(color: Colors.white10),
                 ),
@@ -1625,7 +1626,7 @@ class _MixerPanelState extends ConsumerState<MixerPanel> {
                             height: 24,
                             child: DropdownButton<MixStrategy>(
                               value: mixStrategy,
-                              dropdownColor: Colors.black,
+                              dropdownColor: DjStudioTheme.bgDark,
                               icon: const Icon(
                                 Icons.shuffle,
                                 color: Color(0xFFB026FF),
