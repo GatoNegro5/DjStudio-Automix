@@ -16,16 +16,16 @@ jobs:
             build_cmd: flutter build apk --release
             asset_name: app-release.apk
             rust_targets: aarch64-linux-android, x86_64-linux-android, armv7-linux-androideabi
-          #- os: windows-latest
-          #  target: windows
-          #  build_cmd: flutter build windows --release
-          #  asset_name: DjStudio-Windows.zip
-          #  rust_targets: x86_64-pc-windows-msvc
-          #- os: macos-latest
-          #  target: macos
-          #  build_cmd: flutter build macos --release
-          #  asset_name: DjStudio-MacOS.zip
-          #  rust_targets: x86_64-apple-darwin, aarch64-apple-darwin
+          - os: windows-latest
+            target: windows
+            build_cmd: flutter build windows --release
+            asset_name: DjStudio-Windows.zip
+            rust_targets: x86_64-pc-windows-msvc
+          - os: macos-latest
+            target: macos
+            build_cmd: flutter build macos --release
+            asset_name: DjStudio-MacOS.zip
+            rust_targets: x86_64-apple-darwin, aarch64-apple-darwin
 
     runs-on: ${{ matrix.os }}
     steps:
