@@ -357,7 +357,7 @@ class DspNlpWorkspace extends ConsumerWidget {
     bool isThermalThrottling = false;
 
     final checkpointFile = File(
-      '${targetPath}${Platform.pathSeparator}.dj_master_checkpoint.json',
+      '$targetPath${Platform.pathSeparator}.dj_master_checkpoint.json',
     );
     Map<String, dynamic> checkpoint = {
       'status': 'started',

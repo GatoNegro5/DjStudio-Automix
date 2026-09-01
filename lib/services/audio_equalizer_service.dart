@@ -83,8 +83,9 @@ class AudioEqualizerService {
     final List<String> eqFilters = [];
 
     if (enabled) {
-      if (preamp != 0.0)
+      if (preamp != 0.0) {
         eqFilters.add('volume=volume=${preamp.toStringAsFixed(1)}dB');
+      }
       for (int i = 0; i < bandFrequencies.length; i++) {
         final gain = gains[i].clamp(-12.0, 12.0);
         if (gain != 0.0) {

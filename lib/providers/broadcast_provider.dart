@@ -8,12 +8,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_selector/file_selector.dart';
 
 import '../core/hal/platform_strategy.dart';
-import 'db_provider.dart';
 import 'equalizer_provider.dart';
 
 enum BroadcastMixStrategy { sequential, random }
 
-enum BroadcastMixStyle { smooth, vinylBrake, echoOut, automixDsp }
+enum BroadcastMixMode { activeSync, longBypass }
 
 class BroadcastState {
   final bool isPlaying;
@@ -21,7 +20,7 @@ class BroadcastState {
   final Duration duration;
   final List<File> queue;
   final String? currentTrackPath;
-  final Set<BroadcastMixStyle> activeMixStyles;
+  final BroadcastMixMode currentMixMode;
   final int customCueInMs;
   final int customMixOutMs;
 
@@ -31,12 +30,7 @@ class BroadcastState {
     this.duration = Duration.zero,
     this.queue = const [],
     this.currentTrackPath,
-    this.activeMixStyles = const {
-      BroadcastMixStyle.smooth,
-      BroadcastMixStyle.vinylBrake,
-      BroadcastMixStyle.echoOut,
-      BroadcastMixStyle.automixDsp,
-    },
+    this.currentMixMode = BroadcastMixMode.activeSync,
     this.customCueInMs = -1,
     this.customMixOutMs = -1,
   });
@@ -47,7 +41,7 @@ class BroadcastState {
     Duration? duration,
     List<File>? queue,
     String? currentTrackPath,
-    Set<BroadcastMixStyle>? activeMixStyles,
+    BroadcastMixMode? currentMixMode,
     int? customCueInMs,
     int? customMixOutMs,
   }) {
@@ -57,7 +51,7 @@ class BroadcastState {
       duration: duration ?? this.duration,
       queue: queue ?? this.queue,
       currentTrackPath: currentTrackPath ?? this.currentTrackPath,
-      activeMixStyles: activeMixStyles ?? this.activeMixStyles,
+      currentMixMode: currentMixMode ?? this.currentMixMode,
       customCueInMs: customCueInMs ?? this.customCueInMs,
       customMixOutMs: customMixOutMs ?? this.customMixOutMs,
     );
@@ -109,14 +103,19 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
     return BroadcastState();
   }
 
+  bool _isMixTrack(int durationMs) => durationMs > 600000; // > 10 minutos
+
   int _calculateSmartTrim(int durationMs) {
-    if (durationMs > 30000) return 10000;
+    if (_isMixTrack(durationMs)) return 0;
+    if (durationMs > 30000) return 5000;
     return 0;
   }
 
   int _calculateRadioMixOut(int durationMs) {
+    if (_isMixTrack(durationMs)) {
+      return durationMs - 4000;
+    }
     if (durationMs > 60000) return durationMs - 20000;
-    if (durationMs > 30000) return durationMs - 10000;
     return durationMs - 4000;
   }
 
@@ -127,7 +126,7 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
         'queue': state.queue.map((f) => f.path).toList(),
         'currentTrackPath': state.currentTrackPath,
         'positionMs': state.position.inMilliseconds,
-        'activeMixStyles': state.activeMixStyles.map((e) => e.index).toList(),
+        'mixMode': state.currentMixMode.index,
       };
       await file.writeAsString(jsonEncode(data));
     } catch (_) {}
@@ -149,18 +148,12 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
       final currentTrackPath = data['currentTrackPath'] as String?;
       final positionMs = data['positionMs'] as int?;
 
-      final activeMixStylesIdx =
-          (data['activeMixStyles'] as List?)?.cast<int>() ?? [];
-      final Set<BroadcastMixStyle> restoredStyles = activeMixStylesIdx
-          .map((i) => BroadcastMixStyle.values[i])
-          .toSet();
+      final mixModeIdx = data['mixMode'] as int? ?? 0;
 
       state = state.copyWith(
         queue: queueFiles,
         currentTrackPath: currentTrackPath,
-        activeMixStyles: restoredStyles.isNotEmpty
-            ? restoredStyles
-            : {BroadcastMixStyle.smooth},
+        currentMixMode: BroadcastMixMode.values[mixModeIdx],
       );
 
       if (currentTrackPath != null) {
@@ -272,17 +265,6 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
     await forceNext();
   }
 
-  void toggleMixStyle(BroadcastMixStyle style) {
-    final currentStyles = Set<BroadcastMixStyle>.from(state.activeMixStyles);
-    if (currentStyles.contains(style)) {
-      if (currentStyles.length > 1) currentStyles.remove(style);
-    } else {
-      currentStyles.add(style);
-    }
-    state = state.copyWith(activeMixStyles: currentStyles);
-    _saveSnapshot();
-  }
-
   void _attachListeners(Player player) {
     _positionSub?.cancel();
     _durationSub?.cancel();
@@ -326,9 +308,14 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
       if (dur.inMilliseconds > 0 && state.currentTrackPath != null) {
         final triggerMs = _calculateRadioMixOut(dur.inMilliseconds);
         final cueInMs = _calculateSmartTrim(dur.inMilliseconds);
+        final mode = _isMixTrack(dur.inMilliseconds)
+            ? BroadcastMixMode.longBypass
+            : BroadcastMixMode.activeSync;
+
         state = state.copyWith(
           customCueInMs: cueInMs,
           customMixOutMs: triggerMs,
+          currentMixMode: mode,
         );
       }
     });
@@ -371,82 +358,44 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
   Future<void> _executeMixEngine({
     required Player fadingPlayer,
     required Player incomingPlayer,
-    required BroadcastMixStyle mixProfile,
+    required BroadcastMixMode mixProfile,
   }) async {
     final String currentBaseFilter = ref
         .read(equalizerProvider.notifier)
         .currentBaseFilter;
-    final String combinedFilter = currentBaseFilter;
 
     final platformOut = fadingPlayer.platform as dynamic;
     final platformIn = incomingPlayer.platform as dynamic;
 
     try {
-      if (mixProfile == BroadcastMixStyle.echoOut) {
-        platformOut?.setProperty('af', '$combinedFilter,aecho=0.8:0.9:500:0.5');
-        await incomingPlayer.setVolume(100.0);
-        await fadingPlayer.setVolume(50.0);
-        await Future.delayed(const Duration(milliseconds: 1500));
-      } else if (mixProfile == BroadcastMixStyle.vinylBrake) {
-        platformOut?.setProperty('audio-pitch-correction', 'no');
-        await incomingPlayer.setVolume(100.0);
-        await fadingPlayer.setRate(0.05);
-        await Future.delayed(const Duration(milliseconds: 1200));
-      } else if (mixProfile == BroadcastMixStyle.automixDsp) {
-        // Fallback dinámico a HAL
-        final mixDuration = (Platform.isAndroid || Platform.isIOS)
-            ? 4000
-            : 8000;
+      platformIn?.setProperty('audio-pitch-correction', 'yes');
+      platformOut?.setProperty('audio-pitch-correction', 'yes');
+      platformIn?.setProperty('af', currentBaseFilter);
+      platformOut?.setProperty('af', currentBaseFilter);
 
-        platformIn?.setProperty('af', '$combinedFilter,lowshelf=g=-24:f=250');
-        await incomingPlayer.setVolume(100.0);
-        await fadingPlayer.setVolume(100.0);
+      await incomingPlayer.setVolume(100.0);
 
-        await Future.delayed(Duration(milliseconds: mixDuration ~/ 2));
+      final fadeStopwatch = Stopwatch()..start();
+      final fadeOutDurationMs = mixProfile == BroadcastMixMode.longBypass
+          ? 4000
+          : 20000;
 
-        platformOut?.setProperty('af', '$combinedFilter,lowshelf=g=-24:f=250');
-        platformIn?.setProperty('af', combinedFilter);
+      while (fadeStopwatch.elapsedMilliseconds < fadeOutDurationMs) {
+        final progress = (fadeStopwatch.elapsedMilliseconds / fadeOutDurationMs)
+            .clamp(0.0, 1.0);
+        final rateOut = cos(progress * (pi / 2));
 
-        final fadeStopwatch = Stopwatch()..start();
-        final fadeOutDurationMs = mixDuration ~/ 2;
-
-        while (fadeStopwatch.elapsedMilliseconds < fadeOutDurationMs) {
-          final progress =
-              (fadeStopwatch.elapsedMilliseconds / fadeOutDurationMs).clamp(
-                0.0,
-                1.0,
-              );
-          final rateOut = cos(progress * (pi / 2));
-          await fadingPlayer.setVolume((rateOut * 100.0).clamp(0.0, 100.0));
-          await Future.delayed(const Duration(milliseconds: 32));
-        }
-      } else {
-        await incomingPlayer.setVolume(100.0);
-        final fadeStopwatch = Stopwatch()..start();
-        const fadeOutDurationMs = 3000;
-
-        while (fadeStopwatch.elapsedMilliseconds < fadeOutDurationMs) {
-          final progress =
-              (fadeStopwatch.elapsedMilliseconds / fadeOutDurationMs).clamp(
-                0.0,
-                1.0,
-              );
-          await fadingPlayer.setVolume(
-            ((1.0 - progress) * 100).clamp(0.0, 100.0),
-          );
-          await Future.delayed(const Duration(milliseconds: 32));
-        }
+        await fadingPlayer.setVolume((rateOut * 100.0).clamp(0.0, 100.0));
+        await Future.delayed(const Duration(milliseconds: 32));
       }
     } catch (e) {
       debugPrint("🔴 [ERROR DSP]: $e");
     } finally {
       await incomingPlayer.setVolume(100.0);
       await incomingPlayer.setRate(1.0);
-      platformIn?.setProperty('audio-pitch-correction', 'yes');
-      platformIn?.setProperty('af', combinedFilter);
+      platformIn?.setProperty('af', currentBaseFilter);
 
-      platformOut?.setProperty('audio-pitch-correction', 'yes');
-      platformOut?.setProperty('af', combinedFilter);
+      platformOut?.setProperty('af', currentBaseFilter);
       await fadingPlayer.setVolume(100.0);
       await fadingPlayer.setRate(1.0);
 
@@ -466,22 +415,21 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
 
     int cueInMs = 10000;
 
-    final availableStyles = state.activeMixStyles.toList();
-    BroadcastMixStyle mixProfile = BroadcastMixStyle.smooth;
-    if (availableStyles.isNotEmpty) {
-      mixProfile = availableStyles[Random().nextInt(availableStyles.length)];
-    }
-
     if (!_isStandbyArmed || forceJit) {
       await incomingPlayer.setVolume(0.0);
       await incomingPlayer.open(Media(nextTrack), play: false);
     }
+
+    BroadcastMixMode nextMode = BroadcastMixMode.activeSync;
 
     try {
       final dur = await incomingPlayer.stream.duration
           .firstWhere((d) => d.inMilliseconds > 0)
           .timeout(const Duration(milliseconds: 1500));
       cueInMs = _calculateSmartTrim(dur.inMilliseconds);
+      nextMode = _isMixTrack(dur.inMilliseconds)
+          ? BroadcastMixMode.longBypass
+          : BroadcastMixMode.activeSync;
     } catch (_) {}
 
     if (cueInMs > 0) {
@@ -503,6 +451,7 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
       queue: newQueue,
       currentTrackPath: nextTrack,
       position: Duration(milliseconds: cueInMs),
+      currentMixMode: nextMode,
     );
 
     _saveSnapshot();
@@ -510,7 +459,7 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
     await _executeMixEngine(
       fadingPlayer: fadingPlayer,
       incomingPlayer: incomingPlayer,
-      mixProfile: mixProfile,
+      mixProfile: state.currentMixMode,
     );
   }
 }

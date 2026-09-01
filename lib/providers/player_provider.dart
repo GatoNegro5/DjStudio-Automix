@@ -365,7 +365,8 @@ class PlayerNotifier extends Notifier<PlayerState> {
       platformIn?.setProperty('af', currentBaseFilter);
 
       final fadeStopwatch = Stopwatch()..start();
-      const int fadeOutDurationMs = 4000;
+      // ✅ Ahora respeta el parámetro inyectado desde la base de datos o el enrutador
+      final int fadeOutDurationMs = mixDurationMs;
 
       while (fadeStopwatch.elapsedMilliseconds < fadeOutDurationMs) {
         final progress = (fadeStopwatch.elapsedMilliseconds / fadeOutDurationMs)

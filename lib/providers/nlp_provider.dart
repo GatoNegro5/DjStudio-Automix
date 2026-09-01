@@ -32,8 +32,9 @@ class NlpWorker {
 
         // 🛠️ EXPONENTIAL BACKOFF: Si es Rate Limit (429) o Server Error (5xx), esperamos y reintentamos.
         if (res.statusCode == 429 || res.statusCode >= 500) {
-          if (attempt == maxRetries - 1)
+          if (attempt == maxRetries - 1) {
             return res; // Último intento, devolvemos el error.
+          }
 
           final delay = baseDelayMs * (1 << attempt); // 1.5s -> 3s -> 6s
           debugPrint(

@@ -400,10 +400,12 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
   String _getFfprobePath() {
     if (Platform.isAndroid || Platform.isIOS) return 'ffprobe';
     if (Platform.isMacOS) {
-      if (File('/opt/homebrew/bin/ffprobe').existsSync())
+      if (File('/opt/homebrew/bin/ffprobe').existsSync()) {
         return '/opt/homebrew/bin/ffprobe';
-      if (File('/usr/local/bin/ffprobe').existsSync())
+      }
+      if (File('/usr/local/bin/ffprobe').existsSync()) {
         return '/usr/local/bin/ffprobe';
+      }
       return 'ffprobe';
     }
     final exeDir = File(Platform.resolvedExecutable).parent.path;
@@ -416,10 +418,12 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
   String _getFfmpegPath() {
     if (Platform.isAndroid || Platform.isIOS) return 'ffmpeg';
     if (Platform.isMacOS) {
-      if (File('/opt/homebrew/bin/ffmpeg').existsSync())
+      if (File('/opt/homebrew/bin/ffmpeg').existsSync()) {
         return '/opt/homebrew/bin/ffmpeg';
-      if (File('/usr/local/bin/ffmpeg').existsSync())
+      }
+      if (File('/usr/local/bin/ffmpeg').existsSync()) {
         return '/usr/local/bin/ffmpeg';
+      }
       return 'ffmpeg';
     }
     final exeDir = File(Platform.resolvedExecutable).parent.path;
@@ -564,9 +568,9 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
       if (Platform.isWindows) {
         ytdlpPath = '${tempDir.path}${Platform.pathSeparator}yt-dlp.exe';
       } else if (Platform.isMacOS) {
-        if (File('/opt/homebrew/bin/yt-dlp').existsSync())
+        if (File('/opt/homebrew/bin/yt-dlp').existsSync()) {
           ytdlpPath = '/opt/homebrew/bin/yt-dlp';
-        else if (File('/usr/local/bin/yt-dlp').existsSync())
+        } else if (File('/usr/local/bin/yt-dlp').existsSync())
           ytdlpPath = '/usr/local/bin/yt-dlp';
       }
 
@@ -1104,7 +1108,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
       children: [
         // 🛠️ INYECCIÓN: Tarjeta de Diagnóstico Activa si hay Telemetría DLQ
         if (hasTelemetry)
-          _buildDiagnosticCard(Map<String, dynamic>.from(registryValue as Map)),
+          _buildDiagnosticCard(Map<String, dynamic>.from(registryValue)),
 
         Container(
           padding: EdgeInsets.all(isMobile ? 10 : 15),

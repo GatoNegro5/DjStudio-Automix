@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'dart:math';
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
@@ -11,7 +10,7 @@ import 'package:file_selector/file_selector.dart';
 import '../../providers/theme_provider.dart';
 import '../../providers/directory_provider.dart';
 import '../../providers/broadcast_provider.dart';
-import 'playerDj.dart'; // 🛠️ INYECCIÓN: Requerido para leer el LibraryTreePanel
+import 'playerDj.dart';
 
 class BroadcastWorkspace extends ConsumerWidget {
   const BroadcastWorkspace({super.key});
@@ -161,17 +160,33 @@ class BroadcastFolderPanel extends ConsumerWidget {
   }
 }
 
-class BroadcastPlayerPanel extends ConsumerWidget {
+class BroadcastPlayerPanel extends ConsumerStatefulWidget {
   const BroadcastPlayerPanel({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<BroadcastPlayerPanel> createState() =>
+      _BroadcastPlayerPanelState();
+}
+
+class _BroadcastPlayerPanelState extends ConsumerState<BroadcastPlayerPanel> {
+  double? _dragPosition;
+
+  @override
+  Widget build(BuildContext context) {
     final state = ref.watch(broadcastProvider);
     final pos = state.position;
     final dur = state.duration;
     final currentName = state.currentTrackPath != null
         ? state.currentTrackPath!.replaceAll('\\', '/').split('/').last
         : "SISTEMA EN ESPERA";
+
+    final isMixBypass = state.currentMixMode == BroadcastMixMode.longBypass;
+    final engineModeStr = isMixBypass
+        ? "BYPASS (MEZCLA PROTEGIDA)"
+        : "ACTIVE BEATMATCHING (20s OVERLAP)";
+    final engineModeColor = isMixBypass
+        ? DjStudioTheme.cyanAccent
+        : DjStudioTheme.syncActive;
 
     return Column(
       children: [
@@ -189,11 +204,10 @@ class BroadcastPlayerPanel extends ConsumerWidget {
                   vertical: 4,
                 ),
                 decoration: BoxDecoration(
-                  color: DjStudioTheme.alertCritical.withOpacity(0.1),
+                  color: DjStudioTheme.alertCritical.withValues(alpha: 0.1),
                   border: Border.all(color: DjStudioTheme.alertCritical),
                   borderRadius: BorderRadius.circular(4),
                 ),
-                // 🛠️ FIX: Eliminado el modificador const destructivo aquí
                 child: Row(
                   children: [
                     const Icon(
@@ -292,22 +306,37 @@ class BroadcastPlayerPanel extends ConsumerWidget {
                     thumbColor: Colors.white,
                   ),
                   child: Slider(
-                    value: dur.inMilliseconds > 0
-                        ? pos.inMilliseconds.toDouble().clamp(
-                            0.0,
-                            dur.inMilliseconds.toDouble(),
-                          )
-                        : 0.0,
+                    value:
+                        _dragPosition ??
+                        (dur.inMilliseconds > 0
+                            ? pos.inMilliseconds.toDouble().clamp(
+                                0.0,
+                                dur.inMilliseconds.toDouble(),
+                              )
+                            : 0.0),
                     min: 0.0,
                     max: dur.inMilliseconds > 0
                         ? dur.inMilliseconds.toDouble()
                         : 1.0,
+                    onChangeStart: (val) {
+                      setState(() {
+                        _dragPosition = val;
+                      });
+                    },
                     onChanged: (val) {
+                      setState(() {
+                        _dragPosition = val;
+                      });
+                    },
+                    onChangeEnd: (val) {
                       if (dur.inMilliseconds > 0) {
                         ref
                             .read(broadcastProvider.notifier)
                             .seek(Duration(milliseconds: val.toInt()));
                       }
+                      setState(() {
+                        _dragPosition = null;
+                      });
                     },
                   ),
                 ),
@@ -355,18 +384,14 @@ class BroadcastPlayerPanel extends ConsumerWidget {
         ),
 
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 12),
           color: const Color(0xFF101215),
           child: Row(
             children: [
-              const Icon(
-                Icons.memory,
-                color: DjStudioTheme.masterPeak,
-                size: 14,
-              ),
+              Icon(Icons.memory, color: engineModeColor, size: 16),
               const SizedBox(width: 8),
               const Text(
-                "DSP FX BUS:",
+                "SMART ROUTING ENGINE:",
                 style: TextStyle(
                   color: Colors.white70,
                   fontSize: 10,
@@ -375,52 +400,29 @@ class BroadcastPlayerPanel extends ConsumerWidget {
               ),
               const SizedBox(width: 10),
               Expanded(
-                child: Wrap(
-                  spacing: 5,
-                  children: BroadcastMixStyle.values.map((style) {
-                    final isActive = state.activeMixStyles.contains(style);
-
-                    String label = "";
-                    switch (style) {
-                      case BroadcastMixStyle.smooth:
-                        label = "SMOOTH";
-                        break;
-                      case BroadcastMixStyle.vinylBrake:
-                        label = "BRAKE";
-                        break;
-                      case BroadcastMixStyle.echoOut:
-                        label = "ECHO";
-                        break;
-                      case BroadcastMixStyle.automixDsp:
-                        label = "AUTOMIX DSP";
-                        break;
-                    }
-
-                    return FilterChip(
-                      label: Text(
-                        label,
-                        style: TextStyle(
-                          fontSize: 9,
-                          fontWeight: FontWeight.bold,
-                          color: isActive ? Colors.black : Colors.white54,
-                        ),
-                      ),
-                      selected: isActive,
-                      selectedColor: DjStudioTheme.masterPeak,
-                      backgroundColor: DjStudioTheme.bgDark,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(4),
-                        side: BorderSide(
-                          color: isActive
-                              ? DjStudioTheme.masterPeak
-                              : Colors.white10,
-                        ),
-                      ),
-                      onSelected: (_) => ref
-                          .read(broadcastProvider.notifier)
-                          .toggleMixStyle(style),
-                    );
-                  }).toList(),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: DjStudioTheme.bgDark,
+                    border: Border.all(
+                      color: engineModeColor.withValues(alpha: 0.5),
+                    ),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    engineModeStr,
+                    style: TextStyle(
+                      color: engineModeColor,
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                    ),
+                    textAlign: TextAlign.center,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
               ),
             ],
