@@ -14,14 +14,12 @@ use symphonia::core::meta::MetadataOptions;
 use symphonia::core::codecs::DecoderOptions;
 use symphonia::core::audio::SampleBuffer;
 
-// 🛠️ INYECCIÓN: Librerías exclusivas de Windows para control de subprocesos
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-// 🛠️ REGISTRO GLOBAL DE PID PARA ABORTO ATÓMICO (KILL SWITCH)
 static ACTIVE_PID: AtomicU32 = AtomicU32::new(0);
 
 #[flutter_rust_bridge::frb(init)]
@@ -29,7 +27,6 @@ pub fn init_app() {
     flutter_rust_bridge::setup_default_user_utils();
 }
 
-// 🛠️ KILL SWITCH EXPUESTO A DART (Debe ser síncrono para interrumpir al instante)
 #[flutter_rust_bridge::frb(sync)]
 pub fn abort_active_process() {
     let pid = ACTIVE_PID.swap(0, Ordering::SeqCst);
@@ -49,24 +46,18 @@ pub fn abort_active_process() {
     }
 }
 
-// 🛠️ MOTOR DE EJECUCIÓN SEGURO (Registra el PID antes de bloquear el hilo)
 fn execute_ffmpeg_with_kill_switch(cmd: &mut Command) -> Result<std::process::Output, std::io::Error> {
     let child = cmd.spawn()?;
-    ACTIVE_PID.store(child.id(), Ordering::SeqCst); // Registra el proceso en memoria RAM
-    let output = child.wait_with_output()?;         // Bloquea hasta terminar o ser liquidado
-    ACTIVE_PID.store(0, Ordering::SeqCst);          // Libera el registro
+    ACTIVE_PID.store(child.id(), Ordering::SeqCst);
+    let output = child.wait_with_output()?;        
+    ACTIVE_PID.store(0, Ordering::SeqCst);         
     Ok(output)
 }
 
-// 🛠️ CONSTRUCTOR MAESTRO: Aislamiento estricto de UI y Límite de CPU
 fn spawn_headless_ffmpeg() -> Command {
     let mut cmd = Command::new(get_ffmpeg_path());
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);
-    
-    // 🛠️ FIX CPU STARVATION: 
-    // -nostdin: Evita deadlocks de consola.
-    // -threads 2: Obliga a FFmpeg a usar máximo 2 núcleos. Libera el resto para Windows y WhatsApp.
     cmd.args(["-nostdin", "-threads", "2"]); 
     cmd
 }
@@ -102,8 +93,33 @@ fn atomic_replace(temp_path: &Path, original_path: &Path) -> Result<(), String> 
     }
 }
 
+// 🛠️ MOTOR FFI: Calcula duración exacta de audios nativamente sin usar CLI de ffprobe.
+pub async fn get_audio_duration_ms(input_path: String) -> Result<u64, String> {
+    let file = Box::new(File::open(&input_path).map_err(|e| e.to_string())?);
+    let mss = MediaSourceStream::new(file, Default::default());
+    let mut hint = Hint::new();
+    hint.with_extension("mp3");
+
+    let probed = get_probe().format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default());
+
+    if let Ok(mut format) = probed {
+        if let Some(track) = format.format.default_track() {
+            if let Some(tb) = track.codec_params.time_base {
+                if let Some(frames) = track.codec_params.n_frames {
+                    let time = tb.calc_time(frames);
+                    return Ok((time.seconds * 1000) + (time.frac as u64 * 1000));
+                }
+            }
+        }
+    }
+
+    // Heurística de Fallback Cero-Decoding (Aproximación a 320kbps si el archivo está roto)
+    let file_meta = std::fs::metadata(&input_path).map_err(|e| e.to_string())?;
+    let size_bytes = file_meta.len();
+    Ok(((size_bytes * 8) / 320) as u64)
+}
+
 pub async fn process_auto_trim(input_path: String) -> Result<bool, String> {
-    // 🛠️ VETO DE EJECUCIÓN (Idempotencia Nativa)
     if check_watermark(input_path.clone()).await.unwrap_or(false) {
         return Ok(true);
     }
@@ -128,7 +144,6 @@ pub async fn process_auto_trim(input_path: String) -> Result<bool, String> {
 }
 
 pub async fn normalize_lufs(input_path: String) -> Result<bool, String> {
-    // 🛠️ VETO DE EJECUCIÓN
     if check_watermark(input_path.clone()).await.unwrap_or(false) {
         return Ok(true);
     }
@@ -165,7 +180,6 @@ pub async fn normalize_lufs(input_path: String) -> Result<bool, String> {
 }
 
 pub async fn process_full_pipeline(input_path: String) -> Result<bool, String> {
-    // 🛠️ VETO DE EJECUCIÓN MAESTRO: Si la firma física existe, aborta el re-renderizado pesado instantáneamente.
     if check_watermark(input_path.clone()).await.unwrap_or(false) {
         return Ok(true);
     }
@@ -189,17 +203,10 @@ pub async fn process_full_pipeline(input_path: String) -> Result<bool, String> {
     }
 }
 
-
-// Función segura y universal.
-// En móviles, jamás debemos usar Command::new("ffprobe") a menos que estemos seguros
-// de que el binario fue inyectado por un plugin especial de Flutter (ej. ffmpeg_kit_flutter).
-// Para no inflar el APK en 80MB, usamos una heurística 100% en RAM.
 pub async fn read_audio_genre(input_path: String) -> String {
     let path = Path::new(&input_path);
     let path_str = path.to_string_lossy().to_lowercase();
 
-    // 1. CERO-COST HEURÍSTICA LÉXICA (Ground Truth para tu Disco Duro)
-    // No gasta CPU, no gasta batería. Es instantáneo.
     if path_str.contains("salsa") { return "salsa".to_string(); }
     if path_str.contains("merengues") || path_str.contains("merengue") { return "merengue".to_string(); }
     if path_str.contains("cumbias") || path_str.contains("cumbia") { return "cumbia".to_string(); }
@@ -214,9 +221,6 @@ pub async fn read_audio_genre(input_path: String) -> String {
     if path_str.contains("actualidad") { return "actualidad".to_string(); }
     if path_str.contains("fiesta") { return "fiesta".to_string(); }
 
-    // 2. FALLBACK A METADATOS (ID3v2) - Seguro para Android.
-    // Usamos el paquete puro de Rust `id3` en lugar de invocar a FFprobe.
-    // Asegúrate de tener `id3 = "1.1.2"` en el `Cargo.toml` de la carpeta rust.
     if let Ok(tag) = id3::Tag::read_from_path(path) {
         if let Some(genre) = tag.genre() {
             let genre_lower = genre.to_lowercase();
@@ -230,13 +234,9 @@ pub async fn read_audio_genre(input_path: String) -> String {
             return genre_lower;
         }
     }
-
-    // Si la pista está en "Descargas" y no tiene metadata, asumiremos
-    // un perfil cuantizado seguro (crossfade estándar).
     "desconocido".to_string()
 }
 
-// Para el inyector del sello de agua (ID3v2).
 pub async fn inject_watermark(input_path: String) -> Result<bool, String> {
     let path = std::path::Path::new(&input_path);
     if !path.exists() {
@@ -290,21 +290,6 @@ pub async fn clear_watermark(input_path: String) -> Result<bool, String> {
     }
 }
 
-fn get_ffprobe_path() -> String {
-    if let Ok(mut exe_path) = std::env::current_exe() {
-        exe_path.pop();
-        exe_path.push(if cfg!(target_os = "windows") { "ffprobe.exe" } else { "ffprobe" });
-        if exe_path.exists() {
-            return exe_path.to_string_lossy().into_owned();
-        }
-    }
-    if cfg!(target_os = "macos") {
-        if Path::new("/opt/homebrew/bin/ffprobe").exists() { return "/opt/homebrew/bin/ffprobe".to_string(); }
-        if Path::new("/usr/local/bin/ffprobe").exists() { return "/usr/local/bin/ffprobe".to_string(); }
-    }
-    "ffprobe".to_string()
-}
-
 fn get_ffmpeg_path() -> String {
     if let Ok(mut exe_path) = std::env::current_exe() {
         exe_path.pop();
@@ -320,70 +305,17 @@ fn get_ffmpeg_path() -> String {
     "ffmpeg".to_string()
 }
 
-// 🛠️ ANALIZADOR NEURONAL LIGERO (FFMPEG AST)
-fn analyze_transients(file_path: &Path) -> String {
-    // Escaneamos 5 segundos desde la mitad de la canción para evitar las intros sin ritmo.
-    let output = Command::new(get_ffmpeg_path())
-        .args([
-            "-ss", "00:01:30", 
-            "-t", "5",
-            "-i", file_path.to_str().unwrap(),
-            "-af", "astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.Peak_level",
-            "-f", "null", "-"
-        ])
-        .output();
-
-    if let Ok(out) = output {
-        let log = String::from_utf8_lossy(&out.stderr);
-        let mut peak_count = 0;
-        let mut rms_level = 0.0;
-        let mut readings = 0;
-
-        // Parseo de los picos crudos.
-        for line in log.lines() {
-            if line.contains("lavfi.astats.Overall.Peak_level") {
-                if let Some(val_str) = line.split('=').last() {
-                    if let Ok(val) = val_str.trim().parse::<f32>() {
-                        // Un pico por encima de -5dB suele ser una campana o un redoblante seco (Tropical/Rock).
-                        if val > -5.0 { peak_count += 1; }
-                        rms_level += val;
-                        readings += 1;
-                    }
-                }
-            }
-        }
-
-        if readings > 0 {
-            let avg_peak = rms_level / readings as f32;
-            
-            // LÓGICA DE DENSIDAD:
-            // - Si hay muchísimos picos súper agresivos y rápidos, es percusión acústica viva.
-            if peak_count > 15 { return "salsa".to_string(); } 
-            
-            // - Si los picos son constantes y aplastados (cerca a 0dB), es un bajo/synth masterizado (Urbano).
-            if avg_peak > -3.0 { return "actualidad".to_string(); }
-            
-            // - Si los picos tienen dinámica variable, suele ser acústico o Rock.
-            return "rock".to_string();
-        }
-    }
-    "desconocido".to_string()
-}
-
-
 pub async fn auto_detect_and_inject_bpm(input_path: String) -> Result<f64, String> {
     let path = Path::new(&input_path);
     if !path.exists() {
         return Err("VETO I/O: Archivo no encontrado.".into());
     }
 
-    // 1. Decodificación PCM y Autocorrelación en Memoria (Zero-I/O)
     let detected_bpm = match extract_bpm_dsp(&input_path) {
         Ok(bpm) => bpm,
         Err(e) => return Err(format!("Fallo DSP: {}", e)),
     };
 
-    // 2. Auto-Healing: Inyección del Tag físico para estabilizar la pista permanentemente
     let mut tag = Tag::read_from_path(&input_path).unwrap_or_else(|_| Tag::new());
     tag.set_text("TBPM", detected_bpm.round().to_string());
     
@@ -410,7 +342,6 @@ fn extract_bpm_dsp(input_path: &str) -> Result<f64, String> {
     
     let mut format = probed.format;
     
-    // Clonamos track_id y codec_params para soltar el préstamo inmutable de `format`
     let (track_id, codec_params) = {
         let track = format.default_track().ok_or("Sin pistas de audio válidas")?;
         (track.id, track.codec_params.clone())
@@ -423,12 +354,10 @@ fn extract_bpm_dsp(input_path: &str) -> Result<f64, String> {
     let sample_rate = codec_params.sample_rate.unwrap_or(44100) as f64;
     let mut energy_envelope = Vec::new();
     
-    // Low-Pass aproximado: Ventana RMS de ~10ms aislando la energía de los bombos (Kicks)
     let window_size = (sample_rate * 0.01) as usize; 
     let mut current_window = 0.0;
     let mut samples_in_window = 0;
 
-    // Límite de carga: ~15 segundos de espectro bastan para inducir el tempo
     let max_frames = 600; 
     let mut frame_count = 0;
 
@@ -436,7 +365,7 @@ fn extract_bpm_dsp(input_path: &str) -> Result<f64, String> {
         if frame_count >= max_frames { break; }
         let packet = match format.next_packet() {
             Ok(p) => p,
-            Err(_) => break, // EOF o corrupción tolerada
+            Err(_) => break,
         };
 
         if packet.track_id() != track_id { continue; }
@@ -447,7 +376,7 @@ fn extract_bpm_dsp(input_path: &str) -> Result<f64, String> {
                 sample_buf.copy_interleaved_ref(decoded);
                 
                 for sample in sample_buf.samples() {
-                    current_window += sample * sample; // Root Mean Square (Energía)
+                    current_window += sample * sample; 
                     samples_in_window += 1;
                     
                     if samples_in_window >= window_size {
@@ -466,7 +395,6 @@ fn extract_bpm_dsp(input_path: &str) -> Result<f64, String> {
         return Err("Buffer PCM espectral vacío".into());
     }
 
-    // Autocorrelación de la Envolvente de Energía (Búsqueda de picos periódicos)
     let mut max_corr = 0.0;
     let mut best_lag = 0;
     
@@ -477,10 +405,8 @@ fn extract_bpm_dsp(input_path: &str) -> Result<f64, String> {
     let min_lag = (env_sample_rate * 60.0 / max_bpm) as usize;
     let max_lag = (env_sample_rate * 60.0 / min_bpm) as usize;
 
-    // Fix bounds check para iterador de lag
     for lag in min_lag..=max_lag {
         let mut corr = 0.0;
-        // Prevenimos underflow en arreglos pequeños
         if energy_envelope.len() <= lag {
             continue;
         }

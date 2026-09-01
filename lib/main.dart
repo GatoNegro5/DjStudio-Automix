@@ -11,12 +11,14 @@ import 'package:djstudio_player/src/rust/frb_generated.dart';
 // --- IMPORTACIÓN DE MÓDULOS Y PROVIDERS ---
 import 'providers/player_provider.dart';
 import 'providers/theme_provider.dart';
-import 'playerDj.dart';
-import 'dsp_workspace.dart';
-import 'yt_workspace.dart';
-import 'lab_workspace.dart';
-import 'lan_sync_workspace.dart';
-import 'broadcast_workspace.dart';
+
+// 🛠️ FIX: Rutas actualizadas a la nueva Clean Architecture
+import 'ui/workspaces/playerDj.dart';
+import 'ui/workspaces/dsp_workspace.dart';
+import 'ui/workspaces/yt_workspace.dart';
+import 'ui/workspaces/lab_workspace.dart';
+import 'ui/workspaces/lan_sync_workspace.dart';
+import 'ui/workspaces/broadcast_workspace.dart';
 
 // ==========================================
 // ENRUTADOR DE ESTADO (SPA - Single Page App)
@@ -199,6 +201,9 @@ class MainWorkspace extends ConsumerWidget {
     final currentRoute = ref.watch(routerProvider);
     final playerState = ref.watch(playerProvider);
 
+    // 🛠️ SENSOR DE PLATAFORMA: Define qué puede hacer el hardware actual
+    final bool isMobileOS = Platform.isAndroid || Platform.isIOS;
+
     return Scaffold(
       body: Row(
         children: [
@@ -227,6 +232,7 @@ class MainWorkspace extends ConsumerWidget {
                       physics: const BouncingScrollPhysics(),
                       child: Column(
                         children: [
+                          // 🎛️ RUTINA 0: AUTOMIX (Universal)
                           ListTile(
                             contentPadding: const EdgeInsets.symmetric(
                               horizontal: 15,
@@ -253,6 +259,8 @@ class MainWorkspace extends ConsumerWidget {
                             onTap: () =>
                                 ref.read(routerProvider.notifier).setRoute(0),
                           ),
+
+                          // 🪄 RUTINA 1: AUTO-MASTER (Dinámico)
                           ListTile(
                             contentPadding: const EdgeInsets.symmetric(
                               horizontal: 15,
@@ -265,7 +273,9 @@ class MainWorkspace extends ConsumerWidget {
                                   : DjStudioTheme.textHidden,
                             ),
                             title: Text(
-                              "Auto-Master",
+                              isMobileOS
+                                  ? "Preparación"
+                                  : "Auto-Master", // 🛠️ ADAPTACIÓN DE UI
                               style: TextStyle(
                                 fontSize: 12,
                                 color: currentRoute == 1
@@ -279,32 +289,37 @@ class MainWorkspace extends ConsumerWidget {
                             onTap: () =>
                                 ref.read(routerProvider.notifier).setRoute(1),
                           ),
-                          ListTile(
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 15,
-                            ),
-                            leading: Icon(
-                              Icons.cloud_download,
-                              size: 20,
-                              color: currentRoute == 2
-                                  ? DjStudioTheme.cyanAccent
-                                  : DjStudioTheme.textHidden,
-                            ),
-                            title: Text(
-                              "Descargas YT",
-                              style: TextStyle(
-                                fontSize: 12,
+
+                          // 📥 RUTINA 2: DESCARGAS YT (EXCLUSIVO ESCRITORIO)
+                          if (!isMobileOS)
+                            ListTile(
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 15,
+                              ),
+                              leading: Icon(
+                                Icons.cloud_download,
+                                size: 20,
                                 color: currentRoute == 2
                                     ? DjStudioTheme.cyanAccent
-                                    : DjStudioTheme.textMuted,
-                                fontWeight: currentRoute == 2
-                                    ? FontWeight.bold
-                                    : FontWeight.normal,
+                                    : DjStudioTheme.textHidden,
                               ),
+                              title: Text(
+                                "Descargas YT",
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: currentRoute == 2
+                                      ? DjStudioTheme.cyanAccent
+                                      : DjStudioTheme.textMuted,
+                                  fontWeight: currentRoute == 2
+                                      ? FontWeight.bold
+                                      : FontWeight.normal,
+                                ),
+                              ),
+                              onTap: () =>
+                                  ref.read(routerProvider.notifier).setRoute(2),
                             ),
-                            onTap: () =>
-                                ref.read(routerProvider.notifier).setRoute(2),
-                          ),
+
+                          // 🧪 RUTINA 3: LABORATORIO DLQ (Universal)
                           ListTile(
                             contentPadding: const EdgeInsets.symmetric(
                               horizontal: 15,
@@ -331,6 +346,8 @@ class MainWorkspace extends ConsumerWidget {
                             onTap: () =>
                                 ref.read(routerProvider.notifier).setRoute(3),
                           ),
+
+                          // 📡 RUTINA 4: LAN SYNC (Universal)
                           ListTile(
                             contentPadding: const EdgeInsets.symmetric(
                               horizontal: 15,
@@ -357,6 +374,8 @@ class MainWorkspace extends ConsumerWidget {
                             onTap: () =>
                                 ref.read(routerProvider.notifier).setRoute(4),
                           ),
+
+                          // 📻 RUTINA 5: LIVE DJ (Universal)
                           ListTile(
                             contentPadding: const EdgeInsets.symmetric(
                               horizontal: 15,
@@ -387,6 +406,8 @@ class MainWorkspace extends ConsumerWidget {
                       ),
                     ),
                   ),
+
+                  // MOTOR AUDIO MINI-PANEL (Inferior)
                   if (playerState.currentTrackPath != null)
                     Container(
                       padding: const EdgeInsets.all(15),
@@ -427,7 +448,7 @@ class MainWorkspace extends ConsumerWidget {
             ),
           ),
 
-          // 2. ÁREA CENTRAL
+          // 2. ÁREA CENTRAL (ENRUTADOR)
           Expanded(
             child: Container(
               decoration: const BoxDecoration(

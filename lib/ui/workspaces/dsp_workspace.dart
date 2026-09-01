@@ -5,12 +5,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:djstudio_player/src/rust/api/core_dsp.dart' as rust_dsp;
 
-import 'providers/directory_provider.dart';
-import 'providers/pipeline_provider.dart';
-import 'providers/metadata_provider.dart';
-import 'providers/nlp_provider.dart';
-import 'providers/dsp_provider.dart';
-import 'providers/db_provider.dart';
+import '../../providers/directory_provider.dart';
+import '../../providers/pipeline_provider.dart';
+import '../../providers/metadata_provider.dart';
+import '../../providers/nlp_provider.dart';
+import '../../providers/dsp_provider.dart';
+import '../../providers/db_provider.dart';
 
 class DspNlpWorkspace extends ConsumerWidget {
   const DspNlpWorkspace({super.key});
@@ -127,49 +127,6 @@ class DspNlpWorkspace extends ConsumerWidget {
         ],
       ),
     );
-  }
-
-  // ---------------------------------------------------------
-  // 🛠️ MÓDULO DE TELEMETRÍA Y COMPENSACIÓN VECTORIAL
-  // ---------------------------------------------------------
-  String _getFfprobePath() {
-    if (Platform.isAndroid || Platform.isIOS) return 'ffprobe';
-
-    // 🛠️ MAC OS FIX: Búsqueda explícita en rutas de Homebrew (Silicon/Intel)
-    if (Platform.isMacOS) {
-      if (File('/opt/homebrew/bin/ffprobe').existsSync()) {
-        return '/opt/homebrew/bin/ffprobe';
-      }
-      if (File('/usr/local/bin/ffprobe').existsSync()) {
-        return '/usr/local/bin/ffprobe';
-      }
-      return 'ffprobe';
-    }
-
-    final exeDir = File(Platform.resolvedExecutable).parent.path;
-    final localPath = Platform.isWindows
-        ? '$exeDir\\ffprobe.exe'
-        : '$exeDir/ffprobe';
-    return File(localPath).existsSync() ? localPath : 'ffprobe';
-  }
-
-  Future<int> _getAudioDurationMs(String path) async {
-    try {
-      final result = await Process.run(_getFfprobePath(), [
-        '-v',
-        'error',
-        '-show_entries',
-        'format=duration',
-        '-of',
-        'default=noprint_wrappers=1:nokey=1',
-        path,
-      ]);
-      final durationSec =
-          double.tryParse(result.stdout.toString().trim()) ?? 0.0;
-      return (durationSec * 1000).toInt();
-    } catch (_) {
-      return 0;
-    }
   }
 
   Future<void> _offsetLrcTimeline(String lrcPath, int trimmedMs) async {
@@ -475,8 +432,6 @@ class DspNlpWorkspace extends ConsumerWidget {
         final file = files[i];
         final originalName = file.uri.pathSegments.last;
         String currentPath = file.path;
-
-        // 🛠️ INYECCIÓN: Máquina de estados para auditoría de DLQ
         String currentStage = "INIT";
 
         if ((checkpoint['processed'] as List).contains(originalName) ||
@@ -515,7 +470,11 @@ class DspNlpWorkspace extends ConsumerWidget {
               cleanName,
               "🪄 Mejorando calidad de sonido...",
             );
-            final durationBeforeMs = await _getAudioDurationMs(currentPath);
+
+            // 🛠️ INYECCIÓN: Llamada a la FFI Nativa en lugar de ffprobe shell
+            final durationBeforeMs = (await rust_dsp.getAudioDurationMs(
+              inputPath: currentPath,
+            )).toInt();
 
             await ref
                 .read(dspWorkerProvider)
@@ -528,7 +487,11 @@ class DspNlpWorkspace extends ConsumerWidget {
                 );
             if (checkAbort()) break;
 
-            durationAfterMs = await _getAudioDurationMs(currentPath);
+            // 🛠️ INYECCIÓN: FFI Nativa para comprobar duración post-proceso
+            durationAfterMs = (await rust_dsp.getAudioDurationMs(
+              inputPath: currentPath,
+            )).toInt();
+
             final trimmedMs = durationBeforeMs - durationAfterMs;
             if (trimmedMs > 50) {
               final lrcFileToPatch = currentPath.replaceAll(
@@ -585,7 +548,6 @@ class DspNlpWorkspace extends ConsumerWidget {
             debugPrint(
               "⚠️ [NLP Aislando Error] Letra no encontrada para $finalName: $e",
             );
-            // No rompemos el pipeline por letra faltante, solo logueamos.
           }
           if (checkAbort()) break;
 
@@ -628,7 +590,10 @@ class DspNlpWorkspace extends ConsumerWidget {
 
           int physicalDurationMs = durationAfterMs > 0
               ? durationAfterMs
-              : await _getAudioDurationMs(currentPath);
+              : (await rust_dsp.getAudioDurationMs(
+                  inputPath: currentPath,
+                )).toInt(); // 🛠️ FIX FFI Nativa
+
           int calculatedCueIn =
               (rawGenre.contains('electro') || rawGenre.contains('rock'))
               ? 100
@@ -679,7 +644,6 @@ class DspNlpWorkspace extends ConsumerWidget {
           checkpoint['timestamp'] = DateTime.now().toIso8601String();
           checkpointFile.writeAsStringSync(jsonEncode(checkpoint));
 
-          // 🛠️ ENRIQUECIMIENTO DLQ: Diagnóstico semántico para el Laboratorio
           String errorCode = "ERR_UNKNOWN";
           String recommendedAction =
               "Archivo corrupto. Considera eliminarlo y descargar otra versión.";
@@ -729,7 +693,6 @@ class DspNlpWorkspace extends ConsumerWidget {
                   '${labDir.path}${Platform.pathSeparator}$originalName';
               failFile.renameSync(newPath);
 
-              // 🛠️ INYECCIÓN DLQ: JSON Enriquecido en lugar de simple path
               registry[originalName] = {
                 "originalPath": currentPath,
                 "errorCode": errorCode,
@@ -751,9 +714,6 @@ class DspNlpWorkspace extends ConsumerWidget {
                 );
               }
               registryFile.writeAsStringSync(jsonEncode(registry));
-              debugPrint(
-                "⚠️ Pista $originalName aislada físicamente en el DLQ con metadata enriquecida.",
-              );
             }
           } catch (ioErr) {
             debugPrint("🔴 Error crítico de I/O al aislar archivo: $ioErr");
@@ -886,7 +846,6 @@ class DspNlpWorkspace extends ConsumerWidget {
     }
   }
 
-  // 🛠️ PURGA UNIFICADA (Reset de Fábrica)
   Future<void> _executeFactoryReset(
     BuildContext context,
     WidgetRef ref,
@@ -1055,6 +1014,8 @@ class DspNlpWorkspace extends ConsumerWidget {
     return LayoutBuilder(
       builder: (context, constraints) {
         final bool isMobileLandscape = constraints.maxHeight < 500;
+        final bool isMobileOS =
+            Platform.isAndroid || Platform.isIOS; // 🛠️ Detección de OS
 
         final Widget directoryPanel = Container(
           padding: EdgeInsets.all(isMobileLandscape ? 10 : 15),
@@ -1170,23 +1131,48 @@ class DspNlpWorkspace extends ConsumerWidget {
           ),
         );
 
-        // 🛠️ ARQUITECTURA DE TARJETAS (Híbrida: Row para Desktop, ListView Horizontal para Móvil)
-        final List<Widget> cardNodes = [
-          _buildActionCard(
-            title: "MASTERIZACIÓN GLOBAL",
-            description:
-                "Pipeline atómico. Optimiza audio, extrae semántica y asigna curvas.",
-            icon: Icons.rocket_launch,
-            color: const Color(0xFF39FF14),
-            isPrimary: true,
-            onTap: (dirState.currentPath.isEmpty || isBusy)
-                ? null
-                : () => _executeUniversalPipeline(
-                    context,
-                    ref,
-                    dirState.currentPath,
-                  ),
-          ),
+        // 🛠️ INYECCIÓN: Tarjetas dinámicas según capacidades del OS (Mobile vs Desktop)
+        final List<Widget> cardNodes = [];
+
+        if (!isMobileOS) {
+          cardNodes.add(
+            _buildActionCard(
+              title: "MASTERIZACIÓN PROFESIONAL",
+              description:
+                  "Pipeline atómico (PC/Mac). Optimiza audio (LUFS), recorta silencios, extrae semántica y asigna curvas.",
+              icon: Icons.rocket_launch,
+              color: const Color(0xFF39FF14),
+              isPrimary: true,
+              onTap: (dirState.currentPath.isEmpty || isBusy)
+                  ? null
+                  : () => _executeUniversalPipeline(
+                      context,
+                      ref,
+                      dirState.currentPath,
+                    ),
+            ),
+          );
+        } else {
+          cardNodes.add(
+            _buildActionCard(
+              title: "PREPARACIÓN MÓVIL",
+              description:
+                  "Alineación NLP e Indexación ISAR. (La Masterización DSP no está disponible en Android).",
+              icon: Icons.phone_android,
+              color: Colors.cyanAccent,
+              isPrimary: true,
+              onTap: (dirState.currentPath.isEmpty || isBusy)
+                  ? null
+                  : () => _executeUniversalPipeline(
+                      context,
+                      ref,
+                      dirState.currentPath,
+                    ),
+            ),
+          );
+        }
+
+        cardNodes.addAll([
           _buildActionCard(
             title: "INFORME DE AUDITORÍA",
             description:
@@ -1209,7 +1195,7 @@ class DspNlpWorkspace extends ConsumerWidget {
                 : () =>
                       _executeFactoryReset(context, ref, dirState.currentPath),
           ),
-        ];
+        ]);
 
         if (isMobileLandscape) {
           return SingleChildScrollView(
@@ -1235,16 +1221,13 @@ class DspNlpWorkspace extends ConsumerWidget {
                 directoryPanel,
                 const SizedBox(height: 20),
                 SizedBox(
-                  height: 200, // Alto fijo para carrusel
+                  height: 200,
                   child: ListView.separated(
                     scrollDirection: Axis.horizontal,
                     itemCount: cardNodes.length,
                     separatorBuilder: (_, _) => const SizedBox(width: 15),
-                    itemBuilder: (_, i) => SizedBox(
-                      width:
-                          240, // Ancho fijo estricto para evitar asfixia horizontal
-                      child: cardNodes[i],
-                    ),
+                    itemBuilder: (_, i) =>
+                        SizedBox(width: 240, child: cardNodes[i]),
                   ),
                 ),
               ],
@@ -1337,7 +1320,6 @@ class DspNlpWorkspace extends ConsumerWidget {
                   ),
                 ],
         ),
-        // 🛠️ INMUNIZACIÓN: Scroll interno evita desbordes matemáticos si la caja se contrae
         child: SingleChildScrollView(
           physics: const BouncingScrollPhysics(),
           child: Column(
@@ -1449,7 +1431,6 @@ class DspNlpWorkspace extends ConsumerWidget {
   ) async {
     if (badPaths.isEmpty) return;
 
-    // Crear carpeta LAB al mismo nivel que las carpetas de música
     final baseDir = Directory(targetPath).parent;
     final labDir = Directory(
       '${baseDir.path}${Platform.pathSeparator}DjStudio_LAB',
@@ -1474,10 +1455,9 @@ class DspNlpWorkspace extends ConsumerWidget {
         final newPath = '${labDir.path}${Platform.pathSeparator}$fileName';
 
         try {
-          file.renameSync(newPath); // Movimiento físico atómico
-          registry[fileName] = path; // Guardamos el origen
+          file.renameSync(newPath);
+          registry[fileName] = path;
 
-          // Mover también el .lrc si existe
           final lrcFile = File(
             path.replaceAll(
               RegExp(r'\.mp3$|\.webm$', caseSensitive: false),
@@ -1499,7 +1479,7 @@ class DspNlpWorkspace extends ConsumerWidget {
     registryFile.writeAsStringSync(jsonEncode(registry));
 
     if (context.mounted) {
-      Navigator.pop(context); // Cierra el modal de auditoría
+      Navigator.pop(context);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text("✅ $movedCount archivos aislados en el LAB."),
@@ -1519,7 +1499,6 @@ class DspNlpWorkspace extends ConsumerWidget {
     List<String> noBpm,
     List<String> noCues,
   ) {
-    // Consolidar todos los paths defectuosos en un Set único
     final Set<String> allBadPaths = {};
     allBadPaths.addAll(unsealed);
     allBadPaths.addAll(noLyrics);
@@ -1672,7 +1651,6 @@ class DspNlpWorkspace extends ConsumerWidget {
             child: ListView.builder(
               itemCount: items.length,
               itemBuilder: (context, index) {
-                // Parseo visual: Solo muestra el nombre, pero la lista interna guarda el Path absoluto
                 final displayPath = items[index]
                     .split(Platform.pathSeparator)
                     .last;
@@ -1706,7 +1684,6 @@ class DspNlpWorkspace extends ConsumerWidget {
     final pipe = ref.read(pipelineProvider.notifier);
     bool checkAbort() => ref.read(pipelineProvider).isAborted;
 
-    // 🛠️ CAMBIO ESTRUCTURAL: Ahora almacenamos el PATH absoluto, no solo el filename, para poder moverlos al LAB.
     List<String> unsealedTracks = [];
     List<String> noLyricsTracks = [];
     List<String> noBpmTracks = [];
@@ -1741,19 +1718,10 @@ class DspNlpWorkspace extends ConsumerWidget {
         final filename = file.uri.pathSegments.last;
         pipe.updateProgress(i + 1, total, filename, "Auditoría en progreso...");
 
+        // 🛠️ INYECCIÓN: Validación Nativa FFI (Sin FFprobe)
         bool isSealed = false;
         if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
-          final result = await Process.run('ffprobe', [
-            '-v',
-            'quiet',
-            '-show_entries',
-            'format_tags=DjStudio_M3_V2',
-            '-of',
-            'default=noprint_wrappers=1:nokey=1',
-            file.path,
-          ]);
-          isSealed =
-              result.stdout.toString().trim().toLowerCase() == 'verified';
+          isSealed = await rust_dsp.checkWatermark(inputPath: file.path);
         }
 
         if (!isSealed) unsealedTracks.add(file.path);

@@ -1,9 +1,13 @@
 import 'package:media_kit/media_kit.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../core/hal/platform_strategy.dart';
+import '../providers/player_provider.dart';
+import '../providers/broadcast_provider.dart';
 
 class EqualizerPreset {
   final String name;
   final double preamp;
-  final List<double> gains; // 10 bandas
+  final List<double> gains;
 
   const EqualizerPreset({
     required this.name,
@@ -11,7 +15,6 @@ class EqualizerPreset {
     required this.gains,
   });
 
-  // Presets calibrados acústicamente
   static const List<EqualizerPreset> defaultPresets = [
     EqualizerPreset(
       name: 'Spotify Signature',
@@ -42,12 +45,8 @@ class EqualizerPreset {
 }
 
 class AudioEqualizerService {
-  final List<Player> players;
-
-  // Estado en memoria para que el Automix consulte la base antes de inyectar FX espaciales
+  final Ref ref;
   String currentBaseFilter = '';
-
-  // Frecuencias fijas de 10 bandas (ISO Standard)
   static const List<int> bandFrequencies = [
     31,
     62,
@@ -61,12 +60,10 @@ class AudioEqualizerService {
     16000,
   ];
 
-  AudioEqualizerService(this.players) {
-    // Inicialización del pipeline limpio
+  AudioEqualizerService(this.ref) {
     _buildAndApply(preamp: 0.0, gains: List.filled(10, 0.0), enabled: true);
   }
 
-  /// Construye y aplica el Grafo DSP Unificado
   Future<void> applyEqualizer({
     required double preamp,
     required List<double> gains,
@@ -82,47 +79,38 @@ class AudioEqualizerService {
   }) async {
     if (gains.length != 10) return;
 
-    final List<String> filters = [];
+    final String halFilter = MixStrategyFactory.getStrategy().hifiFilter;
+    final List<String> eqFilters = [];
 
-    // 1. CAPA DE HEADROOM Y NORMALIZACIÓN DINÁMICA (AGC EN TIEMPO REAL)
-    filters.add('aformat=sample_fmts=fltp');
-    // dynaudnorm: Ventana deslizante (f=150), ganancia máxima (g=15), target pico (p=0.95)
-    filters.add('dynaudnorm=f=150:g=15:p=0.95');
-    // alimiter: Techo de ladrillo a -1.5dB para evadir clipping tras la compresión
-    filters.add('alimiter=limit=-1.5dB');
-
-    // 2. CAPA DE FIDELIDAD (SOXR & ARMÓNICOS)
-    filters.add('aresample=resampler=soxr:precision=28');
-    filters.add('crystalizer=i=2.0');
-
-    // 3. CAPA DE ECUALIZACIÓN MANUAL / PRESETS
     if (enabled) {
-      if (preamp != 0.0) {
-        filters.add('volume=volume=${preamp.toStringAsFixed(1)}dB');
-      }
-
+      if (preamp != 0.0)
+        eqFilters.add('volume=volume=${preamp.toStringAsFixed(1)}dB');
       for (int i = 0; i < bandFrequencies.length; i++) {
         final gain = gains[i].clamp(-12.0, 12.0);
-
-        // ZERO-COST OPTIMIZATION: Si el usuario selecciona "Flat", no sobrecargamos la CPU
         if (gain != 0.0) {
-          final freq = bandFrequencies[i];
-          filters.add(
-            'equalizer=f=$freq:width_type=o:w=1:g=${gain.toStringAsFixed(1)}',
+          eqFilters.add(
+            'equalizer=f=${bandFrequencies[i]}:width_type=o:w=1:g=${gain.toStringAsFixed(1)}',
           );
         }
       }
     }
 
-    // 4. CAPA ESPACIAL Y SUB-GRAVES
-    filters.add('bass=g=3:f=60');
-    filters.add('extrastereo=m=1.15');
+    currentBaseFilter = eqFilters.isNotEmpty
+        ? '$halFilter,${eqFilters.join(',')}'
+        : halFilter;
 
-    currentBaseFilter = filters.join(',');
+    final activePlayers = [
+      ...ref.read(playerProvider.notifier).deckPlayers,
+      ...ref.read(broadcastProvider.notifier).deckPlayers,
+    ];
 
-    // APLICACIÓN SIMULTÁNEA: Asegura que el AutoMix no pierda la ecualización al cruzar pistas
-    for (var player in players) {
-      await (player.platform as dynamic)?.setProperty('af', currentBaseFilter);
+    for (var player in activePlayers) {
+      try {
+        await (player.platform as dynamic)?.setProperty(
+          'af',
+          currentBaseFilter,
+        );
+      } catch (_) {}
     }
   }
 }

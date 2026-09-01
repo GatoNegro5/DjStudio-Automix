@@ -6,16 +6,18 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `analyze_transients`, `atomic_replace`, `execute_ffmpeg_with_kill_switch`, `extract_bpm_dsp`, `extract_json_value`, `get_ffmpeg_path`, `get_ffprobe_path`, `spawn_headless_ffmpeg`
+// These functions are ignored because they are not marked as `pub`: `atomic_replace`, `execute_ffmpeg_with_kill_switch`, `extract_bpm_dsp`, `extract_json_value`, `get_ffmpeg_path`, `spawn_headless_ffmpeg`
 
 void abortActiveProcess() =>
     RustLib.instance.api.crateApiCoreDspAbortActiveProcess();
 
+Future<BigInt> getAudioDurationMs({required String inputPath}) => RustLib
+    .instance
+    .api
+    .crateApiCoreDspGetAudioDurationMs(inputPath: inputPath);
+
 Future<bool> processAutoTrim({required String inputPath}) =>
     RustLib.instance.api.crateApiCoreDspProcessAutoTrim(inputPath: inputPath);
-
-Future<bool> injectWatermark({required String inputPath}) =>
-    RustLib.instance.api.crateApiCoreDspInjectWatermark(inputPath: inputPath);
 
 Future<bool> normalizeLufs({required String inputPath}) =>
     RustLib.instance.api.crateApiCoreDspNormalizeLufs(inputPath: inputPath);
@@ -25,14 +27,17 @@ Future<bool> processFullPipeline({required String inputPath}) => RustLib
     .api
     .crateApiCoreDspProcessFullPipeline(inputPath: inputPath);
 
+Future<String> readAudioGenre({required String inputPath}) =>
+    RustLib.instance.api.crateApiCoreDspReadAudioGenre(inputPath: inputPath);
+
+Future<bool> injectWatermark({required String inputPath}) =>
+    RustLib.instance.api.crateApiCoreDspInjectWatermark(inputPath: inputPath);
+
 Future<bool> checkWatermark({required String inputPath}) =>
     RustLib.instance.api.crateApiCoreDspCheckWatermark(inputPath: inputPath);
 
 Future<bool> clearWatermark({required String inputPath}) =>
     RustLib.instance.api.crateApiCoreDspClearWatermark(inputPath: inputPath);
-
-Future<String> readAudioGenre({required String inputPath}) =>
-    RustLib.instance.api.crateApiCoreDspReadAudioGenre(inputPath: inputPath);
 
 Future<double> autoDetectAndInjectBpm({required String inputPath}) => RustLib
     .instance

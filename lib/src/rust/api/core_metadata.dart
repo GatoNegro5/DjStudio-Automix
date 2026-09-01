@@ -6,7 +6,7 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `get_ffmpeg_path`, `parse_and_clean`, `to_title_case`
+// These functions are ignored because they are not marked as `pub`: `parse_and_clean`, `to_title_case`
 
 Future<List<String>> processMetadata({required String inputPath}) => RustLib
     .instance

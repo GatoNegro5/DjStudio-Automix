@@ -1,20 +1,10 @@
 use std::fs;
-use std::process::Command;
 use std::path::Path;
-use std::env;
+use id3::{Tag, TagLike, Version};
 use regex::Regex;
 
-fn get_ffmpeg_path() -> String {
-    if let Ok(mut exe_path) = env::current_exe() {
-        exe_path.pop();
-        exe_path.push(if cfg!(target_os = "windows") { "ffmpeg.exe" } else { "ffmpeg" });
-        if exe_path.exists() {
-            return exe_path.to_string_lossy().into_owned();
-        }
-    }
-    "ffmpeg".to_string()
-}
-
+// 🛠️ REINGENIERÍA: FFmpeg erradicado del pipeline de metadatos.
+// Ahora se ejecuta en memoria pura (Zero-Copy) ahorrando cientos de subprocesos PID.
 pub async fn process_metadata(input_path: String) -> Result<Vec<String>, String> {
     let input = Path::new(&input_path);
     if !input.exists() {
@@ -26,64 +16,37 @@ pub async fn process_metadata(input_path: String) -> Result<Vec<String>, String>
 
     let parent = input.parent().ok_or("Ruta huérfana".to_string())?;
     let new_file_path = parent.join(&new_filename);
-    let temp_path = parent.join("temp_meta.mp3");
 
-    let output = Command::new(get_ffmpeg_path())
-        .args([
-            "-nostdin", // 🛠️ FIX: Aislamiento de I/O
-            "-y", "-i", input.to_str().unwrap(),
-            "-c", "copy",
-            "-metadata", &format!("title={}", title),
-            "-metadata", &format!("artist={}", artist),
-            "-metadata", "album=ReGenial Master",
-            temp_path.to_str().unwrap(),
-        ])
-        .output()
-        .map_err(|e| format!("FFmpeg OS Invocation Error: {}", e))?;
+    // 1. Escritura binaria ID3 en RAM (Instantánea)
+    let mut tag = Tag::read_from_path(input).unwrap_or_else(|_| Tag::new());
+    tag.set_title(&title);
+    tag.set_artist(&artist);
+    tag.set_album("ReGenial Master");
 
-    if output.status.success() {
-        if input != new_file_path.as_path() {
-            let _ = fs::remove_file(input);
-            
-            let mut attempts = 0;
-            let mut delay_ms = 50;
-            loop {
-                match fs::rename(&temp_path, &new_file_path) {
-                    Ok(_) => break,
-                    Err(e) => {
-                        attempts += 1;
-                        if attempts >= 5 {
-                            return Err(format!("Rename error tras 5 intentos: {}", e));
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-                        delay_ms *= 2;
+    if let Err(e) = tag.write_to_path(input, Version::Id3v24) {
+        return Err(format!("Error escribiendo ID3 nativo: {}", e));
+    }
+
+    // 2. Renombrado físico atómico sin crear archivos temporales pesados
+    if input != new_file_path.as_path() {
+        let mut attempts = 0;
+        let mut delay_ms = 50;
+        loop {
+            match fs::rename(input, &new_file_path) {
+                Ok(_) => break,
+                Err(e) => {
+                    attempts += 1;
+                    if attempts >= 5 {
+                        return Err(format!("Rename error tras 5 intentos: {}", e));
                     }
-                }
-            }
-        } else {
-            let _ = fs::remove_file(input);
-            
-            let mut attempts = 0;
-            let mut delay_ms = 50;
-            loop {
-                match fs::rename(&temp_path, input) {
-                    Ok(_) => break,
-                    Err(e) => {
-                        attempts += 1;
-                        if attempts >= 5 {
-                            return Err(format!("Rename error tras 5 intentos: {}", e));
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-                        delay_ms *= 2;
-                    }
+                    std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                    delay_ms *= 2;
                 }
             }
         }
-        Ok(vec![new_filename, artist, title])
-    } else {
-        if temp_path.exists() { let _ = fs::remove_file(temp_path); }
-        Err(String::from_utf8_lossy(&output.stderr).to_string())
     }
+
+    Ok(vec![new_filename, artist, title])
 }
 
 fn parse_and_clean(filename: &str) -> (String, String, String) {

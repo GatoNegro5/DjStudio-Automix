@@ -3,11 +3,11 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import 'providers/directory_provider.dart';
-import 'providers/player_provider.dart';
-import 'providers/pipeline_provider.dart';
-import 'providers/dsp_provider.dart';
-import 'providers/theme_provider.dart';
+import '../../providers/directory_provider.dart';
+import '../../providers/player_provider.dart';
+import '../../providers/pipeline_provider.dart';
+import '../../providers/dsp_provider.dart';
+import '../../providers/theme_provider.dart';
 
 // =====================================================================
 // ROUTE 0: UNIFIED DJ WORKSPACE (IDE 3-PANEL REKORDBOX STYLE)

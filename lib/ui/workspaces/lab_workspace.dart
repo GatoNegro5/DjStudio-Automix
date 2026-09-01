@@ -6,11 +6,11 @@ import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import 'package:http/http.dart' as http;
 
 import 'package:djstudio_player/src/rust/api/core_dsp.dart' as rust_dsp;
-import 'providers/player_provider.dart';
-import 'providers/metadata_provider.dart';
-import 'providers/dsp_provider.dart';
-import 'providers/db_provider.dart';
-import 'providers/nlp_provider.dart';
+import '../../providers/player_provider.dart';
+import '../../providers/metadata_provider.dart';
+import '../../providers/dsp_provider.dart';
+import '../../providers/db_provider.dart';
+import '../../providers/nlp_provider.dart';
 
 class LabWorkspace extends ConsumerStatefulWidget {
   const LabWorkspace({super.key});

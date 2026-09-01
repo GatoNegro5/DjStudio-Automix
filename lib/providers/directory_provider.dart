@@ -4,11 +4,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
 
+// 🛠️ INYECCIÓN: Uso estricto de la capa HAL
+import '../core/hal/platform_strategy.dart';
+
 class DirectoryState {
   final String currentPath;
   final List<File> files;
   final bool isProcessing;
-  final Set<String> expandedPaths; // 🛠️ NUEVO: Memoria visual del árbol
+  final Set<String> expandedPaths;
 
   DirectoryState({
     this.currentPath = '',
@@ -33,22 +36,23 @@ class DirectoryState {
 }
 
 class DirectoryNotifier extends Notifier<DirectoryState> {
+  late final PlatformMixStrategy _halStrategy;
+
   @override
   DirectoryState build() {
+    _halStrategy = MixStrategyFactory.getStrategy();
     _initPersistence();
     return DirectoryState();
   }
 
+  // 🛠️ DELEGACIÓN AL HAL: Cero "if(Platform.isWindows)"
   String _getSessionFilePath() {
-    String baseDir = Platform.isWindows
-        ? '${Platform.environment['USERPROFILE']}\\Music\\DjPlaylists'
-        : '/storage/emulated/0/Music/DjPlaylists';
-    final dir = Directory(baseDir);
-    if (!dir.existsSync()) dir.createSync(recursive: true);
-    return '${dir.path}${Platform.pathSeparator}_explorer_session.json';
+    // Tomamos la ruta base de la estrategia y le adjuntamos el JSON específico del explorador
+    final baseDir = File(_halStrategy.getSessionPath()).parent;
+    if (!baseDir.existsSync()) baseDir.createSync(recursive: true);
+    return '${baseDir.path}${Platform.pathSeparator}_explorer_session.json';
   }
 
-  // 🛠️ LECTURA ATÓMICA: Recupera ruta y nodos expandidos
   Future<void> _initPersistence() async {
     try {
       final file = File(_getSessionFilePath());
@@ -72,7 +76,6 @@ class DirectoryNotifier extends Notifier<DirectoryState> {
     } catch (_) {}
   }
 
-  // 🛠️ ESCRITURA ATÓMICA: Consolida el estado total del explorador
   Future<void> _saveSnapshot() async {
     try {
       final file = File(_getSessionFilePath());
@@ -84,7 +87,6 @@ class DirectoryNotifier extends Notifier<DirectoryState> {
     } catch (_) {}
   }
 
-  // 🛠️ CONTROL DE UI: Alterna y guarda el estado del árbol
   void toggleNode(String path, bool isExpanded) {
     final newExpanded = Set<String>.from(state.expandedPaths);
     if (isExpanded) {
@@ -112,7 +114,7 @@ class DirectoryNotifier extends Notifier<DirectoryState> {
 
   Future<void> scanPath(String path) async {
     state = state.copyWith(isProcessing: true, currentPath: path);
-    await _saveSnapshot(); // Guarda ruta seleccionada inmediatamente
+    await _saveSnapshot();
 
     try {
       final dir = Directory(path);
