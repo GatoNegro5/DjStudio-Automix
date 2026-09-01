@@ -259,13 +259,44 @@ class DspWorker {
         // 🛠️ PROTECCIÓN TÉRMICA: Forzar Yield del hilo principal antes del estrés
         await Future.delayed(const Duration(milliseconds: 50));
 
-        // 🛠️ LLAMADA FFI con Timeout Duro (10 minutos máx por canción)
+        // 🛠️ FIX ARQUITECTURA: Reducción de 10 min a 90 segundos con Cuarentena
         final success = await rustTask(file.path).timeout(
-          const Duration(minutes: 10),
+          const Duration(seconds: 90),
           onTimeout: () {
-            debugPrint("🔴 [TIMEOUT FFI]: Colapso C++ en $filename");
-            // Disparar Freno de Emergencia si la FFI se atascó
-            pipe.abort();
+            debugPrint(
+              "🔴 [TIMEOUT FFI]: Archivo corrupto colapsó C++ en $filename",
+            );
+
+            // 1. Matar proceso zombie
+            if (Platform.isWindows) {
+              Process.runSync('taskkill', ['/F', '/IM', 'ffmpeg.exe']);
+            }
+
+            // 2. Pausa para liberación de Kernel
+            sleep(const Duration(milliseconds: 1500));
+
+            // 3. Aislar a Cuarentena proactivamente
+            try {
+              final qDir = Directory(
+                '${file.parent.path}${Platform.pathSeparator}Cuarentena_DjStudio',
+              );
+              if (!qDir.existsSync()) qDir.createSync();
+
+              final newPath = '${qDir.path}${Platform.pathSeparator}$filename';
+              try {
+                file.renameSync(newPath);
+              } catch (_) {
+                file.copySync(newPath);
+                file.deleteSync();
+              }
+              pipe.updateProgress(
+                i + 1,
+                total,
+                filename,
+                "☣️ AISLADO: Movido a Cuarentena_DjStudio",
+              );
+            } catch (_) {}
+
             return false;
           },
         );

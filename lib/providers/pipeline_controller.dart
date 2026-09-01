@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'core_metadata.dart';
 import 'core_dsp.dart';
@@ -44,6 +45,60 @@ class PipelineController {
     }
   }
 
+  // 🛠️ NUEVA ARQUITECTURA: Aislamiento Físico Atómico
+  Future<void> _isolatePoisonPill(
+    String filePath,
+    int total,
+    int current,
+    String fileName,
+  ) async {
+    try {
+      // 1. Ejecutar SIGKILL para liberar el I/O Lock del Sistema Operativo
+      if (Platform.isWindows) {
+        Process.runSync('taskkill', ['/F', '/IM', 'ffmpeg.exe']);
+        Process.runSync('taskkill', ['/F', '/IM', 'ffprobe.exe']);
+      } else {
+        Process.runSync('killall', ['-9', 'ffmpeg']);
+        Process.runSync('killall', ['-9', 'ffprobe']);
+      }
+
+      // 2. Pausa crítica para que el Kernel libere el Handle del archivo
+      await Future.delayed(const Duration(milliseconds: 1500));
+
+      final file = File(filePath);
+      if (!file.existsSync()) return;
+
+      // 3. Auto-crear directorio de cuarentena (Setup Proactivo)
+      final quarantineDir = Directory(
+        '${file.parent.path}${Platform.pathSeparator}Cuarentena_DjStudio',
+      );
+      if (!quarantineDir.existsSync()) {
+        quarantineDir.createSync();
+      }
+
+      final newPath = '${quarantineDir.path}${Platform.pathSeparator}$fileName';
+
+      // 4. Mover el archivo (Fallback a copy+delete si rename falla por bloqueos residuales)
+      try {
+        file.renameSync(newPath);
+      } catch (_) {
+        file.copySync(newPath);
+        file.deleteSync();
+      }
+
+      // 5. Notificar a la UI
+      _emit(
+        total,
+        current,
+        fileName,
+        "☣️ AISLADO: Movido a Cuarentena_DjStudio",
+      );
+      debugPrint("☣️ [CUARENTENA] Archivo extraído físicamente a: $newPath");
+    } catch (e) {
+      debugPrint("🔴 [CUARENTENA FALLO] No se pudo aislar el archivo: $e");
+    }
+  }
+
   Future<void> runBatch(List<String> filePaths) async {
     if (_isProcessing) return;
     _isProcessing = true;
@@ -66,24 +121,26 @@ class PipelineController {
       _emit(total, current, fileName, "🔍 Validando...");
 
       try {
-        bool isOptimized = await _dsp.checkWatermark(path);
+        bool isOptimized = await _dsp
+            .checkWatermark(path)
+            .timeout(const Duration(seconds: 30));
 
         if (!isOptimized) {
           if (_abortRequested) break;
           _emit(total, current, fileName, "⚙️ M1: Limpiando Metadatos");
-          await _m1.processFile(path);
+          await _m1.processFile(path).timeout(const Duration(seconds: 30));
 
           if (_abortRequested) break;
           _emit(total, current, fileName, "🔊 M3: Ajustando Volumen (LUFS)");
-          await _dsp.normalizeLUFS(path);
+          await _dsp.normalizeLUFS(path).timeout(const Duration(seconds: 90));
 
           if (_abortRequested) break;
           _emit(total, current, fileName, "✂️ M2: Cortando Silencios");
-          await _dsp.autoTrim(path);
+          await _dsp.autoTrim(path).timeout(const Duration(seconds: 90));
 
           if (_abortRequested) break;
           _emit(total, current, fileName, "🔐 M3: Sellando Archivo");
-          await _dsp.injectWatermark(path);
+          await _dsp.injectWatermark(path).timeout(const Duration(seconds: 30));
         } else {
           debugPrint("⏭️ [BYPASS DSP] $fileName ya está optimizado en audio.");
         }
@@ -95,10 +152,19 @@ class PipelineController {
           fileName,
           "📝 M5: Obteniendo Letras Sincronizadas",
         );
-        await _nlp.fetchLyrics(path);
+        await _nlp.fetchLyrics(path).timeout(const Duration(seconds: 45));
+
         if (_abortRequested) break;
         _emit(total, current, fileName, "🥁 M4: Calculando BPM");
-        await _bpm.processBpm(path);
+        await _bpm.processBpm(path).timeout(const Duration(seconds: 60));
+      } on TimeoutException {
+        // 🛠️ CIRCUIT BREAKER + CUARENTENA FÍSICA
+        debugPrint("🔴 [CIRCUIT BREAKER] Poison Pill detectada en: $fileName");
+        await _isolatePoisonPill(path, total, current, fileName);
+
+        // Enfriamiento del procesador antes de seguir con el lote
+        await Future.delayed(const Duration(seconds: 3));
+        continue;
       } catch (e) {
         debugPrint("🔴 [PIPELINE FATAL] Error en $fileName: $e");
       }
