@@ -51,6 +51,10 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
   int _successfulTransfers = 0;
   int _skippedTransfers = 0;
 
+  // 🎤 KARAOKE STATE MANAGER
+  final List<Map<String, dynamic>> _karaokeQueue = [];
+  final Map<String, int> _currentVotes = {'🔥': 0, '💩': 0, '👏': 0};
+
   late AnimationController _radarController;
 
   @override
@@ -330,7 +334,15 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
 
       if (request.method == 'POST' && path == '/api/upload') {
         final targetDir = _resolvePath(query['dir'] ?? 'ROOT');
-        final dir = Directory(targetDir);
+        final relFolder = query['rel'] ?? '';
+
+        String finalDirPath = targetDir;
+        if (relFolder.isNotEmpty) {
+          finalDirPath =
+              '$targetDir${Platform.pathSeparator}${relFolder.replaceAll('\\', '/').replaceAll('/', Platform.pathSeparator)}';
+        }
+
+        final dir = Directory(finalDirPath);
         if (!dir.existsSync()) dir.createSync(recursive: true);
 
         final boundary = request.headers.contentType?.parameters['boundary'];
@@ -400,6 +412,93 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
           ..write(jsonEncode({"status": "WIPED_CLEAN"}))
           ..close();
         _scanLocalMusicFolders();
+        return;
+      }
+
+      if (request.method == 'GET' && path == '/karaoke') {
+        const String htmlPayload = r'''
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DjStudio Karaoke Web</title>
+  <style>
+    body { background: #0a0a0a; color: #fff; font-family: sans-serif; text-align: center; padding: 20px; }
+    button { background: #39ff14; color: #000; border: none; padding: 15px; font-weight: bold; border-radius: 8px; width: 100%; margin-top: 10px; cursor: pointer; }
+    select, input { width: 100%; padding: 12px; margin-top: 10px; background: #1a1a1a; color: #00ffff; border: 1px solid #00ffff; border-radius: 4px; box-sizing: border-box; }
+  </style>
+</head>
+<body>
+  <h2>🎤 Pide tu Canción</h2>
+  <input type="text" id="userName" placeholder="Tu Nombre (Ej. Tía María)">
+  <select id="songSelect"><option value="">Cargando catálogo...</option></select>
+  <button onclick="sendToQueue()">ENVIAR A LA COLA</button>
+
+  <h2 style="margin-top:40px;">Votar en Vivo</h2>
+  <div style="display:flex; justify-content:space-around;">
+    <button style="width:30%; font-size:24px; padding:10px;" onclick="vote('👏')">👏</button>
+    <button style="width:30%; font-size:24px; padding:10px;" onclick="vote('🔥')">🔥</button>
+    <button style="width:30%; font-size:24px; padding:10px;" onclick="vote('💩')">💩</button>
+  </div>
+
+  <script>
+    fetch('/api/files?dir=ReGenial')
+      .then(r => r.json())
+      .then(files => {
+        const select = document.getElementById('songSelect');
+        select.innerHTML = files.filter(f => f.name.endsWith('.mp3')).map(f => `<option value="${f.name}">${f.name}</option>`).join('');
+      })
+      .catch(e => console.error("Error al cargar catálogo:", e));
+
+    function sendToQueue() {
+      const user = document.getElementById('userName').value;
+      const song = document.getElementById('songSelect').value;
+      if(!user || !song) return alert('Completa los datos');
+      fetch('/api/queue/add?user=' + encodeURIComponent(user) + '&song=' + encodeURIComponent(song), { method: 'POST' })
+        .then(() => alert('¡Agregada a la cola!'))
+        .catch(e => alert('Error al enviar'));
+    }
+
+    function vote(type) {
+      fetch('/api/vote?type=' + encodeURIComponent(type), { method: 'POST' });
+    }
+  </script>
+</body>
+</html>
+''';
+
+        request.response
+          ..headers.contentType = ContentType.html
+          ..write(htmlPayload)
+          ..close();
+        return;
+      }
+
+      if (request.method == 'POST' && path == '/api/queue/add') {
+        final user = query['user'] ?? 'Anónimo';
+        final song = query['song'] ?? '';
+        if (song.isNotEmpty) {
+          setState(() {
+            _karaokeQueue.add({'user': user, 'song': song});
+          });
+        }
+        request.response
+          ..statusCode = 200
+          ..write("OK")
+          ..close();
+        return;
+      }
+
+      if (request.method == 'POST' && path == '/api/vote') {
+        final type = query['type'];
+        if (type != null && _currentVotes.containsKey(type)) {
+          setState(() => _currentVotes[type] = _currentVotes[type]! + 1);
+        }
+        request.response
+          ..statusCode = 200
+          ..write("OK")
+          ..close();
         return;
       }
 
@@ -703,6 +802,8 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
     setState(() {
       _isTransferring = true;
       _currentLog = "☢️ EJECUTANDO HARD RESET DEL FILESYSTEM REMOTO...";
+      // 🛠️ FIX 1: Purgar el estado de destino. Obliga al Push a ir a la RAÍZ (Music/)
+      _selectedRemotePath = null;
     });
 
     try {
@@ -714,7 +815,6 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
         setState(() {
           _currentLog = "✅ WIPE COMPLETADO. Iniciando clonación PUSH masiva...";
         });
-        // Dispara la clonación asumiendo modo directorio completo
         _isPushMode = true;
         _executeTransferJob(true);
       } else {
@@ -728,6 +828,177 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
         _isTransferring = false;
         _currentLog = "🔴 FALLO DE RED EN WIPE: $e";
       });
+    }
+  }
+
+  Future<void> _executeTransferJob(bool isDirectoryClone) async {
+    setState(() {
+      _isTransferring = true;
+      _cancelRequested = false;
+      _transferProgress = 0.0;
+      _currentFileIndex = 0;
+      _successfulTransfers = 0;
+      _skippedTransfers = 0;
+      _currentLog = "Iniciando Job REST (Evaluando metadatos y colisiones)...";
+    });
+
+    if (_isPushMode) {
+      Set<String> pushQueue = {};
+      if (isDirectoryClone) {
+        pushQueue.addAll(
+          _getFilesRecursively(
+            Directory(_selectedLocalPath!),
+          ).map((f) => f.path),
+        );
+      } else {
+        for (String path in _selectedFilesToTransfer) {
+          pushQueue.add(path);
+          if (path.toLowerCase().endsWith('.mp3')) {
+            final lrcPath = '${path.substring(0, path.length - 4)}.lrc';
+            final txtPath = '${path.substring(0, path.length - 4)}.txt';
+            if (File(lrcPath).existsSync()) pushQueue.add(lrcPath);
+            if (File(txtPath).existsSync()) pushQueue.add(txtPath);
+          }
+        }
+      }
+
+      final files = pushQueue.map((p) => File(p)).toList();
+      setState(() => _totalFiles = files.length);
+
+      final localBaseDirPath = Directory(_selectedLocalPath!).path;
+      // 🛠️ FIX 2: Extraer el nombre de la carpeta origen (ej: "ReGenial")
+      final rootFolderName = localBaseDirPath
+          .split(Platform.pathSeparator)
+          .last;
+
+      for (int i = 0; i < files.length; i++) {
+        if (_cancelRequested) break;
+        final file = files[i];
+        final fileName = file.uri.pathSegments.last;
+
+        String relativeFolder = '';
+        if (isDirectoryClone) {
+          String relPath = file.path.replaceFirst(localBaseDirPath, '');
+          if (relPath.startsWith(Platform.pathSeparator)) {
+            relPath = relPath.substring(1);
+          }
+          int lastSeparator = relPath.lastIndexOf(Platform.pathSeparator);
+          if (lastSeparator != -1) {
+            relativeFolder = relPath.substring(0, lastSeparator);
+          }
+
+          // 🛠️ FIX 3: Reconstruir la ruta inyectando el contenedor principal
+          relativeFolder = relativeFolder.isEmpty
+              ? rootFolderName
+              : '$rootFolderName${Platform.pathSeparator}$relativeFolder';
+        }
+
+        setState(() {
+          _currentFileIndex = i + 1;
+          _transferProgress = (_currentFileIndex - 1) / _totalFiles;
+        });
+
+        if (_currentRemoteFiles.any((f) => f['name'] == fileName)) {
+          if (!_overwriteExisting) {
+            setState(() => _currentLog = "⏩ SALTADO (Ya existe): $fileName");
+            _skippedTransfers++;
+            continue;
+          } else {
+            setState(() => _currentLog = "🔄 REEMPLAZANDO: $fileName");
+          }
+        } else {
+          setState(() => _currentLog = "⬆️ ENVIANDO: $fileName");
+        }
+
+        try {
+          final request = http.MultipartRequest(
+            'POST',
+            Uri.parse(
+              'http://$_selectedDeviceIp:$_restPort/api/upload?dir=${Uri.encodeComponent(_selectedRemotePath ?? "ROOT")}&rel=${Uri.encodeComponent(relativeFolder)}',
+            ),
+          );
+          request.files.add(
+            await http.MultipartFile.fromPath('file', file.path),
+          );
+          final response = await request.send();
+          if (response.statusCode == 200) {
+            _successfulTransfers++;
+          } else {
+            _skippedTransfers++;
+          }
+        } catch (_) {
+          _skippedTransfers++;
+        }
+
+        // 🛠️ FIX 4: Control de Flujo. Evita Port Exhaustion y colapso de sockets Wi-Fi
+        await Future.delayed(const Duration(milliseconds: 15));
+      }
+    } else {
+      final files = _currentRemoteFiles;
+      setState(() => _totalFiles = files.length);
+
+      final localDir = Directory(_selectedLocalPath!);
+      for (int i = 0; i < files.length; i++) {
+        if (_cancelRequested) break;
+        final fileName = files[i]['name'];
+
+        setState(() {
+          _currentFileIndex = i + 1;
+          _transferProgress = (_currentFileIndex - 1) / _totalFiles;
+        });
+
+        final saveFile = File(
+          '${localDir.path}${Platform.pathSeparator}$fileName',
+        );
+
+        if (saveFile.existsSync()) {
+          if (!_overwriteExisting) {
+            setState(() => _currentLog = "⏩ SALTADO (Ya existe): $fileName");
+            _skippedTransfers++;
+            continue;
+          } else {
+            setState(() => _currentLog = "🔄 REEMPLAZANDO: $fileName");
+          }
+        } else {
+          setState(() => _currentLog = "⬇️ EXTRAYENDO: $fileName");
+        }
+
+        try {
+          final client = HttpClient();
+          final request = await client.getUrl(
+            Uri.parse(
+              'http://$_selectedDeviceIp:$_restPort/api/download?file=${Uri.encodeComponent("$_selectedRemotePath/$fileName")}',
+            ),
+          );
+          final response = await request.close();
+          if (response.statusCode == 200) {
+            await response.pipe(saveFile.openWrite());
+            _successfulTransfers++;
+          } else {
+            _skippedTransfers++;
+          }
+          client.close();
+        } catch (_) {
+          _skippedTransfers++;
+        }
+
+        // Control de flujo para descargas (PULL)
+        await Future.delayed(const Duration(milliseconds: 15));
+      }
+      _scanLocalMusicFolders();
+      _loadFilesInFolder(_selectedLocalPath!);
+    }
+
+    setState(() {
+      _transferProgress = 1.0;
+      _isTransferring = false;
+      _currentLog =
+          "✅ Job Finalizado. Éxito: $_successfulTransfers | Saltados/Fallos: $_skippedTransfers";
+      _selectedFilesToTransfer.clear();
+    });
+
+    if (_selectedDeviceIp != null) {
+      _fetchRemoteDirectoryTree(_selectedDeviceIp!);
     }
   }
 
@@ -786,150 +1057,6 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
         ],
       ),
     );
-  }
-
-  Future<void> _executeTransferJob(bool isDirectoryClone) async {
-    setState(() {
-      _isTransferring = true;
-      _cancelRequested = false;
-      _transferProgress = 0.0;
-      _currentFileIndex = 0;
-      _successfulTransfers = 0;
-      _skippedTransfers = 0;
-      _currentLog = "Iniciando Job REST (Evaluando metadatos y colisiones)...";
-    });
-
-    if (_isPushMode) {
-      Set<String> pushQueue = {};
-      if (isDirectoryClone) {
-        pushQueue.addAll(
-          _getFilesRecursively(
-            Directory(_selectedLocalPath!),
-          ).map((f) => f.path),
-        );
-      } else {
-        for (String path in _selectedFilesToTransfer) {
-          pushQueue.add(path);
-          if (path.toLowerCase().endsWith('.mp3')) {
-            final lrcPath = '${path.substring(0, path.length - 4)}.lrc';
-            final txtPath = '${path.substring(0, path.length - 4)}.txt';
-            if (File(lrcPath).existsSync()) pushQueue.add(lrcPath);
-            if (File(txtPath).existsSync()) pushQueue.add(txtPath);
-          }
-        }
-      }
-
-      final files = pushQueue.map((p) => File(p)).toList();
-      setState(() => _totalFiles = files.length);
-
-      for (int i = 0; i < files.length; i++) {
-        if (_cancelRequested) break;
-        final file = files[i];
-        final fileName = file.uri.pathSegments.last;
-
-        setState(() {
-          _currentFileIndex = i + 1;
-          _transferProgress = (_currentFileIndex - 1) / _totalFiles;
-        });
-
-        // 🛠️ FIX ARQUITECTÓNICO: Evaluación contra JSON Keys
-        if (_currentRemoteFiles.any((f) => f['name'] == fileName)) {
-          if (!_overwriteExisting) {
-            setState(() => _currentLog = "⏩ SALTADO (Ya existe): $fileName");
-            _skippedTransfers++;
-            continue;
-          } else {
-            setState(() => _currentLog = "🔄 REEMPLAZANDO: $fileName");
-          }
-        } else {
-          setState(() => _currentLog = "⬆️ ENVIANDO: $fileName");
-        }
-
-        try {
-          final request = http.MultipartRequest(
-            'POST',
-            Uri.parse(
-              'http://$_selectedDeviceIp:$_restPort/api/upload?dir=${Uri.encodeComponent(_selectedRemotePath ?? "ROOT")}',
-            ),
-          );
-          request.files.add(
-            await http.MultipartFile.fromPath('file', file.path),
-          );
-          final response = await request.send();
-          if (response.statusCode == 200) {
-            _successfulTransfers++;
-          } else {
-            _skippedTransfers++;
-          }
-        } catch (_) {
-          _skippedTransfers++;
-        }
-      }
-    } else {
-      final files = _currentRemoteFiles;
-      setState(() => _totalFiles = files.length);
-
-      final localDir = Directory(_selectedLocalPath!);
-      for (int i = 0; i < files.length; i++) {
-        if (_cancelRequested) break;
-        // 🛠️ FIX ARQUITECTÓNICO: Extraer nombre del JSON
-        final fileName = files[i]['name'];
-
-        setState(() {
-          _currentFileIndex = i + 1;
-          _transferProgress = (_currentFileIndex - 1) / _totalFiles;
-        });
-
-        final saveFile = File(
-          '${localDir.path}${Platform.pathSeparator}$fileName',
-        );
-
-        if (saveFile.existsSync()) {
-          if (!_overwriteExisting) {
-            setState(() => _currentLog = "⏩ SALTADO (Ya existe): $fileName");
-            _skippedTransfers++;
-            continue;
-          } else {
-            setState(() => _currentLog = "🔄 REEMPLAZANDO: $fileName");
-          }
-        } else {
-          setState(() => _currentLog = "⬇️ EXTRAYENDO: $fileName");
-        }
-
-        try {
-          final client = HttpClient();
-          final request = await client.getUrl(
-            Uri.parse(
-              'http://$_selectedDeviceIp:$_restPort/api/download?file=${Uri.encodeComponent("$_selectedRemotePath/$fileName")}',
-            ),
-          );
-          final response = await request.close();
-          if (response.statusCode == 200) {
-            await response.pipe(saveFile.openWrite());
-            _successfulTransfers++;
-          } else {
-            _skippedTransfers++;
-          }
-          client.close();
-        } catch (_) {
-          _skippedTransfers++;
-        }
-      }
-      _scanLocalMusicFolders();
-      _loadFilesInFolder(_selectedLocalPath!);
-    }
-
-    setState(() {
-      _transferProgress = 1.0;
-      _isTransferring = false;
-      _currentLog =
-          "✅ Job Finalizado. Éxito: $_successfulTransfers | Saltados/Fallos: $_skippedTransfers";
-      _selectedFilesToTransfer.clear();
-    });
-
-    if (_selectedDeviceIp != null && _selectedRemotePath != null) {
-      _fetchRemoteFiles(_selectedDeviceIp!, _selectedRemotePath!);
-    }
   }
 
   Widget _buildTransferOverlay() {
@@ -1849,5 +1976,39 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
         );
       },
     );
+  }
+
+  Map<Duration, String> _parseLrcFile(File lrcFile) {
+    if (!lrcFile.existsSync()) return {};
+
+    final Map<Duration, String> lyrics = {};
+    final lines = lrcFile.readAsLinesSync();
+
+    final RegExp timeRegex = RegExp(r'\[(\d{2}):(\d{2})\.(\d{2,3})\](.*)');
+
+    for (var line in lines) {
+      final match = timeRegex.firstMatch(line);
+      if (match != null) {
+        final int minutes = int.parse(match.group(1)!);
+        final int seconds = int.parse(match.group(2)!);
+        final String msStr = match.group(3)!;
+
+        final int milliseconds = msStr.length == 2
+            ? int.parse(msStr) * 10
+            : int.parse(msStr);
+
+        final duration = Duration(
+          minutes: minutes,
+          seconds: seconds,
+          milliseconds: milliseconds,
+        );
+        final text = match.group(4)!.trim();
+
+        if (text.isNotEmpty) {
+          lyrics[duration] = text;
+        }
+      }
+    }
+    return lyrics;
   }
 }
