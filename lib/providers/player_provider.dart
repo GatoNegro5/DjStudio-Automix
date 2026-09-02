@@ -9,6 +9,7 @@ import 'package:http/http.dart' as http;
 
 // 🛠️ INYECCIÓN: El HAL que contiene la lógica multiplataforma
 import '../core/hal/platform_strategy.dart';
+import '../core/audio/dj_audio_handler.dart';
 
 import 'db_provider.dart';
 import 'nlp_provider.dart';
@@ -123,6 +124,13 @@ class PlayerNotifier extends Notifier<PlayerState> {
 
     _attachListeners(_playerA);
     _initPersistence();
+
+    // 🛠️ PUENTE OS: Enlazar comandos del Lockscreen/Bluetooth a Riverpod
+    globalAudioHandler.onPlayPause = () => togglePlayPause();
+    globalAudioHandler.onNext = () => forceTransition(state.currentIndex + 1);
+    globalAudioHandler.onPrevious = () =>
+        forceTransition(state.currentIndex - 1);
+    globalAudioHandler.onSeek = (pos) => seek(pos);
 
     ref.onDispose(() {
       _positionSub?.cancel();
@@ -382,7 +390,16 @@ class PlayerNotifier extends Notifier<PlayerState> {
       platformIn?.setProperty('af', currentBaseFilter);
 
       platformOut?.setProperty('af', currentBaseFilter);
+
+      // Detenemos la reproducción acústica
       await fadingPlayer.stop();
+
+      // 🛠️ FIX ARQUITECTÓNICO ANDROID (Prevención OOM)
+      // Sobrescribimos el reproductor en espera con un Playlist vacío.
+      // Esto obliga a libmpv a liberar inmediatamente los bloques de RAM
+      // que ocupaba el MP3 decodificado del deck anterior.
+      await fadingPlayer.open(Playlist([]), play: false);
+
       await fadingPlayer.setVolume(100.0);
       await fadingPlayer.setRate(1.0);
     }
@@ -688,6 +705,9 @@ class PlayerNotifier extends Notifier<PlayerState> {
         _saveSnapshot();
       }
 
+      // 🛠️ TRANSMISIÓN AL KERNEL: Posición actual para la barra de estado del celular
+      globalAudioHandler.updateOsPlaybackState(state.isPlaying, pos);
+
       if (state.autoMixArmed &&
           state.customMixOutMs <= 0 &&
           state.duration.inMilliseconds > 0 &&
@@ -704,10 +724,21 @@ class PlayerNotifier extends Notifier<PlayerState> {
     _durationSub = player.stream.duration.listen((dur) {
       state = state.copyWith(duration: dur);
       _recalculateMixWindow();
+
+      // 🛠️ TRANSMISIÓN AL KERNEL: Metadatos para la pantalla de bloqueo
+      if (state.currentTrackPath != null) {
+        final fileName = state.currentTrackPath!
+            .replaceAll('\\', '/')
+            .split('/')
+            .last;
+        globalAudioHandler.updateOsMetadata(title: fileName, duration: dur);
+      }
     });
 
     _playingSub = player.stream.playing.listen((playing) {
       state = state.copyWith(isPlaying: playing);
+      // 🛠️ TRANSMISIÓN AL KERNEL: Estado de Play/Pause
+      globalAudioHandler.updateOsPlaybackState(playing, state.position);
     });
 
     _completedSub = player.stream.completed.listen((completed) {

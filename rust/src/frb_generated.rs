@@ -394,12 +394,16 @@ fn wire__crate__api__core_dsp__process_full_pipeline_impl(
             let mut deserializer =
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_input_path = <String>::sse_decode(&mut deserializer);
+            let api_is_megamix = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| async move {
                 transform_result_sse::<_, String>(
                     (move || async move {
-                        let output_ok =
-                            crate::api::core_dsp::process_full_pipeline(api_input_path).await?;
+                        let output_ok = crate::api::core_dsp::process_full_pipeline(
+                            api_input_path,
+                            api_is_megamix,
+                        )
+                        .await?;
                         Ok(output_ok)
                     })()
                     .await,

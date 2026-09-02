@@ -1,4 +1,3 @@
-import 'package:media_kit/media_kit.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/hal/platform_strategy.dart';
 import '../providers/player_provider.dart';

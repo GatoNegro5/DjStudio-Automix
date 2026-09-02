@@ -12,6 +12,8 @@ import 'package:djstudio_player/src/rust/frb_generated.dart';
 import 'providers/player_provider.dart';
 import 'providers/theme_provider.dart';
 
+import 'core/audio/dj_audio_handler.dart';
+
 // 🛠️ FIX: Rutas actualizadas a la nueva Clean Architecture
 import 'ui/workspaces/playerDj.dart';
 import 'ui/workspaces/dsp_workspace.dart';
@@ -41,6 +43,10 @@ Future<void> main() async {
   // 🛠️ REGLA: Cero Deducciones. Atrapamos cualquier colapso pre-runApp.
   try {
     WidgetsFlutterBinding.ensureInitialized();
+
+    // 🛠️ INYECCIÓN OS: Levantar el servicio nativo de Audio (Lockscreen/Background)
+    // Debe arrancar antes de cualquier otra lógica pesada o permisos.
+    await initGlobalAudioService();
 
     // 🛠️ FASE 3: Perforación de Scoped Storage en Runtime (Android 11+)
     if (Platform.isAndroid) {

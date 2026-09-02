@@ -123,10 +123,8 @@ class DspWorker {
       })) {
         if (entity is File) {
           final lowerPath = entity.path.toLowerCase();
-          if (lowerPath.endsWith('.mp3') ||
-              lowerPath.endsWith('.webm') ||
-              lowerPath.endsWith('.m4a') ||
-              lowerPath.endsWith('.wav')) {
+          // 🛠️ REGLA ESTRICTA: Filtrar únicamente MP3
+          if (lowerPath.endsWith('.mp3')) {
             files.add(entity);
           }
         }
@@ -145,6 +143,17 @@ class DspWorker {
 
       if (!timestamps.containsKey(absolutePath) ||
           timestamps[absolutePath] != modified) {
+        // 🛠️ FIX ARQUITECTURA: Bypass automático de BPM para Megamixes (>15MB)
+        final double fileSizeMb = file.lengthSync() / (1024 * 1024);
+        if (fileSizeMb > 15.0) {
+          debugPrint(
+            "🟢 [DSP Cache] Megamix detectado (${fileSizeMb.toStringAsFixed(2)}MB). Bypass de BPM aplicado a: $filename",
+          );
+          timestamps[absolutePath] = modified;
+          hasChanges = true;
+          continue; // Saltamos la extracción Symphonia/ID3
+        }
+
         debugPrint("⚙️ [DSP Cache] Escaneando binario ID3: $filename");
 
         // 🛠️ RESPIRACIÓN OBLIGATORIA: Ceder hilo al Garbage Collector
@@ -204,128 +213,26 @@ class DspWorker {
     }
   }
 
-  Future<void> _runRustBatch(
-    String directoryPath,
-    String moduleName,
-    Future<bool> Function(String) rustTask, {
-    bool Function()? isCancelled,
-    bool bypassIfWatermarked = true,
-  }) async {
-    final dir = Directory(directoryPath);
-    if (!dir.existsSync()) return;
-
-    final files = <File>[];
-    try {
-      await for (final entity in dir.list(recursive: true).handleError((e) {
-        debugPrint("⚠️ [Rust Batch I/O Ignorado]: $e");
-      })) {
-        if (entity is File) {
-          final lowerPath = entity.path.toLowerCase();
-          if (lowerPath.endsWith('.mp3') ||
-              lowerPath.endsWith('.webm') ||
-              lowerPath.endsWith('.m4a') ||
-              lowerPath.endsWith('.wav')) {
-            files.add(entity);
-          }
-        }
-      }
-    } catch (e) {
-      debugPrint("🔴 [Rust Batch Scan Fatal]: $e");
-      return;
-    }
-
-    int total = files.length;
-    final pipe = ref.read(pipelineProvider.notifier);
-
-    for (int i = 0; i < total; i++) {
-      if (isCancelled != null && isCancelled()) {
-        debugPrint("🔴 [DSP Worker] Proceso abortado.");
-        break;
-      }
-
-      final file = files[i];
-      final filename = file.uri.pathSegments.last;
-      pipe.updateProgress(i + 1, total, filename, moduleName);
-
-      try {
-        if (bypassIfWatermarked) {
-          // 🛠️ EJECUCIÓN: Validación ultrarrápida nativa en Dart
-          final hasWatermark = await _isWatermarkedFast(file.path);
-          if (hasWatermark) {
-            continue; // Bypass atómico instantáneo
-          }
-        }
-
-        // 🛠️ PROTECCIÓN TÉRMICA: Forzar Yield del hilo principal antes del estrés
-        await Future.delayed(const Duration(milliseconds: 50));
-
-        // 🛠️ FIX ARQUITECTURA: Reducción de 10 min a 90 segundos con Cuarentena
-        final success = await rustTask(file.path).timeout(
-          const Duration(seconds: 90),
-          onTimeout: () {
-            debugPrint(
-              "🔴 [TIMEOUT FFI]: Archivo corrupto colapsó C++ en $filename",
-            );
-
-            // 1. Matar proceso zombie
-            if (Platform.isWindows) {
-              Process.runSync('taskkill', ['/F', '/IM', 'ffmpeg.exe']);
-            }
-
-            // 2. Pausa para liberación de Kernel
-            sleep(const Duration(milliseconds: 1500));
-
-            // 3. Aislar a Cuarentena proactivamente
-            try {
-              final qDir = Directory(
-                '${file.parent.path}${Platform.pathSeparator}Cuarentena_DjStudio',
-              );
-              if (!qDir.existsSync()) qDir.createSync();
-
-              final newPath = '${qDir.path}${Platform.pathSeparator}$filename';
-              try {
-                file.renameSync(newPath);
-              } catch (_) {
-                file.copySync(newPath);
-                file.deleteSync();
-              }
-              pipe.updateProgress(
-                i + 1,
-                total,
-                filename,
-                "☣️ AISLADO: Movido a Cuarentena_DjStudio",
-              );
-            } catch (_) {}
-
-            return false;
-          },
-        );
-
-        if (!success) {
-          pipe.addQuarantine(filename);
-        }
-      } catch (e) {
-        pipe.updateProgress(i + 1, total, "⚠️ Error DSP", moduleName);
-        pipe.addQuarantine(filename);
-      } finally {
-        // 🛠️ RESPIRACIÓN OBLIGATORIA: Ceder ciclos al Kernel tras cada track pesado
-        // Esto permite que el recolector de basura limpie y la CPU se enfríe.
-        await Future.delayed(const Duration(milliseconds: 300));
-      }
-    }
-  }
-
   Future<void> processEBU(
     String directoryPath, {
     bool Function()? isCancelled,
   }) async {
     if (Platform.isAndroid || Platform.isIOS) return;
-    await _runRustBatch(
-      directoryPath,
-      "Master LUFS",
-      (path) => rust_dsp.normalizeLufs(inputPath: path),
-      isCancelled: isCancelled,
-    );
+    await _runRustBatch(directoryPath, "Master LUFS", (
+      path, {
+      bool isMegamix = false,
+    }) async {
+      // 🛠️ ENRUTAMIENTO INTELIGENTE: Si es un Megamix, forzamos el pipeline
+      // optimizado (1 sola pasada de volumen, usando todos los hilos).
+      if (isMegamix) {
+        return await rust_dsp.processFullPipeline(
+          inputPath: path,
+          isMegamix: true,
+        );
+      }
+      // Pistas de tamaño normal usan el cálculo LUFS estricto de doble pasada.
+      return await rust_dsp.normalizeLufs(inputPath: path);
+    }, isCancelled: isCancelled);
   }
 
   Future<void> processTrim(
@@ -333,12 +240,16 @@ class DspWorker {
     bool Function()? isCancelled,
   }) async {
     if (Platform.isAndroid || Platform.isIOS) return;
-    await _runRustBatch(
-      directoryPath,
-      "DSP Trim",
-      (path) => rust_dsp.processAutoTrim(inputPath: path),
-      isCancelled: isCancelled,
-    );
+    await _runRustBatch(directoryPath, "DSP Trim", (
+      path, {
+      bool isMegamix = false,
+    }) async {
+      // 🛠️ BYPASS ATÓMICO: Un Mix no tiene silencios por definición.
+      // Retornamos True al instante y ahorramos 100% de CPU y RAM.
+      if (isMegamix) return true;
+
+      return await rust_dsp.processAutoTrim(inputPath: path);
+    }, isCancelled: isCancelled);
   }
 
   Future<void> sealPipeline(
@@ -349,7 +260,8 @@ class DspWorker {
     await _runRustBatch(
       directoryPath,
       "Sello Watermark",
-      (path) => rust_dsp.injectWatermark(inputPath: path),
+      (path, {bool isMegamix = false}) =>
+          rust_dsp.injectWatermark(inputPath: path),
       isCancelled: isCancelled,
       bypassIfWatermarked: false,
     );
@@ -363,7 +275,8 @@ class DspWorker {
     await _runRustBatch(
       directoryPath,
       "♻️ Reset Watermark",
-      (path) => rust_dsp.clearWatermark(inputPath: path),
+      (path, {bool isMegamix = false}) =>
+          rust_dsp.clearWatermark(inputPath: path),
       isCancelled: isCancelled,
       bypassIfWatermarked: false,
     );
@@ -384,10 +297,8 @@ class DspWorker {
       })) {
         if (entity is File) {
           final lowerPath = entity.path.toLowerCase();
-          if (lowerPath.endsWith('.mp3') ||
-              lowerPath.endsWith('.webm') ||
-              lowerPath.endsWith('.m4a') ||
-              lowerPath.endsWith('.wav')) {
+          // 🛠️ REGLA ESTRICTA: Filtrar únicamente MP3
+          if (lowerPath.endsWith('.mp3')) {
             files.add(entity);
           }
         }
@@ -420,6 +331,108 @@ class DspWorker {
     debugPrint("🟢 [DSP Worker] Base de datos ISAR purgada exitosamente.");
   }
 
+  Future<void> _runRustBatch(
+    String directoryPath,
+    String moduleName,
+    Future<bool> Function(String, {bool isMegamix}) rustTask, {
+    bool Function()? isCancelled,
+    bool bypassIfWatermarked = true,
+  }) async {
+    final dir = Directory(directoryPath);
+    if (!dir.existsSync()) return;
+
+    final files = <File>[];
+    try {
+      await for (final entity in dir.list(recursive: true).handleError((e) {
+        debugPrint("⚠️ [Rust Batch I/O Ignorado]: $e");
+      })) {
+        if (entity is File) {
+          final lowerPath = entity.path.toLowerCase();
+          if (lowerPath.endsWith('.mp3')) {
+            files.add(entity);
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint("🔴 [Rust Batch Scan Fatal]: $e");
+      return;
+    }
+
+    int total = files.length;
+    final pipe = ref.read(pipelineProvider.notifier);
+    final sysCores = Platform.numberOfProcessors;
+
+    for (int i = 0; i < total; i++) {
+      if (isCancelled != null && isCancelled()) break;
+
+      bool isLiveActive = ref.read(hardwareGovernorProvider).isLiveDjActive;
+      while (isLiveActive) {
+        pipe.updateProgress(
+          i,
+          total,
+          "⏸️ SISTEMA EN PAUSA",
+          "Protegiendo Live DJ...",
+        );
+        await Future.delayed(const Duration(seconds: 3));
+        isLiveActive = ref.read(hardwareGovernorProvider).isLiveDjActive;
+        if (isCancelled != null && isCancelled()) return;
+      }
+
+      final file = files[i];
+      final filename = file.uri.pathSegments.last;
+
+      try {
+        File(
+          'C:\\Python\\djstudio_player\\ULTIMA_PISTA.txt',
+        ).writeAsStringSync("PISTA ACTUAL:\n${file.path}");
+      } catch (_) {}
+
+      pipe.updateProgress(i + 1, total, filename, moduleName);
+
+      try {
+        if (bypassIfWatermarked) {
+          final hasWatermark = await _isWatermarkedFast(file.path);
+          if (hasWatermark) continue;
+        }
+
+        // 🛠️ BYPASS ABSOLUTO: Si pesa más de 15MB, saltamos al instante.
+        // Cero FFI, Cero Cuarentena.
+        final double fileSizeMb = file.lengthSync() / (1024 * 1024);
+        if (fileSizeMb > 15.0) {
+          debugPrint(
+            "⏭️ [BYPASS] Pista ignorada por tamaño (${fileSizeMb.toStringAsFixed(2)}MB): $filename",
+          );
+          pipe.updateProgress(i + 1, total, filename, "⏭️ Omitido: > 15MB");
+          continue;
+        }
+
+        final int thermalDelay = sysCores <= 4 ? 1500 : 50;
+        await Future.delayed(Duration(milliseconds: thermalDelay));
+
+        // Pistas estándar (< 15MB)
+        final success = await rustTask(file.path, isMegamix: false).timeout(
+          const Duration(seconds: 90),
+          onTimeout: () {
+            if (Platform.isWindows) {
+              Process.runSync('taskkill', ['/F', '/IM', 'ffmpeg.exe']);
+            }
+            sleep(const Duration(milliseconds: 1500));
+            pipe.updateProgress(i + 1, total, filename, "⚠️ Saltado: Timeout");
+            return false;
+          },
+        );
+
+        if (!success) {
+          debugPrint("⚠️ [DSP] Pista ignorada, continúa el bucle.");
+        }
+      } catch (e) {
+        pipe.updateProgress(i + 1, total, "⚠️ Error DSP", moduleName);
+      } finally {
+        await Future.delayed(const Duration(milliseconds: 300));
+      }
+    }
+  }
+
   Future<String> processSingleFile(String filePath) async {
     final file = File(filePath);
     if (!file.existsSync() || Platform.isAndroid || Platform.isIOS) {
@@ -427,10 +440,16 @@ class DspWorker {
     }
 
     try {
-      // 🛠️ EJECUCIÓN: Control atómico para descargas y pistas individuales
       final isSealed = await _isWatermarkedFast(filePath);
       if (!isSealed) {
-        await rust_dsp.processFullPipeline(inputPath: filePath);
+        final double fileSizeMb = file.lengthSync() / (1024 * 1024);
+        // 🛠️ BYPASS ABSOLUTO TAMBIÉN EN PISTAS INDIVIDUALES
+        if (fileSizeMb > 15.0) return filePath;
+
+        await rust_dsp.processFullPipeline(
+          inputPath: filePath,
+          isMegamix: false,
+        );
       }
     } catch (_) {}
 

@@ -47,7 +47,13 @@ pub fn abort_active_process() {
 }
 
 fn execute_ffmpeg_with_kill_switch(cmd: &mut Command) -> Result<std::process::Output, std::io::Error> {
-    let child = cmd.spawn()?;
+    let child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            println!("🔴 [RUST FFI FATAL] No se pudo lanzar FFmpeg. Ruta intentada: {:?}", cmd.get_program());
+            return Err(e);
+        }
+    };
     ACTIVE_PID.store(child.id(), Ordering::SeqCst);
     let output = child.wait_with_output()?;        
     ACTIVE_PID.store(0, Ordering::SeqCst);         
@@ -58,7 +64,8 @@ fn spawn_headless_ffmpeg() -> Command {
     let mut cmd = Command::new(get_ffmpeg_path());
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);
-    cmd.args(["-nostdin", "-threads", "2"]); 
+    // 🛠️ FIX ARQUITECTURA: 0 indica uso del 100% de los núcleos lógicos disponibles.
+    cmd.args(["-nostdin", "-threads", "0"]); 
     cmd
 }
 
@@ -93,7 +100,6 @@ fn atomic_replace(temp_path: &Path, original_path: &Path) -> Result<(), String> 
     }
 }
 
-// 🛠️ MOTOR FFI: Calcula duración exacta de audios nativamente sin usar CLI de ffprobe.
 pub async fn get_audio_duration_ms(input_path: String) -> Result<u64, String> {
     let file = Box::new(File::open(&input_path).map_err(|e| e.to_string())?);
     let mss = MediaSourceStream::new(file, Default::default());
@@ -113,7 +119,6 @@ pub async fn get_audio_duration_ms(input_path: String) -> Result<u64, String> {
         }
     }
 
-    // Heurística de Fallback Cero-Decoding (Aproximación a 320kbps si el archivo está roto)
     let file_meta = std::fs::metadata(&input_path).map_err(|e| e.to_string())?;
     let size_bytes = file_meta.len();
     Ok(((size_bytes * 8) / 320) as u64)
@@ -179,7 +184,8 @@ pub async fn normalize_lufs(input_path: String) -> Result<bool, String> {
     }
 }
 
-pub async fn process_full_pipeline(input_path: String) -> Result<bool, String> {
+// 🛠️ INYECTADO: Firma con is_megamix para enrutamiento táctico de rendimiento
+pub async fn process_full_pipeline(input_path: String, is_megamix: bool) -> Result<bool, String> {
     if check_watermark(input_path.clone()).await.unwrap_or(false) {
         return Ok(true);
     }
@@ -188,7 +194,13 @@ pub async fn process_full_pipeline(input_path: String) -> Result<bool, String> {
     if !input.exists() { return Err("Archivo no encontrado en I/O.".to_string()); }
     let temp_path = input.with_file_name("temp_dsp_full.mp3");
 
-    let filter = "loudnorm=I=-14:LRA=11:TP=-1.5,silenceremove=start_periods=1:start_duration=0.05:start_threshold=-30dB,areverse,silenceremove=start_periods=1:start_duration=0.05:start_threshold=-30dB,areverse";
+    // 🛠️ BYPASS ALGORÍTMICO: Si es un Megamix, abortamos el corte de silencios (areverse)
+    // para evitar que la RAM explote al intentar invertir 1 hora de audio.
+    let filter = if is_megamix {
+        "loudnorm=I=-14:LRA=11:TP=-1.5"
+    } else {
+        "loudnorm=I=-14:LRA=11:TP=-1.5,silenceremove=start_periods=1:start_duration=0.05:start_threshold=-30dB,areverse,silenceremove=start_periods=1:start_duration=0.05:start_threshold=-30dB,areverse"
+    };
 
     let output = execute_ffmpeg_with_kill_switch(spawn_headless_ffmpeg()
         .args(["-y", "-i", input.to_str().unwrap(), "-af", filter, "-c:a", "libmp3lame", "-b:a", "320k", temp_path.to_str().unwrap()]))
@@ -294,14 +306,19 @@ fn get_ffmpeg_path() -> String {
     if let Ok(mut exe_path) = std::env::current_exe() {
         exe_path.pop();
         exe_path.push(if cfg!(target_os = "windows") { "ffmpeg.exe" } else { "ffmpeg" });
+        
+        // 🛠️ FIX ARQUITECTURA: Restauramos la validación física.
+        // Si el binario no está en la carpeta efímera, usamos el comando global del PATH.
         if exe_path.exists() {
             return exe_path.to_string_lossy().into_owned();
         }
     }
+    
     if cfg!(target_os = "macos") {
         if Path::new("/opt/homebrew/bin/ffmpeg").exists() { return "/opt/homebrew/bin/ffmpeg".to_string(); }
         if Path::new("/usr/local/bin/ffmpeg").exists() { return "/usr/local/bin/ffmpeg".to_string(); }
     }
+    
     "ffmpeg".to_string()
 }
 

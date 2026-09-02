@@ -1,6 +1,45 @@
 import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+// 🛠️ PATRÓN MUTEX: Gobernador de Hardware
+final hardwareGovernorProvider =
+    StateNotifierProvider<HardwareGovernor, GovernorState>((ref) {
+      return HardwareGovernor();
+    });
+
+class GovernorState {
+  final bool isLiveDjActive;
+  final int availableCores;
+
+  GovernorState({required this.isLiveDjActive, required this.availableCores});
+}
+
+class HardwareGovernor extends StateNotifier<GovernorState> {
+  HardwareGovernor()
+    : super(
+        GovernorState(
+          isLiveDjActive: false,
+          availableCores: Platform.numberOfProcessors,
+        ),
+      );
+
+  // Llama a esto cuando el usuario de Play en el Live DJ
+  void lockForLivePerformance() {
+    state = GovernorState(
+      isLiveDjActive: true,
+      availableCores: state.availableCores,
+    );
+  }
+
+  // Llama a esto cuando el usuario detenga la música
+  void releaseLock() {
+    state = GovernorState(
+      isLiveDjActive: false,
+      availableCores: state.availableCores,
+    );
+  }
+}
+
 // 1. Nuevo Servicio de Infraestructura (Separación de Concerns)
 class MediaProcessKiller {
   /// Ejecuta un SIGKILL a nivel OS. Úsese con precaución ya que afecta a procesos globales.

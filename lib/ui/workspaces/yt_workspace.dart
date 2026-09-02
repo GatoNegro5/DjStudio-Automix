@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import 'package:file_selector/file_selector.dart';
+import 'package:media_kit/media_kit.dart';
 
 import 'package:djstudio_player/src/rust/api/core_dsp.dart' as rust_dsp;
 import '../../providers/metadata_provider.dart';
@@ -103,30 +104,44 @@ class _YoutubeSearchAndDownloadWorkspaceState
   // ---------------------------------------------------------
   String _getFfmpegPath() {
     if (Platform.isAndroid || Platform.isIOS) {
-      debugPrint("🟢 [TRACKER BIN] Plataforma Móvil. Path FFMPEG: 'ffmpeg'");
       return 'ffmpeg';
     }
+
+    // 🛠️ FIX ARQUITECTURA: Strict Pathing
     final exeDir = File(Platform.resolvedExecutable).parent.path;
     final localPath = Platform.isWindows
         ? '$exeDir\\ffmpeg.exe'
         : '$exeDir/ffmpeg';
-    final exists = File(localPath).existsSync();
-    debugPrint("🟢 [TRACKER BIN] Path FFMPEG: $localPath | Existe: $exists");
-    return exists ? localPath : 'ffmpeg';
+
+    if (File(localPath).existsSync()) {
+      return localPath;
+    } else {
+      // 🛑 VETO TÉCNICO: Si no está al lado del .exe, abortamos.
+      // No hacemos fallback al PATH global porque está desinstalado y arrojará fallo silencioso.
+      throw Exception(
+        "VETO I/O: 'ffmpeg.exe' no encontrado en el directorio raíz de la aplicación ($exeDir). Pégalo ahí para continuar.",
+      );
+    }
   }
 
   String _getFfprobePath() {
     if (Platform.isAndroid || Platform.isIOS) {
-      debugPrint("🟢 [TRACKER BIN] Plataforma Móvil. Path FFPROBE: 'ffprobe'");
       return 'ffprobe';
     }
+
+    // 🛠️ FIX ARQUITECTURA: Strict Pathing
     final exeDir = File(Platform.resolvedExecutable).parent.path;
     final localPath = Platform.isWindows
         ? '$exeDir\\ffprobe.exe'
         : '$exeDir/ffprobe';
-    final exists = File(localPath).existsSync();
-    debugPrint("🟢 [TRACKER BIN] Path FFPROBE: $localPath | Existe: $exists");
-    return exists ? localPath : 'ffprobe';
+
+    if (File(localPath).existsSync()) {
+      return localPath;
+    } else {
+      throw Exception(
+        "VETO I/O: 'ffprobe.exe' no encontrado en el directorio raíz de la aplicación ($exeDir). Pégalo ahí para continuar.",
+      );
+    }
   }
 
   Future<int> _getAudioDurationMs(String path) async {
@@ -483,9 +498,18 @@ class _YoutubeSearchAndDownloadWorkspaceState
 
     try {
       final tempDir = Directory.systemTemp;
+      final exeDir = File(Platform.resolvedExecutable).parent.path;
+
+      // 🛠️ FIX ARQUITECTURA: Leer yt-dlp directamente desde la raíz
       final ytdlpPath = Platform.isWindows
-          ? '${tempDir.path}${Platform.pathSeparator}yt-dlp.exe'
-          : 'yt-dlp';
+          ? '$exeDir\\yt-dlp.exe'
+          : '$exeDir/yt-dlp';
+
+      if (!File(ytdlpPath).existsSync() &&
+          !Platform.isAndroid &&
+          !Platform.isIOS) {
+        throw Exception("VETO I/O: 'yt-dlp.exe' no encontrado en $exeDir.");
+      }
       final downloadPath = _selectedFolderPath;
 
       if (!Directory(downloadPath).existsSync()) {
@@ -513,12 +537,25 @@ class _YoutubeSearchAndDownloadWorkspaceState
             "Descargando stream crudo vía Android VR (Anti-Throttle)...",
       );
 
+      // 🛠️ TRACKER DE DIAGNÓSTICO
+      debugPrint("\n================ TRACKER I/O ==================");
+      debugPrint("1. PLATFORM EXE: ${Platform.resolvedExecutable}");
+      debugPrint("2. YT-DLP PATH: $ytdlpPath");
+      debugPrint("3. YT-DLP EXISTE: ${File(ytdlpPath).existsSync()}");
+      try {
+        final fpeg = _getFfmpegPath();
+        debugPrint("4. FFMPEG PATH: $fpeg");
+        debugPrint("5. FFMPEG EXISTE: ${File(fpeg).existsSync()}");
+      } catch (e) {
+        debugPrint("4/5. FFMPEG ERROR: $e");
+      }
+      debugPrint("=================================================\n");
       final process = await Process.start(ytdlpPath, [
         '--rm-cache-dir',
         '-f',
-        '140/bestaudio',
-        '--extractor-args',
-        'youtube:player_client=android_vr',
+        'bestaudio', // 🛠️ FIX: Ampliamos la compatibilidad de extracción
+        '--ffmpeg-location', _getFfmpegPath(),
+        // ❌ VETO: Eliminamos el cliente android_vr bloqueado por YouTube
         '-o',
         tempRawPath,
         targetUrl,
@@ -579,8 +616,11 @@ class _YoutubeSearchAndDownloadWorkspaceState
       final result = await showDialog<Map<String, String>>(
         context: context,
         barrierDismissible: false,
-        builder: (ctx) =>
-            PreIngestModal(initialTitle: safeTitle, initialLrc: prelimLrc),
+        builder: (ctx) => PreIngestModal(
+          initialTitle: safeTitle,
+          initialLrc: prelimLrc,
+          audioPath: tempMp3Path, // 🛠️ INYECCIÓN: Pasamos el binario temporal
+        ),
       );
 
       if (result == null) {
@@ -904,16 +944,18 @@ class _YoutubeSearchAndDownloadWorkspaceState
 }
 
 // ==========================================
-// 🛠️ NUEVO COMPONENTE: MODAL DE PRE-INGESTA
+// 🛠️ NUEVO COMPONENTE: MODAL DE PRE-INGESTA (Con Motor de Preview)
 // ==========================================
 class PreIngestModal extends StatefulWidget {
   final String initialTitle;
   final String initialLrc;
+  final String audioPath;
 
   const PreIngestModal({
     super.key,
     required this.initialTitle,
     required this.initialLrc,
+    required this.audioPath,
   });
 
   @override
@@ -923,6 +965,8 @@ class PreIngestModal extends StatefulWidget {
 class _PreIngestModalState extends State<PreIngestModal> {
   late TextEditingController _titleController;
   late TextEditingController _lrcController;
+  late final Player _player;
+  bool _isPlaying = false;
 
   @override
   void initState() {
@@ -938,12 +982,24 @@ class _PreIngestModalState extends State<PreIngestModal> {
 
     _titleController = TextEditingController(text: cleanTitle);
     _lrcController = TextEditingController(text: widget.initialLrc);
+
+    // 🛠️ INYECCIÓN: Inicialización del motor MediaKit en modo lectura
+    _player = Player();
+    _player.open(Media(widget.audioPath), play: false);
+    _player.stream.playing.listen((playing) {
+      if (mounted) {
+        setState(() {
+          _isPlaying = playing;
+        });
+      }
+    });
   }
 
   @override
   void dispose() {
     _titleController.dispose();
     _lrcController.dispose();
+    _player.dispose(); // 🛠️ LIBERACIÓN OBLIGATORIA DEL RECURSO I/O
     super.dispose();
   }
 
@@ -956,9 +1012,29 @@ class _PreIngestModalState extends State<PreIngestModal> {
         side: const BorderSide(color: Color(0xFF00FFFF)),
         borderRadius: BorderRadius.circular(8),
       ),
-      title: const Text(
-        "Laboratorio Pre-Ingesta",
-        style: TextStyle(color: Color(0xFF00FFFF), fontWeight: FontWeight.bold),
+      title: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          const Text(
+            "Laboratorio Pre-Ingesta",
+            style: TextStyle(
+              color: Color(0xFF00FFFF),
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          // 🛠️ INYECCIÓN UI: Gatillo de reproducción directa
+          IconButton(
+            icon: Icon(
+              _isPlaying ? Icons.pause_circle_filled : Icons.play_circle_fill,
+            ),
+            color: const Color(0xFF39FF14),
+            iconSize: 32,
+            tooltip: _isPlaying ? "Pausar Preview" : "Auditar Audio",
+            onPressed: () {
+              _isPlaying ? _player.pause() : _player.play();
+            },
+          ),
+        ],
       ),
       content: SizedBox(
         width: isMobile ? MediaQuery.of(context).size.width * 0.9 : 600,
@@ -1017,7 +1093,10 @@ class _PreIngestModalState extends State<PreIngestModal> {
       ),
       actions: [
         TextButton(
-          onPressed: () => Navigator.pop(context, null),
+          onPressed: () {
+            _player.stop(); // Matar audio si el usuario descarta
+            Navigator.pop(context, null);
+          },
           child: const Text(
             "Descartar Descarga",
             style: TextStyle(color: Colors.redAccent),
@@ -1025,6 +1104,7 @@ class _PreIngestModalState extends State<PreIngestModal> {
         ),
         ElevatedButton.icon(
           onPressed: () {
+            _player.stop(); // Matar audio antes de la inyección I/O
             Navigator.pop(context, {
               'fileName': _titleController.text.trim(),
               'lrcContent': _lrcController.text,

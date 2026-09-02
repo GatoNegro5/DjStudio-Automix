@@ -12,16 +12,36 @@ import '../../providers/theme_provider.dart';
 // =====================================================================
 // ROUTE 0: UNIFIED DJ WORKSPACE (IDE 3-PANEL REKORDBOX STYLE)
 // =====================================================================
-class UnifiedDjWorkspace extends StatefulWidget {
+class UnifiedDjWorkspace extends ConsumerStatefulWidget {
   const UnifiedDjWorkspace({super.key});
 
   @override
-  State<UnifiedDjWorkspace> createState() => _UnifiedDjWorkspaceState();
+  ConsumerState<UnifiedDjWorkspace> createState() => _UnifiedDjWorkspaceState();
 }
 
-class _UnifiedDjWorkspaceState extends State<UnifiedDjWorkspace> {
+class _UnifiedDjWorkspaceState extends ConsumerState<UnifiedDjWorkspace> {
   @override
   Widget build(BuildContext context) {
+    // 🛠️ PATRÓN MUTEX: Listener Global Reactivo
+    // En lugar de inyectar bloqueos en cada botón, el sistema escucha la tarjeta de sonido.
+    // Si la música suena, el CPU se bloquea. Si se detiene, el CPU se libera automáticamente.
+    ref.listen<bool>(playerProvider.select((p) => p.isPlaying), (
+      previous,
+      isPlaying,
+    ) {
+      if (isPlaying) {
+        ref.read(hardwareGovernorProvider.notifier).lockForLivePerformance();
+        debugPrint(
+          "🔒 [MUTEX] Live DJ Activo: Procesador bloqueado para rendimiento en vivo.",
+        );
+      } else {
+        ref.read(hardwareGovernorProvider.notifier).releaseLock();
+        debugPrint(
+          "🔓 [MUTEX] Live DJ en Pausa: Liberando núcleos para el Auto-Master.",
+        );
+      }
+    });
+
     final size = MediaQuery.of(context).size;
     final isDesktop = size.width > 800;
     final isMobileLandscape = size.height < 500;

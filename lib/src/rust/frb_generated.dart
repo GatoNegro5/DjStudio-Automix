@@ -99,7 +99,10 @@ abstract class RustLibApi extends BaseApi {
 
   Future<bool> crateApiCoreDspProcessAutoTrim({required String inputPath});
 
-  Future<bool> crateApiCoreDspProcessFullPipeline({required String inputPath});
+  Future<bool> crateApiCoreDspProcessFullPipeline({
+    required String inputPath,
+    required bool isMegamix,
+  });
 
   Future<List<String>> crateApiCoreMetadataProcessMetadata({
     required String inputPath,
@@ -384,12 +387,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
-  Future<bool> crateApiCoreDspProcessFullPipeline({required String inputPath}) {
+  Future<bool> crateApiCoreDspProcessFullPipeline({
+    required String inputPath,
+    required bool isMegamix,
+  }) {
     return handler.executeNormal(
       NormalTask(
         callFfi: (port_) {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(inputPath, serializer);
+          sse_encode_bool(isMegamix, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -402,7 +409,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_String,
         ),
         constMeta: kCrateApiCoreDspProcessFullPipelineConstMeta,
-        argValues: [inputPath],
+        argValues: [inputPath, isMegamix],
         apiImpl: this,
       ),
     );
@@ -411,7 +418,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiCoreDspProcessFullPipelineConstMeta =>
       const TaskConstMeta(
         debugName: "process_full_pipeline",
-        argNames: ["inputPath"],
+        argNames: ["inputPath", "isMegamix"],
       );
 
   @override

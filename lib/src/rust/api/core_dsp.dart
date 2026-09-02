@@ -22,10 +22,13 @@ Future<bool> processAutoTrim({required String inputPath}) =>
 Future<bool> normalizeLufs({required String inputPath}) =>
     RustLib.instance.api.crateApiCoreDspNormalizeLufs(inputPath: inputPath);
 
-Future<bool> processFullPipeline({required String inputPath}) => RustLib
-    .instance
-    .api
-    .crateApiCoreDspProcessFullPipeline(inputPath: inputPath);
+Future<bool> processFullPipeline({
+  required String inputPath,
+  required bool isMegamix,
+}) => RustLib.instance.api.crateApiCoreDspProcessFullPipeline(
+  inputPath: inputPath,
+  isMegamix: isMegamix,
+);
 
 Future<String> readAudioGenre({required String inputPath}) =>
     RustLib.instance.api.crateApiCoreDspReadAudioGenre(inputPath: inputPath);
