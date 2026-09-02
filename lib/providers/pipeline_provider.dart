@@ -133,12 +133,23 @@ class PipelineNotifier extends Notifier<PipelineState> {
       moduleStatus: "🔴 Abortando operación... aniquilando procesos binarios.",
     );
 
-    // Delegación estricta a la capa de infraestructura. El Notifier ya no maneja binarios.
+    // Delegación estricta a la capa de infraestructura.
     MediaProcessKiller.executeGlobalHardAbort();
+
+    // 🛠️ FIX ARQUITECTÓNICO: Liberación de Bloqueo Fantasma (Ghost Lock)
+    // Forzamos el reset de la UI 2 segundos después de matar los procesos nativos.
+    Future.delayed(const Duration(seconds: 2), () {
+      reset();
+    });
   }
 
   void reset() {
-    state = PipelineState(quarantinedTracks: state.quarantinedTracks);
+    // 🛠️ FIX: Restaurar completamente a isIdle = true y apagar el aborto
+    state = PipelineState(
+      isIdle: true,
+      isAborted: false,
+      quarantinedTracks: state.quarantinedTracks,
+    );
   }
 }
 

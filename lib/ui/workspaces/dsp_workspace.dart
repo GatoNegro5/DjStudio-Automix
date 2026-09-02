@@ -1500,10 +1500,11 @@ class DspNlpWorkspace extends ConsumerWidget {
     List<String> noCues,
   ) {
     final Set<String> allBadPaths = {};
+    // 🛠️ FIX ARQUITECTÓNICO: Jamás enviar al LAB las pistas "Sin Cues".
+    // El LAB es para reparar archivos rotos. Los Cues se inyectan en la vista Live DJ.
     allBadPaths.addAll(unsealed);
     allBadPaths.addAll(noLyrics);
     allBadPaths.addAll(noBpm);
-    allBadPaths.addAll(noCues);
 
     showDialog(
       context: context,
@@ -1586,7 +1587,7 @@ class DspNlpWorkspace extends ConsumerWidget {
                       ),
                       _buildAuditList(
                         noCues,
-                        "Sin CuePoints en ISAR (Instrumental o error de lectura)",
+                        "Falta Set In/Out en ISAR (Se configuran en Live DJ)",
                       ),
                     ],
                   ),
@@ -1636,9 +1637,34 @@ class DspNlpWorkspace extends ConsumerWidget {
       children: [
         Padding(
           padding: const EdgeInsets.only(bottom: 8.0),
-          child: Text(
-            description,
-            style: const TextStyle(color: Colors.white70, fontSize: 12),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(
+                child: Text(
+                  description,
+                  style: const TextStyle(color: Colors.white70, fontSize: 12),
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF39FF14).withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: const Color(0xFF39FF14).withValues(alpha: 0.5),
+                  ),
+                ),
+                child: Text(
+                  "${items.length} archivos",
+                  style: const TextStyle(
+                    color: Color(0xFF39FF14),
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
         Expanded(
@@ -1752,7 +1778,9 @@ class DspNlpWorkspace extends ConsumerWidget {
         final meta = await ref
             .read(dbServiceProvider)
             .getTrackMetadata(file.path);
-        if (meta == null || meta.cueInMs == null) {
+
+        // 🛠️ FIX ARQUITECTÓNICO: Filtrado estricto por Cues Humanos
+        if (meta == null || !meta.isManualCue) {
           noCuesTracks.add(file.path);
         }
       }

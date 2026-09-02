@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:media_kit/media_kit.dart';
+import 'package:http/http.dart' as http;
 
 import 'package:djstudio_player/src/rust/api/core_dsp.dart' as rust_dsp;
 import '../../providers/metadata_provider.dart';
@@ -36,16 +37,31 @@ class _YoutubeSearchAndDownloadWorkspaceState
   String _selectedFolderPath = '';
   bool _autoMasterize = true;
 
+  // 🛠️ INYECCIÓN: Motor de Streaming para Preview
+  final Player _previewPlayer = Player();
+  String? _previewingVideoId;
+  bool _isPreviewLoading = false;
+  bool _isPreviewPlaying = false;
+
   @override
   void initState() {
     super.initState();
     _initDefaultPath();
+
+    _previewPlayer.stream.playing.listen((playing) {
+      if (mounted) {
+        setState(() {
+          _isPreviewPlaying = playing;
+        });
+      }
+    });
   }
 
   @override
   void dispose() {
     _searchController.dispose();
     _yt.close();
+    _previewPlayer.dispose();
     super.dispose();
   }
 
@@ -72,7 +88,6 @@ class _YoutubeSearchAndDownloadWorkspaceState
     });
   }
 
-  // 🛠️ PROFESIONAL: Uso de API Nativa Oficial de Google (file_selector)
   Future<void> _showFolderSelectionDialog() async {
     try {
       final String? selectedDirectory = await getDirectoryPath(
@@ -102,51 +117,56 @@ class _YoutubeSearchAndDownloadWorkspaceState
   // ---------------------------------------------------------
   // 🛠️ MÓDULO DE TELEMETRÍA Y COMPENSACIÓN VECTORIAL
   // ---------------------------------------------------------
-  String _getFfmpegPath() {
-    if (Platform.isAndroid || Platform.isIOS) {
-      return 'ffmpeg';
+
+  Future<String> _resolveBinary(String name) async {
+    if (Platform.isAndroid || Platform.isIOS) return name;
+    if (Platform.isMacOS || Platform.isLinux) {
+      if (File('/opt/homebrew/bin/$name').existsSync()) {
+        return '/opt/homebrew/bin/$name';
+      }
+      if (File('/usr/local/bin/$name').existsSync()) {
+        return '/usr/local/bin/$name';
+      }
+      return name;
     }
 
-    // 🛠️ FIX ARQUITECTURA: Strict Pathing
+    final exeName = '$name.exe';
+    final projectDir = Directory.current.path;
     final exeDir = File(Platform.resolvedExecutable).parent.path;
-    final localPath = Platform.isWindows
-        ? '$exeDir\\ffmpeg.exe'
-        : '$exeDir/ffmpeg';
+    final tempDir = Directory.systemTemp.path;
 
-    if (File(localPath).existsSync()) {
-      return localPath;
-    } else {
-      // 🛑 VETO TÉCNICO: Si no está al lado del .exe, abortamos.
-      // No hacemos fallback al PATH global porque está desinstalado y arrojará fallo silencioso.
-      throw Exception(
-        "VETO I/O: 'ffmpeg.exe' no encontrado en el directorio raíz de la aplicación ($exeDir). Pégalo ahí para continuar.",
+    final List<String> searchPaths = [
+      '$projectDir\\$exeName',
+      '$exeDir\\$exeName',
+      '$projectDir\\windows\\$exeName',
+      '$tempDir\\$exeName',
+    ];
+
+    for (final path in searchPaths) {
+      if (File(path).existsSync()) return path;
+    }
+
+    if (name == 'yt-dlp') {
+      final targetPath = '$tempDir\\$exeName';
+      setState(() => _statusText = "Descargando yt-dlp.exe (Setup inicial)...");
+      final dlUrl = Uri.parse(
+        'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe',
       );
-    }
-  }
-
-  String _getFfprobePath() {
-    if (Platform.isAndroid || Platform.isIOS) {
-      return 'ffprobe';
+      final response = await http.get(dlUrl);
+      await File(targetPath).writeAsBytes(response.bodyBytes);
+      return targetPath;
     }
 
-    // 🛠️ FIX ARQUITECTURA: Strict Pathing
-    final exeDir = File(Platform.resolvedExecutable).parent.path;
-    final localPath = Platform.isWindows
-        ? '$exeDir\\ffprobe.exe'
-        : '$exeDir/ffprobe';
-
-    if (File(localPath).existsSync()) {
-      return localPath;
-    } else {
-      throw Exception(
-        "VETO I/O: 'ffprobe.exe' no encontrado en el directorio raíz de la aplicación ($exeDir). Pégalo ahí para continuar.",
-      );
-    }
+    throw Exception(
+      "🛑 FALTA BINARIO: No se encontró '$exeName'.\n"
+      "👉 Por favor, pega '$exeName' en la raíz de tu proyecto:\n$projectDir",
+    );
   }
 
   Future<int> _getAudioDurationMs(String path) async {
     try {
-      final result = await Process.run(_getFfprobePath(), [
+      final ffprobePath = await _resolveBinary('ffprobe');
+      final result = await Process.run(ffprobePath, [
         '-v',
         'error',
         '-show_entries',
@@ -200,7 +220,20 @@ class _YoutubeSearchAndDownloadWorkspaceState
     }
   }
 
+  // 🛠️ FIX ARQUITECTÓNICO: Control de estado seguro para media_kit (Anti-Deadlock)
   Future<void> _handleInput(String input) async {
+    if (_isProcessing) return;
+
+    if (_previewingVideoId != null) {
+      try {
+        await _previewPlayer.stop();
+      } catch (_) {}
+      setState(() {
+        _previewingVideoId = null;
+        _isPreviewPlaying = false;
+      });
+    }
+
     if (input.isEmpty) return;
     if (input.startsWith('http')) {
       await _executeDirectDownload(input);
@@ -224,6 +257,268 @@ class _YoutubeSearchAndDownloadWorkspaceState
       });
     } catch (e) {
       setState(() => _statusText = "🔴 ERROR de Búsqueda: $e");
+    } finally {
+      setState(() => _isProcessing = false);
+    }
+  }
+
+  Future<void> _togglePreview(String videoId) async {
+    if (_previewingVideoId == videoId) {
+      if (_isPreviewPlaying) {
+        await _previewPlayer.pause();
+      } else {
+        await _previewPlayer.play();
+      }
+      return;
+    }
+
+    if (_previewingVideoId != null) {
+      try {
+        await _previewPlayer.stop();
+      } catch (_) {}
+    }
+
+    setState(() {
+      _previewingVideoId = videoId;
+      _isPreviewLoading = true;
+    });
+
+    try {
+      final ytdlpPath = await _resolveBinary('yt-dlp');
+      final targetUrl = 'https://youtube.com/watch?v=$videoId';
+
+      // 🛠️ FIX ARQUITECTÓNICO: Extracción estricta sin advertencias de consola
+      final process = await Process.run(ytdlpPath, [
+        '--no-warnings',
+        '--print', 'url', // Mucho más estable que -g
+        '-f', 'bestaudio',
+        targetUrl,
+      ]);
+
+      if (process.exitCode != 0) {
+        throw Exception("yt-dlp: ${process.stderr.toString().trim()}");
+      }
+
+      // Filtramos la basura y nos quedamos solo con la línea HTTP
+      final outputLines = process.stdout.toString().trim().split('\n');
+      final directStreamUrl = outputLines.lastWhere(
+        (line) => line.trim().startsWith('http'),
+        orElse: () => '',
+      );
+
+      if (directStreamUrl.isEmpty) {
+        throw Exception(
+          "No se extrajo una URL válida. Salida: ${process.stdout}",
+        );
+      }
+
+      // 🛠️ INYECCIÓN: Disfrazamos al motor nativo como si fuera Google Chrome
+      // Esto evita el HTTP 403 Forbidden directo de los servidores de caché de YouTube
+      await _previewPlayer.open(
+        Media(
+          directStreamUrl,
+          httpHeaders: {
+            'User-Agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          },
+        ),
+        play: true,
+      );
+    } catch (e) {
+      debugPrint("🔴 [Preview Error]: $e");
+      if (mounted) {
+        // Ahora sí imprimiremos en pantalla la verdadera razón si falla
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '🔴 Fallo de Preview: ${e.toString().replaceAll('Exception: ', '').split('\n').first}',
+            ),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+        setState(() {
+          _previewingVideoId = null;
+          _isPreviewPlaying = false;
+        });
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isPreviewLoading = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _executeDirectDownload(String targetUrl) async {
+    // 🛠️ FIX ARQUITECTÓNICO: Detener preview de forma segura antes del I/O
+    if (_previewingVideoId != null) {
+      try {
+        await _previewPlayer.stop();
+      } catch (_) {}
+      setState(() {
+        _previewingVideoId = null;
+        _isPreviewPlaying = false;
+      });
+    }
+
+    if (_selectedFolderPath.isEmpty) {
+      setState(
+        () => _statusText =
+            "🔴 ERROR: Selecciona una carpeta de destino primero.",
+      );
+      return;
+    }
+
+    setState(() {
+      _isProcessing = true;
+      _statusText = "Iniciando motor híbrido (Extracción + FFmpeg)...";
+    });
+
+    try {
+      final ytdlpPath = await _resolveBinary('yt-dlp');
+      final ffmpegPath = await _resolveBinary('ffmpeg');
+
+      final downloadPath = _selectedFolderPath;
+      if (!Directory(downloadPath).existsSync()) {
+        Directory(downloadPath).createSync(recursive: true);
+      }
+
+      setState(
+        () => _statusText = "Resolviendo manifiesto para nombrar archivo...",
+      );
+      final videoId = VideoId(targetUrl);
+      final video = await _yt.videos.get(videoId);
+      final safeTitle = video.title
+          .replaceAll(RegExp(r'[\\/:*?"<>|]'), '')
+          .trim();
+
+      final tempDir = Directory.systemTemp;
+      final tempRawPath =
+          '${tempDir.path}${Platform.pathSeparator}raw_vr_audio.m4a';
+      final tempMp3Path =
+          '${tempDir.path}${Platform.pathSeparator}$safeTitle.mp3';
+
+      if (File(tempRawPath).existsSync()) File(tempRawPath).deleteSync();
+
+      setState(
+        () => _statusText = "Descargando stream crudo de máxima calidad...",
+      );
+
+      final process = await Process.start(ytdlpPath, [
+        '--rm-cache-dir',
+        '-f',
+        'bestaudio',
+        '--ffmpeg-location',
+        ffmpegPath,
+        '-o',
+        tempRawPath,
+        targetUrl,
+      ]);
+
+      String errorTrace = "";
+      process.stdout.listen((_) {});
+      process.stderr.listen((bytes) {
+        errorTrace += String.fromCharCodes(bytes);
+      });
+
+      final exitCode = await process.exitCode;
+
+      if (exitCode != 0 || !File(tempRawPath).existsSync()) {
+        throw Exception("Fallo CLI Extractor. Traza: $errorTrace");
+      }
+
+      setState(() => _statusText = "Transcodificando a MP3 Temp vía FFmpeg...");
+
+      final ffmpegProcess = await Process.run(ffmpegPath, [
+        '-y',
+        '-i',
+        tempRawPath,
+        '-vn',
+        '-b:a',
+        '320k',
+        tempMp3Path,
+      ]);
+
+      if (ffmpegProcess.exitCode != 0) {
+        throw Exception(
+          "Fallo en motor FFmpeg: ${ffmpegProcess.stderr.toString()}",
+        );
+      }
+
+      try {
+        if (File(tempRawPath).existsSync()) File(tempRawPath).deleteSync();
+      } catch (_) {}
+
+      setState(
+        () => _statusText = "Extrayendo metadatos y letras preliminares...",
+      );
+      final tempLrcPath = tempMp3Path.replaceAll('.mp3', '.lrc');
+
+      await ref.read(nlpWorkerProvider).processSingleFile(tempMp3Path);
+      if (!File(tempLrcPath).existsSync()) {
+        await _extractLyricsFromYoutube(targetUrl, tempMp3Path);
+      }
+
+      String prelimLrc = "";
+      if (File(tempLrcPath).existsSync()) {
+        prelimLrc = File(tempLrcPath).readAsStringSync();
+      }
+
+      if (!mounted) return;
+      final result = await showDialog<Map<String, String>>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => PreIngestModal(
+          initialTitle: safeTitle,
+          initialLrc: prelimLrc,
+          audioPath: tempMp3Path,
+        ),
+      );
+
+      if (result == null) {
+        try {
+          if (File(tempMp3Path).existsSync()) File(tempMp3Path).deleteSync();
+          if (File(tempLrcPath).existsSync()) File(tempLrcPath).deleteSync();
+        } catch (_) {}
+        setState(() => _statusText = "Descarga descartada por el usuario.");
+        return;
+      }
+
+      setState(() => _statusText = "Inyectando archivo final al destino...");
+      final cleanName = result['fileName']!
+          .replaceAll(RegExp(r'[\\/:*?"<>|]'), '')
+          .trim();
+      final finalLrcContent = result['lrcContent']!;
+
+      final finalMp3Path =
+          '$downloadPath${Platform.pathSeparator}$cleanName.mp3';
+      final finalLrcPath =
+          '$downloadPath${Platform.pathSeparator}$cleanName.lrc';
+
+      File(tempMp3Path).renameSync(finalMp3Path);
+      if (finalLrcContent.trim().isNotEmpty) {
+        File(finalLrcPath).writeAsStringSync(finalLrcContent);
+      } else {
+        if (File(finalLrcPath).existsSync()) File(finalLrcPath).deleteSync();
+      }
+
+      _searchController.clear();
+
+      if (_autoMasterize) {
+        await _runSingleTrackPipeline(finalMp3Path);
+      } else {
+        setState(
+          () => _statusText =
+              "✅ ¡Extracción Completada! MP3 ($cleanName) guardado.",
+        );
+      }
+    } catch (e) {
+      debugPrint("🔴 Error en Pipeline Híbrido: $e");
+      setState(
+        () => _statusText =
+            "🔴 ERROR FATAL: ${e.toString().replaceAll('Exception: ', '')}",
+      );
     } finally {
       setState(() => _isProcessing = false);
     }
@@ -285,7 +580,6 @@ class _YoutubeSearchAndDownloadWorkspaceState
           '0',
         );
 
-        // 🛠️ NLP GARBAGE FILTER INYECTADO (Homologado con el Laboratorio)
         final text = caption.text
             .replaceAll('\n', ' ')
             .replaceAll(RegExp(r'<[^>]*>'), '')
@@ -344,7 +638,6 @@ class _YoutubeSearchAndDownloadWorkspaceState
       );
       final hasPreIngestedLrc = File(lrcPath).existsSync();
 
-      // Omitir extracción si el usuario ya verificó el LRC en el Sandbox Pre-Ingesta
       if (!hasPreIngestedLrc) {
         setState(() => _statusText = "📝 Scraping LRCLIB (NLP)...");
         await ref.read(nlpWorkerProvider).processSingleFile(currentPath);
@@ -360,7 +653,6 @@ class _YoutubeSearchAndDownloadWorkspaceState
       final durationAfterMs = await _getAudioDurationMs(currentPath);
       final trimmedMs = durationBeforeMs - durationAfterMs;
 
-      // Compensación garantizada: Ajusta matemáticamente el LRC aprobado por el usuario
       if (trimmedMs > 50) {
         setState(
           () => _statusText =
@@ -469,204 +761,18 @@ class _YoutubeSearchAndDownloadWorkspaceState
             mixOutMs: existingMeta?.mixOutMs ?? calculatedMixOut,
           );
 
-      setState(() => _statusText = "🥁 Indexando Caché...");
-      await ref
-          .read(dspWorkerProvider)
-          .generateStaticBpmCache(Directory(currentPath).parent.path);
+      setState(() => _statusText = "🥁 Indexando Caché Estática...");
+
+      await Future.delayed(const Duration(milliseconds: 500));
+
+      final parentDir = Directory(currentPath).parent.path;
+      await ref.read(dspWorkerProvider).generateStaticBpmCache(parentDir);
 
       setState(() => _statusText = "✅ ¡Track inyectado y listo para Automix!");
     } catch (e) {
       setState(
         () => _statusText = "⚠️ Descargado, pero falló el Auto-Master: $e",
       );
-    }
-  }
-
-  Future<void> _executeDirectDownload(String targetUrl) async {
-    if (_selectedFolderPath.isEmpty) {
-      setState(
-        () => _statusText =
-            "🔴 ERROR: Selecciona una carpeta de destino primero.",
-      );
-      return;
-    }
-
-    setState(() {
-      _isProcessing = true;
-      _statusText = "Iniciando motor híbrido (VR Bypass + FFmpeg)...";
-    });
-
-    try {
-      final tempDir = Directory.systemTemp;
-      final exeDir = File(Platform.resolvedExecutable).parent.path;
-
-      // 🛠️ FIX ARQUITECTURA: Leer yt-dlp directamente desde la raíz
-      final ytdlpPath = Platform.isWindows
-          ? '$exeDir\\yt-dlp.exe'
-          : '$exeDir/yt-dlp';
-
-      if (!File(ytdlpPath).existsSync() &&
-          !Platform.isAndroid &&
-          !Platform.isIOS) {
-        throw Exception("VETO I/O: 'yt-dlp.exe' no encontrado en $exeDir.");
-      }
-      final downloadPath = _selectedFolderPath;
-
-      if (!Directory(downloadPath).existsSync()) {
-        Directory(downloadPath).createSync(recursive: true);
-      }
-
-      setState(
-        () => _statusText = "Resolviendo manifiesto para nombrar archivo...",
-      );
-      final videoId = VideoId(targetUrl);
-      final video = await _yt.videos.get(videoId);
-      final safeTitle = video.title
-          .replaceAll(RegExp(r'[\\/:*?"<>|]'), '')
-          .trim();
-
-      final tempRawPath =
-          '${tempDir.path}${Platform.pathSeparator}raw_vr_audio.m4a';
-      final tempMp3Path =
-          '${tempDir.path}${Platform.pathSeparator}$safeTitle.mp3';
-
-      if (File(tempRawPath).existsSync()) File(tempRawPath).deleteSync();
-
-      setState(
-        () => _statusText =
-            "Descargando stream crudo vía Android VR (Anti-Throttle)...",
-      );
-
-      // 🛠️ TRACKER DE DIAGNÓSTICO
-      debugPrint("\n================ TRACKER I/O ==================");
-      debugPrint("1. PLATFORM EXE: ${Platform.resolvedExecutable}");
-      debugPrint("2. YT-DLP PATH: $ytdlpPath");
-      debugPrint("3. YT-DLP EXISTE: ${File(ytdlpPath).existsSync()}");
-      try {
-        final fpeg = _getFfmpegPath();
-        debugPrint("4. FFMPEG PATH: $fpeg");
-        debugPrint("5. FFMPEG EXISTE: ${File(fpeg).existsSync()}");
-      } catch (e) {
-        debugPrint("4/5. FFMPEG ERROR: $e");
-      }
-      debugPrint("=================================================\n");
-      final process = await Process.start(ytdlpPath, [
-        '--rm-cache-dir',
-        '-f',
-        'bestaudio', // 🛠️ FIX: Ampliamos la compatibilidad de extracción
-        '--ffmpeg-location', _getFfmpegPath(),
-        // ❌ VETO: Eliminamos el cliente android_vr bloqueado por YouTube
-        '-o',
-        tempRawPath,
-        targetUrl,
-      ]);
-
-      String errorTrace = "";
-      process.stdout.listen((_) {});
-      process.stderr.listen((bytes) {
-        errorTrace += String.fromCharCodes(bytes);
-      });
-
-      final exitCode = await process.exitCode;
-
-      if (exitCode != 0 || !File(tempRawPath).existsSync()) {
-        throw Exception("Fallo CLI Extractor. Traza: $errorTrace");
-      }
-
-      setState(() => _statusText = "Transcodificando a MP3 Temp vía FFmpeg...");
-
-      final ffmpegProcess = await Process.run(_getFfmpegPath(), [
-        '-y',
-        '-i',
-        tempRawPath,
-        '-vn',
-        '-b:a',
-        '320k',
-        tempMp3Path,
-      ]);
-
-      if (ffmpegProcess.exitCode != 0) {
-        throw Exception(
-          "Fallo en motor FFmpeg: ${ffmpegProcess.stderr.toString()}",
-        );
-      }
-
-      try {
-        if (File(tempRawPath).existsSync()) File(tempRawPath).deleteSync();
-      } catch (_) {}
-
-      // 🛠️ FASE PRE-INGESTA: Scraping en Cuarentena
-      setState(
-        () => _statusText = "Extrayendo metadatos y letras preliminares...",
-      );
-      final tempLrcPath = tempMp3Path.replaceAll('.mp3', '.lrc');
-
-      await ref.read(nlpWorkerProvider).processSingleFile(tempMp3Path);
-      if (!File(tempLrcPath).existsSync()) {
-        await _extractLyricsFromYoutube(targetUrl, tempMp3Path);
-      }
-
-      String prelimLrc = "";
-      if (File(tempLrcPath).existsSync()) {
-        prelimLrc = File(tempLrcPath).readAsStringSync();
-      }
-
-      // Detener Pipeline y solicitar Veto de Usuario
-      if (!mounted) return;
-      final result = await showDialog<Map<String, String>>(
-        context: context,
-        barrierDismissible: false,
-        builder: (ctx) => PreIngestModal(
-          initialTitle: safeTitle,
-          initialLrc: prelimLrc,
-          audioPath: tempMp3Path, // 🛠️ INYECCIÓN: Pasamos el binario temporal
-        ),
-      );
-
-      if (result == null) {
-        // Descarte Absoluto
-        try {
-          if (File(tempMp3Path).existsSync()) File(tempMp3Path).deleteSync();
-          if (File(tempLrcPath).existsSync()) File(tempLrcPath).deleteSync();
-        } catch (_) {}
-        setState(() => _statusText = "Descarga descartada por el usuario.");
-        return;
-      }
-
-      // Volcado Atómico al Destino
-      setState(() => _statusText = "Inyectando archivo final al destino...");
-      final cleanName = result['fileName']!
-          .replaceAll(RegExp(r'[\\/:*?"<>|]'), '')
-          .trim();
-      final finalLrcContent = result['lrcContent']!;
-
-      final finalMp3Path =
-          '$downloadPath${Platform.pathSeparator}$cleanName.mp3';
-      final finalLrcPath =
-          '$downloadPath${Platform.pathSeparator}$cleanName.lrc';
-
-      File(tempMp3Path).renameSync(finalMp3Path);
-      if (finalLrcContent.trim().isNotEmpty) {
-        File(finalLrcPath).writeAsStringSync(finalLrcContent);
-      } else {
-        if (File(finalLrcPath).existsSync()) File(finalLrcPath).deleteSync();
-      }
-
-      _searchController.clear();
-
-      if (_autoMasterize) {
-        await _runSingleTrackPipeline(finalMp3Path);
-      } else {
-        setState(
-          () => _statusText =
-              "✅ ¡Extracción Completada! MP3 ($cleanName) masterizado en disco.",
-        );
-      }
-    } catch (e) {
-      debugPrint("🔴 Error en Pipeline Híbrido: $e");
-      setState(() => _statusText = "🔴 ERROR FATAL: $e");
-    } finally {
-      setState(() => _isProcessing = false);
     }
   }
 
@@ -832,6 +938,8 @@ class _YoutubeSearchAndDownloadWorkspaceState
           itemCount: _results.length,
           itemBuilder: (context, index) {
             final video = _results[index];
+            final bool isThisPreviewing = _previewingVideoId == video.id.value;
+
             return Container(
               margin: const EdgeInsets.only(bottom: 10),
               decoration: BoxDecoration(
@@ -857,18 +965,50 @@ class _YoutubeSearchAndDownloadWorkspaceState
                   "${video.author} • ${video.duration?.inMinutes ?? 0}:${((video.duration?.inSeconds ?? 0) % 60).toString().padLeft(2, '0')}",
                   style: const TextStyle(color: Colors.white54, fontSize: 12),
                 ),
-                trailing: ElevatedButton.icon(
-                  icon: const Icon(Icons.download),
-                  label: const Text("Ingestar"),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF00FFFF),
-                    foregroundColor: Colors.black,
-                  ),
-                  onPressed: _isProcessing
-                      ? null
-                      : () => _executeDirectDownload(
-                          'https://youtube.com/watch?v=${video.id.value}',
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // 🛠️ INYECCIÓN UI: Botón de Escucha Previa (Preview)
+                    if (_isPreviewLoading && isThisPreviewing)
+                      const SizedBox(
+                        width: 24,
+                        height: 24,
+                        child: CircularProgressIndicator(
+                          color: Color(0xFF39FF14),
+                          strokeWidth: 2,
                         ),
+                      )
+                    else
+                      IconButton(
+                        icon: Icon(
+                          isThisPreviewing && _isPreviewPlaying
+                              ? Icons.pause_circle_filled
+                              : Icons.play_circle_fill,
+                        ),
+                        color: const Color(0xFF39FF14),
+                        iconSize: 30,
+                        tooltip: isThisPreviewing && _isPreviewPlaying
+                            ? "Pausar"
+                            : "Escuchar Previo",
+                        onPressed: _isProcessing
+                            ? null
+                            : () => _togglePreview(video.id.value),
+                      ),
+                    const SizedBox(width: 10),
+                    ElevatedButton.icon(
+                      icon: const Icon(Icons.download),
+                      label: const Text("Ingestar"),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF00FFFF),
+                        foregroundColor: Colors.black,
+                      ),
+                      onPressed: _isProcessing
+                          ? null
+                          : () => _executeDirectDownload(
+                              'https://youtube.com/watch?v=${video.id.value}',
+                            ),
+                    ),
+                  ],
                 ),
               ),
             );
@@ -971,7 +1111,6 @@ class _PreIngestModalState extends State<PreIngestModal> {
   @override
   void initState() {
     super.initState();
-    // Limpieza agresiva de strings comerciales de YouTube
     String cleanTitle = widget.initialTitle
         .replaceAll(RegExp(r'\(.*?\)'), '')
         .replaceAll(RegExp(r'\[.*?\]'), '')
@@ -983,7 +1122,6 @@ class _PreIngestModalState extends State<PreIngestModal> {
     _titleController = TextEditingController(text: cleanTitle);
     _lrcController = TextEditingController(text: widget.initialLrc);
 
-    // 🛠️ INYECCIÓN: Inicialización del motor MediaKit en modo lectura
     _player = Player();
     _player.open(Media(widget.audioPath), play: false);
     _player.stream.playing.listen((playing) {
@@ -999,7 +1137,7 @@ class _PreIngestModalState extends State<PreIngestModal> {
   void dispose() {
     _titleController.dispose();
     _lrcController.dispose();
-    _player.dispose(); // 🛠️ LIBERACIÓN OBLIGATORIA DEL RECURSO I/O
+    _player.dispose();
     super.dispose();
   }
 
@@ -1022,7 +1160,6 @@ class _PreIngestModalState extends State<PreIngestModal> {
               fontWeight: FontWeight.bold,
             ),
           ),
-          // 🛠️ INYECCIÓN UI: Gatillo de reproducción directa
           IconButton(
             icon: Icon(
               _isPlaying ? Icons.pause_circle_filled : Icons.play_circle_fill,
@@ -1094,7 +1231,7 @@ class _PreIngestModalState extends State<PreIngestModal> {
       actions: [
         TextButton(
           onPressed: () {
-            _player.stop(); // Matar audio si el usuario descarta
+            _player.stop();
             Navigator.pop(context, null);
           },
           child: const Text(
@@ -1104,7 +1241,7 @@ class _PreIngestModalState extends State<PreIngestModal> {
         ),
         ElevatedButton.icon(
           onPressed: () {
-            _player.stop(); // Matar audio antes de la inyección I/O
+            _player.stop();
             Navigator.pop(context, {
               'fileName': _titleController.text.trim(),
               'lrcContent': _lrcController.text,

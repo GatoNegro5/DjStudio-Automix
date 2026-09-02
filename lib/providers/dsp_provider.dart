@@ -94,7 +94,6 @@ class DspWorker {
       '$directoryPath${Platform.pathSeparator}_dj_timestamps.tmp',
     );
 
-    // 🛠️ UI: Enganchamos el pipeline para ver el análisis espectral en tiempo real
     final pipe = ref.read(pipelineProvider.notifier);
 
     Map<String, double> cacheData = {};
@@ -123,7 +122,6 @@ class DspWorker {
       })) {
         if (entity is File) {
           final lowerPath = entity.path.toLowerCase();
-          // 🛠️ REGLA ESTRICTA: Filtrar únicamente MP3
           if (lowerPath.endsWith('.mp3')) {
             files.add(entity);
           }
@@ -135,28 +133,34 @@ class DspWorker {
 
     bool hasChanges = false;
     int totalFiles = files.length;
+    int currentIndex = 0;
 
     for (var file in files) {
+      // 🛠️ FIX ARQUITECTÓNICO: Token de interrupción atómica.
+      // Si el usuario presionó la X, rompemos el bucle instantáneamente.
+      if (ref.read(pipelineProvider).isAborted) {
+        debugPrint("🔴 [DSP Cache] Proceso abortado por el usuario.");
+        break;
+      }
+
+      currentIndex++;
       final filename = file.uri.pathSegments.last;
       final absolutePath = file.path;
       final modified = file.lastModifiedSync().millisecondsSinceEpoch;
 
       if (!timestamps.containsKey(absolutePath) ||
           timestamps[absolutePath] != modified) {
-        // 🛠️ FIX ARQUITECTURA: Bypass automático de BPM para Megamixes (>15MB)
         final double fileSizeMb = file.lengthSync() / (1024 * 1024);
-        if (fileSizeMb > 15.0) {
+        if (fileSizeMb > 26.0) {
           debugPrint(
             "🟢 [DSP Cache] Megamix detectado (${fileSizeMb.toStringAsFixed(2)}MB). Bypass de BPM aplicado a: $filename",
           );
           timestamps[absolutePath] = modified;
           hasChanges = true;
-          continue; // Saltamos la extracción Symphonia/ID3
+          continue;
         }
 
         debugPrint("⚙️ [DSP Cache] Escaneando binario ID3: $filename");
-
-        // 🛠️ RESPIRACIÓN OBLIGATORIA: Ceder hilo al Garbage Collector
         await Future.delayed(const Duration(milliseconds: 30));
 
         final bpm = await _extractBpmFromID3(absolutePath);
@@ -172,26 +176,25 @@ class DspWorker {
           if (match != null) {
             cacheData[absolutePath] = double.parse(match.group(1)!);
           } else {
-            // 🛠️ LLAMADA AL NUEVO MOTOR NATIVO: Zero-Touch con Symphonia FFT
             pipe.updateProgress(
-              totalFiles,
+              currentIndex,
               totalFiles,
               filename,
               "🧠 Analizando Espectro FFI...",
             );
 
             try {
-              final detectedBpm = await rust_dsp.autoDetectAndInjectBpm(
-                inputPath: absolutePath,
-              );
+              final detectedBpm = await rust_dsp
+                  .autoDetectAndInjectBpm(inputPath: absolutePath)
+                  .timeout(const Duration(seconds: 45));
+
               cacheData[absolutePath] = detectedBpm;
               debugPrint(
                 "✅ [FFT BPM] Matemático: $detectedBpm BPM -> $filename",
               );
             } catch (e) {
-              debugPrint("🔴 [FFT BPM FALLO]: $e -> $filename");
-              cacheData[absolutePath] =
-                  0.0; // Fallback extremo en caso de archivo corrupto
+              debugPrint("🔴 [FFT BPM FALLO / TIMEOUT]: $e -> $filename");
+              cacheData[absolutePath] = 0.0;
             }
           }
         }
@@ -201,15 +204,25 @@ class DspWorker {
       }
     }
 
-    if (hasChanges) {
+    // Solo guardamos si hubo cambios Y el proceso no fue abortado a la mitad
+    if (hasChanges && !ref.read(pipelineProvider).isAborted) {
       await tempCache.writeAsString(jsonEncode(cacheData));
       await tempCache.rename(cacheFile.path);
 
       await tempTime.writeAsString(jsonEncode(timestamps));
       await tempTime.rename(timeFile.path);
       debugPrint("🟢 [DSP Cache] Caché estático actualizado atómicamente.");
-    } else {
-      debugPrint("🟢 [DSP Cache] Sin cambios físicos. Caché mantenido.");
+    }
+
+    if (!ref.read(pipelineProvider).isAborted) {
+      pipe.updateProgress(
+        totalFiles,
+        totalFiles,
+        "✅ Finalizado",
+        "Indexación completada.",
+      );
+      await Future.delayed(const Duration(milliseconds: 1500));
+      pipe.reset();
     }
   }
 
@@ -395,21 +408,21 @@ class DspWorker {
           if (hasWatermark) continue;
         }
 
-        // 🛠️ BYPASS ABSOLUTO: Si pesa más de 15MB, saltamos al instante.
+        // 🛠️ BYPASS ABSOLUTO: Si pesa más de 26MB, saltamos al instante.
         // Cero FFI, Cero Cuarentena.
         final double fileSizeMb = file.lengthSync() / (1024 * 1024);
-        if (fileSizeMb > 15.0) {
+        if (fileSizeMb > 26.0) {
           debugPrint(
             "⏭️ [BYPASS] Pista ignorada por tamaño (${fileSizeMb.toStringAsFixed(2)}MB): $filename",
           );
-          pipe.updateProgress(i + 1, total, filename, "⏭️ Omitido: > 15MB");
+          pipe.updateProgress(i + 1, total, filename, "⏭️ Omitido: > 26MB");
           continue;
         }
 
         final int thermalDelay = sysCores <= 4 ? 1500 : 50;
         await Future.delayed(Duration(milliseconds: thermalDelay));
 
-        // Pistas estándar (< 15MB)
+        // Pistas estándar (< 26MB)
         final success = await rustTask(file.path, isMegamix: false).timeout(
           const Duration(seconds: 90),
           onTimeout: () {
@@ -444,7 +457,7 @@ class DspWorker {
       if (!isSealed) {
         final double fileSizeMb = file.lengthSync() / (1024 * 1024);
         // 🛠️ BYPASS ABSOLUTO TAMBIÉN EN PISTAS INDIVIDUALES
-        if (fileSizeMb > 15.0) return filePath;
+        if (fileSizeMb > 26.0) return filePath;
 
         await rust_dsp.processFullPipeline(
           inputPath: filePath,

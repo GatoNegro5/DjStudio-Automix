@@ -21,6 +21,7 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
 
   HttpServer? _server;
   bool _isSweeping = true;
+  bool _isManualSweeping = false; // 🛠️ INYECCIÓN: Estado de escaneo manual
 
   final Map<String, String> _discoveredDevices = {};
   String? _selectedDeviceIp;
@@ -377,18 +378,61 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
     }
   }
 
+  // 🛠️ INYECCIÓN: Radar concurrente para barrido en 600ms exactos
+  // 🛠️ INYECCIÓN: Radar concurrente por lotes (Evita Socket Exhaustion)
+  Future<void> _forceNetworkSweep() async {
+    if (_isManualSweeping) return;
+    setState(() {
+      _isManualSweeping = true;
+      _currentLog = "📡 Disparando escaneo de radar (Batches de 50 nodos)...";
+    });
+
+    final subnetParts = _localIp.split('.');
+    if (subnetParts.length == 4) {
+      final subnet = '${subnetParts[0]}.${subnetParts[1]}.${subnetParts[2]}';
+
+      // 🛠️ FIX ARQUITECTÓNICO: Escaneo en bloques de 50 para no colapsar la tabla de descriptores de red del OS
+      for (int i = 1; i <= 254; i += 50) {
+        if (!mounted) break;
+        List<Future<void>> batch = [];
+
+        for (int j = 0; j < 50; j++) {
+          int target = i + j;
+          if (target > 254) break;
+          final targetIp = '$subnet.$target';
+          if (targetIp == _localIp) continue;
+          batch.add(_probeDeviceHttp(targetIp));
+        }
+
+        await Future.wait(batch);
+      }
+    }
+
+    if (mounted) {
+      setState(() {
+        _isManualSweeping = false;
+        _currentLog =
+            "✅ Barrido de radar completado. Nodos activos: ${_discoveredDevices.length}";
+      });
+    }
+  }
+
   Future<void> _probeDeviceHttp(String targetIp) async {
     try {
       final response = await http
           .get(Uri.parse('http://$targetIp:$_restPort/api/whoami'))
-          .timeout(const Duration(milliseconds: 600));
+          // 🛠️ FIX: 1500ms para tolerar el Wake-up de la antena Wi-Fi del celular
+          .timeout(const Duration(milliseconds: 1500));
+
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         if (mounted && _discoveredDevices[targetIp] != data['name']) {
           setState(() => _discoveredDevices[targetIp] = data['name']);
         }
       }
-    } catch (_) {}
+    } catch (
+      _
+    ) {} // Los fallos por timeout son esperados y se ignoran en silencio
   }
 
   void _promptManualConnection() {
@@ -945,7 +989,7 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Container(
-              padding: const EdgeInsets.all(8),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
               color: Colors.black,
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -958,13 +1002,43 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
                       fontSize: 11,
                     ),
                   ),
-                  IconButton(
-                    icon: const Icon(
-                      Icons.add_link,
-                      color: Color(0xFF00FFFF),
-                      size: 18,
-                    ),
-                    onPressed: _promptManualConnection,
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (_isManualSweeping)
+                        const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(
+                            color: Color(0xFF39FF14),
+                            strokeWidth: 2,
+                          ),
+                        )
+                      else
+                        IconButton(
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                          icon: const Icon(
+                            Icons.search,
+                            color: Color(0xFF39FF14),
+                            size: 18,
+                          ),
+                          tooltip: "Radar: Escaneo Rápido de Red",
+                          onPressed: _forceNetworkSweep,
+                        ),
+                      const SizedBox(width: 12),
+                      IconButton(
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                        icon: const Icon(
+                          Icons.add_link,
+                          color: Color(0xFF00FFFF),
+                          size: 18,
+                        ),
+                        tooltip: "Conexión Manual",
+                        onPressed: _promptManualConnection,
+                      ),
+                    ],
                   ),
                 ],
               ),
