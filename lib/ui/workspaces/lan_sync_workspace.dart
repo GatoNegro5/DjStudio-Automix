@@ -21,7 +21,7 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
 
   HttpServer? _server;
   bool _isSweeping = true;
-  bool _isManualSweeping = false; // 🛠️ INYECCIÓN: Estado de escaneo manual
+  bool _isManualSweeping = false;
 
   final Map<String, String> _discoveredDevices = {};
   String? _selectedDeviceIp;
@@ -36,7 +36,9 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
   List<String> _remoteFolderPaths = [];
   final Set<String> _expandedRemotePaths = {};
   String? _selectedRemotePath;
-  List<String> _currentRemoteFiles = [];
+
+  // 🛠️ REFACTOR ESTRUCTURAL: Ahora soporta metadata estructurada JSON
+  List<dynamic> _currentRemoteFiles = [];
 
   bool _isTransferring = false;
   bool _cancelRequested = false;
@@ -68,6 +70,18 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
     _isSweeping = false;
     _server?.close(force: true);
     super.dispose();
+  }
+
+  // 🛠️ UTILIDADES DE FORMATEO (Explorador Profesional)
+  String _formatSize(int bytes) {
+    if (bytes < 1024) return "$bytes B";
+    if (bytes < 1024 * 1024) return "${(bytes / 1024).toStringAsFixed(1)} KB";
+    return "${(bytes / (1024 * 1024)).toStringAsFixed(2)} MB";
+  }
+
+  String _formatDate(int millis) {
+    final d = DateTime.fromMillisecondsSinceEpoch(millis);
+    return "${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')} ${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}";
   }
 
   String _getBaseMusicPath() {
@@ -206,6 +220,7 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
     });
   }
 
+  // 🛠️ API CORE: Endpoints de Aniquilación y Metadata Inyectados
   Future<void> _bootRestServer() async {
     try {
       final interfaces = await NetworkInterface.list(
@@ -270,21 +285,26 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
 
       if (request.method == 'GET' && path == '/api/files') {
         final targetPath = _resolvePath(query['dir'] ?? 'ROOT');
-        List<String> files = [];
+        List<Map<String, dynamic>> filesMetadata = [];
         final dir = Directory(targetPath);
+
         if (dir.existsSync()) {
           for (var f in dir.listSync(recursive: false).whereType<File>()) {
             final ext = f.path.toLowerCase();
             if (ext.endsWith('.mp3') ||
                 ext.endsWith('.lrc') ||
                 ext.endsWith('.txt')) {
-              files.add(f.uri.pathSegments.last);
+              filesMetadata.add({
+                "name": f.uri.pathSegments.last,
+                "size_bytes": f.lengthSync(),
+                "modified_ms": f.lastModifiedSync().millisecondsSinceEpoch,
+              });
             }
           }
         }
         request.response
           ..headers.contentType = ContentType.json
-          ..write(jsonEncode(files))
+          ..write(jsonEncode(filesMetadata))
           ..close();
         return;
       }
@@ -346,10 +366,48 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
         }
       }
 
+      if (request.method == 'DELETE' && path == '/api/delete') {
+        final targetPath = _resolvePath(query['target'] ?? '');
+        final type = query['type'];
+
+        if (type == 'file') {
+          final file = File(targetPath);
+          if (file.existsSync()) file.deleteSync();
+        } else if (type == 'folder') {
+          final dir = Directory(targetPath);
+          if (dir.existsSync()) dir.deleteSync(recursive: true);
+        }
+
+        request.response
+          ..statusCode = 200
+          ..write(jsonEncode({"status": "DELETED"}))
+          ..close();
+        _scanLocalMusicFolders();
+        return;
+      }
+
+      if (request.method == 'DELETE' && path == '/api/wipe') {
+        final baseMusicPath = _getBaseMusicPath();
+        final rootDir = Directory(baseMusicPath);
+
+        if (rootDir.existsSync()) {
+          rootDir.deleteSync(recursive: true);
+          rootDir.createSync(recursive: true);
+        }
+
+        request.response
+          ..statusCode = 200
+          ..write(jsonEncode({"status": "WIPED_CLEAN"}))
+          ..close();
+        _scanLocalMusicFolders();
+        return;
+      }
+
       request.response
         ..statusCode = 404
         ..close();
     } catch (e) {
+      debugPrint("🔴 [REST API FATAL ERROR]: $e");
       request.response
         ..statusCode = 500
         ..close();
@@ -362,36 +420,6 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
     final subnet = '${subnetParts[0]}.${subnetParts[1]}.${subnetParts[2]}';
 
     while (mounted && _isSweeping) {
-      for (int i = 1; i <= 254; i += 20) {
-        if (!mounted) break;
-        List<Future> batch = [];
-        for (int j = 0; j < 20; j++) {
-          int lastOctet = i + j;
-          if (lastOctet > 254) break;
-          final targetIp = '$subnet.$lastOctet';
-          if (targetIp == _localIp) continue;
-          batch.add(_probeDeviceHttp(targetIp));
-        }
-        await Future.wait(batch);
-      }
-      await Future.delayed(const Duration(seconds: 5));
-    }
-  }
-
-  // 🛠️ INYECCIÓN: Radar concurrente para barrido en 600ms exactos
-  // 🛠️ INYECCIÓN: Radar concurrente por lotes (Evita Socket Exhaustion)
-  Future<void> _forceNetworkSweep() async {
-    if (_isManualSweeping) return;
-    setState(() {
-      _isManualSweeping = true;
-      _currentLog = "📡 Disparando escaneo de radar (Batches de 50 nodos)...";
-    });
-
-    final subnetParts = _localIp.split('.');
-    if (subnetParts.length == 4) {
-      final subnet = '${subnetParts[0]}.${subnetParts[1]}.${subnetParts[2]}';
-
-      // 🛠️ FIX ARQUITECTÓNICO: Escaneo en bloques de 50 para no colapsar la tabla de descriptores de red del OS
       for (int i = 1; i <= 254; i += 50) {
         if (!mounted) break;
         List<Future<void>> batch = [];
@@ -404,6 +432,32 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
           batch.add(_probeDeviceHttp(targetIp));
         }
 
+        await Future.wait(batch);
+      }
+      await Future.delayed(const Duration(seconds: 5));
+    }
+  }
+
+  Future<void> _forceNetworkSweep() async {
+    if (_isManualSweeping) return;
+    setState(() {
+      _isManualSweeping = true;
+      _currentLog = "📡 Disparando escaneo de radar (Batches de 50 nodos)...";
+    });
+
+    final subnetParts = _localIp.split('.');
+    if (subnetParts.length == 4) {
+      final subnet = '${subnetParts[0]}.${subnetParts[1]}.${subnetParts[2]}';
+      for (int i = 1; i <= 254; i += 50) {
+        if (!mounted) break;
+        List<Future<void>> batch = [];
+        for (int j = 0; j < 50; j++) {
+          int target = i + j;
+          if (target > 254) break;
+          final targetIp = '$subnet.$target';
+          if (targetIp == _localIp) continue;
+          batch.add(_probeDeviceHttp(targetIp));
+        }
         await Future.wait(batch);
       }
     }
@@ -421,7 +475,6 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
     try {
       final response = await http
           .get(Uri.parse('http://$targetIp:$_restPort/api/whoami'))
-          // 🛠️ FIX: 1500ms para tolerar el Wake-up de la antena Wi-Fi del celular
           .timeout(const Duration(milliseconds: 1500));
 
       if (response.statusCode == 200) {
@@ -430,9 +483,7 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
           setState(() => _discoveredDevices[targetIp] = data['name']);
         }
       }
-    } catch (
-      _
-    ) {} // Los fallos por timeout son esperados y se ignoran en silencio
+    } catch (_) {}
   }
 
   void _promptManualConnection() {
@@ -523,7 +574,7 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
   Future<void> _fetchRemoteFiles(String targetIp, String remotePath) async {
     setState(() {
       _currentRemoteFiles = [];
-      _currentLog = "📡 Solicitando archivos de $remotePath...";
+      _currentLog = "📡 Solicitando metadata estructurada de $remotePath...";
     });
     try {
       final response = await http
@@ -534,14 +585,18 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
           )
           .timeout(const Duration(seconds: 4));
       if (response.statusCode == 200) {
+        // 🛠️ REFACTOR ESTRUCTURAL: Parseo del JSON de Alto Nivel
         final List<dynamic> jsonList = jsonDecode(response.body);
-        final files = jsonList.map((e) => e.toString()).toList();
         if (mounted) {
           setState(() {
-            files.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
-            _currentRemoteFiles = files;
+            jsonList.sort(
+              (a, b) => a['name'].toString().toLowerCase().compareTo(
+                b['name'].toString().toLowerCase(),
+              ),
+            );
+            _currentRemoteFiles = jsonList;
             _currentLog =
-                "✅ ${files.length} archivos obtenidos de $remotePath.";
+                "✅ ${jsonList.length} archivos obtenidos con metadata de $remotePath.";
           });
         }
       } else {
@@ -549,6 +604,130 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
       }
     } catch (e) {
       setState(() => _currentLog = "🔴 TRACKER EXCEPTION (Files): $e");
+    }
+  }
+
+  // 🛠️ CONTROLADORES CRUD LOCAL Y REMOTO
+  void _deleteLocalFile(File file) {
+    try {
+      file.deleteSync();
+      _loadFilesInFolder(_selectedLocalPath!);
+      setState(() => _currentLog = "✅ Archivo local eliminado.");
+    } catch (e) {
+      setState(() => _currentLog = "🔴 Error al borrar local: $e");
+    }
+  }
+
+  Future<void> _deleteRemoteFile(String fileName) async {
+    if (_selectedDeviceIp == null || _selectedRemotePath == null) return;
+    try {
+      setState(
+        () => _currentLog = "🗑️ Solicitando borrado remoto de $fileName...",
+      );
+      final response = await http
+          .delete(
+            Uri.parse(
+              'http://$_selectedDeviceIp:$_restPort/api/delete?target=${Uri.encodeComponent("$_selectedRemotePath/$fileName")}&type=file',
+            ),
+          )
+          .timeout(const Duration(seconds: 4));
+
+      if (response.statusCode == 200) {
+        _fetchRemoteFiles(_selectedDeviceIp!, _selectedRemotePath!);
+      }
+    } catch (e) {
+      setState(() => _currentLog = "🔴 ERROR de red en borrado: $e");
+    }
+  }
+
+  void _promptWipeConfirmation() {
+    if (_selectedDeviceIp == null) return;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A0505), // Tono alerta
+        shape: RoundedRectangleBorder(
+          side: const BorderSide(color: Colors.redAccent, width: 2),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        title: const Row(
+          children: [
+            Icon(
+              Icons.warning_amber_rounded,
+              color: Colors.redAccent,
+              size: 28,
+            ),
+            SizedBox(width: 10),
+            Text(
+              "WIPE & PUSH ATÓMICO",
+              style: TextStyle(
+                color: Colors.redAccent,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
+        content: Text(
+          "⚠️ ESTA ACCIÓN ES DESTRUCTIVA.\n\n"
+          "Se aniquilará por completo el directorio Music del nodo [$_selectedDeviceName] "
+          "y será reemplazado por un clon exacto de tu Carpeta Local Origen.\n\n"
+          "¿Proceder con la sobreescritura total?",
+          style: const TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text(
+              "CANCELAR",
+              style: TextStyle(color: Colors.white54),
+            ),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.redAccent,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () {
+              Navigator.pop(ctx);
+              _executeRemoteWipe();
+            },
+            child: const Text("ANIQUILAR Y REEMPLAZAR"),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _executeRemoteWipe() async {
+    setState(() {
+      _isTransferring = true;
+      _currentLog = "☢️ EJECUTANDO HARD RESET DEL FILESYSTEM REMOTO...";
+    });
+
+    try {
+      final response = await http
+          .delete(Uri.parse('http://$_selectedDeviceIp:$_restPort/api/wipe'))
+          .timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        setState(() {
+          _currentLog = "✅ WIPE COMPLETADO. Iniciando clonación PUSH masiva...";
+        });
+        // Dispara la clonación asumiendo modo directorio completo
+        _isPushMode = true;
+        _executeTransferJob(true);
+      } else {
+        setState(() {
+          _isTransferring = false;
+          _currentLog = "🔴 ERROR EN WIPE: Código ${response.statusCode}";
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _isTransferring = false;
+        _currentLog = "🔴 FALLO DE RED EN WIPE: $e";
+      });
     }
   }
 
@@ -653,7 +832,8 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
           _transferProgress = (_currentFileIndex - 1) / _totalFiles;
         });
 
-        if (_currentRemoteFiles.contains(fileName)) {
+        // 🛠️ FIX ARQUITECTÓNICO: Evaluación contra JSON Keys
+        if (_currentRemoteFiles.any((f) => f['name'] == fileName)) {
           if (!_overwriteExisting) {
             setState(() => _currentLog = "⏩ SALTADO (Ya existe): $fileName");
             _skippedTransfers++;
@@ -692,7 +872,8 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
       final localDir = Directory(_selectedLocalPath!);
       for (int i = 0; i < files.length; i++) {
         if (_cancelRequested) break;
-        final fileName = files[i];
+        // 🛠️ FIX ARQUITECTÓNICO: Extraer nombre del JSON
+        final fileName = files[i]['name'];
 
         setState(() {
           _currentFileIndex = i + 1;
@@ -913,6 +1094,7 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
     );
   }
 
+  // 🛠️ REFACTOR ESTRUCTURAL: Explorador Local Avanzado (Metadata + Menú Contextual)
   Widget _buildLocalFiles() {
     return Material(
       color: const Color(0xFF101010),
@@ -947,9 +1129,15 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
               itemBuilder: (context, index) {
                 final file = _currentLocalFiles[index];
                 final isSelected = _selectedFilesToTransfer.contains(file.path);
+
+                final size = _formatSize(file.lengthSync());
+                final date = _formatDate(
+                  file.lastModifiedSync().millisecondsSinceEpoch,
+                );
+
                 return ListTile(
                   dense: true,
-                  visualDensity: const VisualDensity(vertical: -4),
+                  visualDensity: const VisualDensity(vertical: 2),
                   leading: Checkbox(
                     value: isSelected,
                     activeColor: const Color(0xFF00FFFF),
@@ -962,10 +1150,47 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
                   title: Text(
                     file.uri.pathSegments.last,
                     style: TextStyle(
-                      color: isSelected ? Colors.white : Colors.white54,
-                      fontSize: 12,
+                      color: isSelected ? Colors.white : Colors.white70,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
                     ),
                     maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  subtitle: Text(
+                    "$date  •  $size",
+                    style: const TextStyle(color: Colors.white38, fontSize: 10),
+                  ),
+                  trailing: PopupMenuButton<String>(
+                    icon: const Icon(
+                      Icons.more_vert,
+                      color: Colors.white54,
+                      size: 18,
+                    ),
+                    color: const Color(0xFF1A1A1A),
+                    onSelected: (value) {
+                      if (value == 'delete') _deleteLocalFile(file);
+                    },
+                    itemBuilder: (BuildContext context) =>
+                        <PopupMenuEntry<String>>[
+                          const PopupMenuItem<String>(
+                            value: 'delete',
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.delete_outline,
+                                  color: Colors.redAccent,
+                                  size: 18,
+                                ),
+                                SizedBox(width: 10),
+                                Text(
+                                  "Eliminar",
+                                  style: TextStyle(color: Colors.white),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
                   ),
                   onTap: () => setState(
                     () => isSelected
@@ -1175,6 +1400,7 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
     );
   }
 
+  // 🛠️ REFACTOR ESTRUCTURAL: Explorador Remoto Avanzado (JSON + Menú Contextual)
   Widget _buildRemoteFiles() {
     return Material(
       color: const Color(0xFF101010),
@@ -1183,28 +1409,105 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
           Container(
             padding: const EdgeInsets.all(12),
             color: const Color(0xFF1A1A1A),
-            child: Text(
-              "${_currentRemoteFiles.length} remotos",
-              style: const TextStyle(color: Color(0xFF39FF14), fontSize: 10),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  "${_currentRemoteFiles.length} remotos",
+                  style: const TextStyle(
+                    color: Color(0xFF39FF14),
+                    fontSize: 10,
+                  ),
+                ),
+                // Botón Auxiliar de Wipe Integrado en la Vista Remota
+                if (_selectedDeviceIp != null)
+                  InkWell(
+                    onTap: _promptWipeConfirmation,
+                    child: const Row(
+                      children: [
+                        Icon(
+                          Icons.warning_amber_rounded,
+                          color: Colors.redAccent,
+                          size: 14,
+                        ),
+                        SizedBox(width: 4),
+                        Text(
+                          "Wipe Device",
+                          style: TextStyle(
+                            color: Colors.redAccent,
+                            fontSize: 10,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
             ),
           ),
           Expanded(
             child: ListView.builder(
               itemCount: _currentRemoteFiles.length,
-              itemBuilder: (context, index) => ListTile(
-                dense: true,
-                visualDensity: const VisualDensity(vertical: -4),
-                leading: const Icon(
-                  Icons.audiotrack,
-                  color: Colors.white24,
-                  size: 16,
-                ),
-                title: Text(
-                  _currentRemoteFiles[index],
-                  style: const TextStyle(color: Colors.white54, fontSize: 12),
-                  maxLines: 1,
-                ),
-              ),
+              itemBuilder: (context, index) {
+                final fileMeta = _currentRemoteFiles[index];
+                final fileName = fileMeta['name'];
+                final size = _formatSize(fileMeta['size_bytes']);
+                final date = _formatDate(fileMeta['modified_ms']);
+
+                return ListTile(
+                  dense: true,
+                  visualDensity: const VisualDensity(vertical: 2),
+                  leading: const Icon(
+                    Icons.audiotrack,
+                    color: Color(0xFF39FF14),
+                    size: 20,
+                  ),
+                  title: Text(
+                    fileName,
+                    style: const TextStyle(
+                      color: Colors.white70,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  subtitle: Text(
+                    "$date  •  $size",
+                    style: const TextStyle(color: Colors.white38, fontSize: 10),
+                  ),
+                  trailing: PopupMenuButton<String>(
+                    icon: const Icon(
+                      Icons.more_vert,
+                      color: Colors.white54,
+                      size: 18,
+                    ),
+                    color: const Color(0xFF1A1A1A),
+                    onSelected: (value) {
+                      if (value == 'delete') _deleteRemoteFile(fileName);
+                    },
+                    itemBuilder: (BuildContext context) =>
+                        <PopupMenuEntry<String>>[
+                          const PopupMenuItem<String>(
+                            value: 'delete',
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.delete_outline,
+                                  color: Colors.redAccent,
+                                  size: 18,
+                                ),
+                                SizedBox(width: 10),
+                                Text(
+                                  "Eliminar Remoto",
+                                  style: TextStyle(color: Colors.white),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                  ),
+                );
+              },
             ),
           ),
         ],
@@ -1370,6 +1673,27 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
                         ),
                         selected: !_isPushMode,
                         onSelected: (v) => setState(() => _isPushMode = false),
+                      ),
+                      const SizedBox(width: 25),
+                      // 🛠️ BOTÓN DE WIPE RÁPIDO
+                      ElevatedButton.icon(
+                        onPressed: _selectedDeviceIp != null && !_isTransferring
+                            ? _promptWipeConfirmation
+                            : null,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.transparent,
+                          foregroundColor: Colors.redAccent,
+                          side: const BorderSide(color: Colors.redAccent),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 8,
+                          ),
+                        ),
+                        icon: const Icon(Icons.delete_sweep, size: 16),
+                        label: const Text(
+                          "WIPE & PUSH",
+                          style: TextStyle(fontSize: 11),
+                        ),
                       ),
                     ],
                   ),
