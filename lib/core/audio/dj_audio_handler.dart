@@ -8,8 +8,9 @@ Future<void> initGlobalAudioService() async {
     config: const AudioServiceConfig(
       androidNotificationChannelId: 'com.djstudio.player.channel.audio',
       androidNotificationChannelName: 'DjStudio Playback',
-      androidNotificationOngoing: true,
-      // 🛠️ CLAVE PARA DJs: El servicio NO debe morir si se pausa la música.
+      // 🛠️ FIX ARQUITECTÓNICO: Se elimina androidNotificationOngoing.
+      // Al mantener StopForegroundOnPause en false, la notificación
+      // asume el estado persistente automáticamente sin romper la aserción de compilación.
       androidStopForegroundOnPause: false,
     ),
   );
