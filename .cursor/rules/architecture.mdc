@@ -1,0 +1,64 @@
+---
+description: Mapa de módulos, propósito de cada workspace y aislamiento de estado Riverpod
+alwaysApply: true
+---
+
+# Arquitectura de DJ Studio
+
+Las rutas del `IndexedStack` en `lib/main.dart` son, en orden: 0 Automix · 1 Auto-Master ·
+2 YT Descarga · 3 Laboratorio · 4 LAN Sync · 5 Live DJ · 6 Karaoke.
+
+## Mapa de módulos
+
+### Automix — `automix_workspace.dart` / `automix_provider.dart`
+Bucle infinito. Evasión de silencios (Zero-Start). Sincronización semántica LRC (LRCLib) con
+Sync Global y 2-MED.
+
+*Propósito*: escuchar la canción completa leyendo la letra. La lectura arranca a los 10 s de
+la pista, excepto en la primera. Cerca de los 20 s se prepara la mezcla hacia la segunda.
+
+### Live DJ — `livedj_workspace.dart` / `livedj_provider.dart`
+Cola FIFO destructiva (Cartridge). Motor Smart Routing (ADN DJ): escanea el nombre y fuerza el
+crossfade matemático entre el 65 % y el 80 % de la pista (Remix, EDM, Tropical).
+
+*Propósito*: fiestas y reuniones. No se escucha la pista entera ni se canta; es más mezcla que
+música, así que el empate entre pistas debe ser exacto.
+
+### Karaoke — `karaoke_workspace.dart`
+*Propósito*: el invitado escanea un QR desde el móvil, entra a una web y elige de mi lista. Una
+app instalada en el TV Google reproduce el MP3 sin voz junto con la letra.
+
+### Auto-Master — `dsp_workspace.dart`
+*Propósito*: masterizar y mejorar el MP3 — calcular BPM, obtener la letra, eliminar ruido y
+separar la voz (esto último en Python).
+
+### Laboratorio — `lab_workspace.dart`
+Aísla pistas anómalas en cuarentena (`quarantine_registry.json`) sin dejar fantasmas en la
+memoria de Riverpod.
+
+*Propósito*: corregir los errores de los MP3.
+
+### YT Descarga — `yt_workspace.dart`
+Ingesta híbrida Anti-DRM: subproceso Python yt-dlp → FFmpeg MP3 320 kbps.
+
+*Propósito*: descargar canciones nuevas de YouTube.
+
+### LAN Sync — `lan_sync_workspace.dart`
+Túnel TCP crudo (puerto 8080). Virtual Flat-Tree para aplanar directorios profundos en memoria
+y evitar `UnsupportedError` en Flutter.
+
+*Propósito*: pasar los archivos ya masterizados de la laptop al móvil u otro dispositivo en la
+misma WiFi.
+
+## Aislamiento de estado (Riverpod)
+
+Aislamiento estricto de hilos: prohibido mezclar lógica visual o de listas con el hilo acústico.
+
+| Ámbito | Hilo acústico | Hilo visual |
+|---|---|---|
+| Automix | `automixProvider` (Audio/FFI/DAWN) | `automixQueueProvider` (UI/Listas) |
+| Live DJ | `liveDjProvider` (Audio/ADN) | su cola visual |
+
+Globales: `playedTracksProvider` (Session JSON) · `bpmCacheProvider` (caché nutrido por
+`dspWorkerProvider` en Rust) · `wasapiRecordProvider` (interceptor Master Out
+dshow/avfoundation directo a FFmpeg).

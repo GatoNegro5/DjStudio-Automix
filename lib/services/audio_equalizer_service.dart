@@ -1,7 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/hal/platform_strategy.dart';
-import '../providers/player_provider.dart';
-import '../providers/broadcast_provider.dart';
+import '../providers/automix_provider.dart';
+import '../providers/livedj_provider.dart';
 
 class EqualizerPreset {
   final String name;
@@ -79,6 +79,11 @@ class AudioEqualizerService {
     if (gains.length != 10) return;
 
     final String halFilter = MixStrategyFactory.getStrategy().hifiFilter;
+
+    // 🎛️ INYECCIÓN DSP: Normalizador Dinámico de Nivel de Estudio (Auto-Gain)
+    // f=150 (ventana rápida), g=11 (ganancia máxima), p=0.9 (protección de transitorios/kicks)
+    const String autoGainFilter = "dynaudnorm=f=150:g=11:p=0.9";
+
     final List<String> eqFilters = [];
 
     if (enabled) {
@@ -95,13 +100,16 @@ class AudioEqualizerService {
       }
     }
 
-    currentBaseFilter = eqFilters.isNotEmpty
-        ? '$halFilter,${eqFilters.join(',')}'
-        : halFilter;
+    // 🛡️ ENSAMBLAJE DEL PIPELINE: HAL -> Auto-Gain -> Ecualizador
+    currentBaseFilter = '$halFilter,$autoGainFilter';
+    if (eqFilters.isNotEmpty) {
+      currentBaseFilter += ',${eqFilters.join(',')}';
+    }
 
+    // Aplicación atómica a todos los decks en vivo (DJ y liveDj)
     final activePlayers = [
-      ...ref.read(playerProvider.notifier).deckPlayers,
-      ...ref.read(broadcastProvider.notifier).deckPlayers,
+      ...ref.read(automixProvider.notifier).deckPlayers,
+      ...ref.read(liveDjProvider.notifier).deckPlayers,
     ];
 
     for (var player in activePlayers) {

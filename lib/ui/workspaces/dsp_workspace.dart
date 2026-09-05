@@ -12,6 +12,37 @@ import '../../providers/nlp_provider.dart';
 import '../../providers/dsp_provider.dart';
 import '../../providers/db_provider.dart';
 
+// ==========================================
+// 🧠 ESTADO GLOBAL DEL MOTOR DE IA
+// ==========================================
+class AiEngineState {
+  final bool isRunning;
+  final String status;
+  AiEngineState({this.isRunning = false, this.status = ''});
+}
+
+class AiEngineNotifier extends StateNotifier<AiEngineState> {
+  AiEngineNotifier() : super(AiEngineState());
+
+  void start(String path) {
+    state = AiEngineState(isRunning: true, status: 'Iniciando Motor IA...');
+  }
+
+  void updateStatus(String status) {
+    state = AiEngineState(isRunning: true, status: status);
+  }
+
+  void stop() {
+    state = AiEngineState(isRunning: false, status: '');
+  }
+}
+
+final aiEngineProvider = StateNotifierProvider<AiEngineNotifier, AiEngineState>(
+  (ref) {
+    return AiEngineNotifier();
+  },
+);
+
 class DspNlpWorkspace extends ConsumerWidget {
   const DspNlpWorkspace({super.key});
 
@@ -319,6 +350,35 @@ class DspNlpWorkspace extends ConsumerWidget {
     );
   }
 
+  void _executeKaraokeBatch(
+    BuildContext context,
+    WidgetRef ref,
+    String targetPath,
+  ) {
+    if (Platform.isAndroid || Platform.isIOS) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("🔴 VETO TÉCNICO: La IA de Karaoke requiere PC/Mac."),
+          backgroundColor: Colors.redAccent,
+        ),
+      );
+      return;
+    }
+    if (targetPath.isEmpty) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          "🤖 Motor IA Activado. Puedes navegar a otros módulos mientras trabaja.",
+        ),
+        backgroundColor: Color(0xFFB026FF),
+      ),
+    );
+
+    // Dispara el Job masivo hacia Python pasándole el puente de la UI
+    KaraokeAIEngine.spawnBackgroundExtraction(targetPath, ref: ref);
+  }
+
   Future<void> _executeUniversalPipeline(
     BuildContext context,
     WidgetRef ref,
@@ -410,15 +470,11 @@ class DspNlpWorkspace extends ConsumerWidget {
       final dir = Directory(targetPath);
       if (!dir.existsSync()) return;
 
-      final files = dir
-          .listSync(recursive: true)
-          .whereType<File>()
-          .where(
-            (f) =>
-                f.path.toLowerCase().endsWith('.mp3') ||
-                f.path.toLowerCase().endsWith('.webm'),
-          )
-          .toList();
+      final files = dir.listSync(recursive: true).whereType<File>().where((f) {
+        final lowerPath = f.path.toLowerCase();
+        return (lowerPath.endsWith('.mp3') && !lowerPath.endsWith('_k.mp3')) ||
+            lowerPath.endsWith('.webm');
+      }).toList();
 
       int total = files.length;
       if (total == 0) return;
@@ -460,6 +516,11 @@ class DspNlpWorkspace extends ConsumerWidget {
           if (checkAbort()) break;
 
           final cleanName = currentPath.split(Platform.pathSeparator).last;
+
+          final double fileSizeMB =
+              File(currentPath).lengthSync() / (1024 * 1024);
+          final bool isHeavyMix = fileSizeMB > 16.0;
+
           int durationAfterMs = 0;
 
           if (!isMobileOS) {
@@ -471,7 +532,6 @@ class DspNlpWorkspace extends ConsumerWidget {
               "🪄 Mejorando calidad de sonido...",
             );
 
-            // 🛠️ INYECCIÓN: Llamada a la FFI Nativa en lugar de ffprobe shell
             final durationBeforeMs = (await rust_dsp.getAudioDurationMs(
               inputPath: currentPath,
             )).toInt();
@@ -487,7 +547,6 @@ class DspNlpWorkspace extends ConsumerWidget {
                 );
             if (checkAbort()) break;
 
-            // 🛠️ INYECCIÓN: FFI Nativa para comprobar duración post-proceso
             durationAfterMs = (await rust_dsp.getAudioDurationMs(
               inputPath: currentPath,
             )).toInt();
@@ -530,24 +589,34 @@ class DspNlpWorkspace extends ConsumerWidget {
           final finalName = currentPath.split(Platform.pathSeparator).last;
 
           currentStage = "NLP_LYRICS";
-          pipe.updateProgress(
-            i + 1,
-            total,
-            finalName,
-            "🎤 Descargando letras...",
-          );
-          try {
-            await ref
-                .read(nlpWorkerProvider)
-                .processSingleFile(currentPath)
-                .timeout(
-                  const Duration(seconds: 60),
-                  onTimeout: () => throw Exception("Timeout de Red LRCLib."),
-                );
-          } catch (e) {
-            debugPrint(
-              "⚠️ [NLP Aislando Error] Letra no encontrada para $finalName: $e",
+          if (isHeavyMix) {
+            pipe.updateProgress(
+              i + 1,
+              total,
+              finalName,
+              "⏭️ Mix Pesado (${fileSizeMB.toStringAsFixed(1)}MB). Omitiendo NLP...",
             );
+            await Future.delayed(const Duration(milliseconds: 500));
+          } else {
+            pipe.updateProgress(
+              i + 1,
+              total,
+              finalName,
+              "🎤 Descargando letras...",
+            );
+            try {
+              await ref
+                  .read(nlpWorkerProvider)
+                  .processSingleFile(currentPath)
+                  .timeout(
+                    const Duration(seconds: 60),
+                    onTimeout: () => throw Exception("Timeout de Red LRCLib."),
+                  );
+            } catch (e) {
+              debugPrint(
+                "⚠️ [NLP Aislando Error] Letra no encontrada para $finalName: $e",
+              );
+            }
           }
           if (checkAbort()) break;
 
@@ -592,7 +661,7 @@ class DspNlpWorkspace extends ConsumerWidget {
               ? durationAfterMs
               : (await rust_dsp.getAudioDurationMs(
                   inputPath: currentPath,
-                )).toInt(); // 🛠️ FIX FFI Nativa
+                )).toInt();
 
           int calculatedCueIn =
               (rawGenre.contains('electro') || rawGenre.contains('rock'))
@@ -1009,13 +1078,15 @@ class DspNlpWorkspace extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final dirState = ref.watch(directoryProvider);
     final pipeState = ref.watch(pipelineProvider);
-    final bool isBusy = !pipeState.isIdle;
+    final aiState = ref.watch(aiEngineProvider); // 🧠 Escucha a la IA
+
+    // 🛠️ BLOQUEO TOTAL: Si el DSP o la IA están trabajando, bloquea interacciones en esta ruta
+    final bool isBusy = !pipeState.isIdle || aiState.isRunning;
 
     return LayoutBuilder(
       builder: (context, constraints) {
         final bool isMobileLandscape = constraints.maxHeight < 500;
-        final bool isMobileOS =
-            Platform.isAndroid || Platform.isIOS; // 🛠️ Detección de OS
+        final bool isMobileOS = Platform.isAndroid || Platform.isIOS;
 
         final Widget directoryPanel = Container(
           padding: EdgeInsets.all(isMobileLandscape ? 10 : 15),
@@ -1079,7 +1150,7 @@ class DspNlpWorkspace extends ConsumerWidget {
                     side: const BorderSide(color: Color(0xFF39FF14)),
                   ),
                 ),
-              if (isBusy)
+              if (!pipeState.isIdle)
                 Expanded(
                   child: Row(
                     children: [
@@ -1131,7 +1202,6 @@ class DspNlpWorkspace extends ConsumerWidget {
           ),
         );
 
-        // 🛠️ INYECCIÓN: Tarjetas dinámicas según capacidades del OS (Mobile vs Desktop)
         final List<Widget> cardNodes = [];
 
         if (!isMobileOS) {
@@ -1173,6 +1243,24 @@ class DspNlpWorkspace extends ConsumerWidget {
         }
 
         cardNodes.addAll([
+          // 🛠️ TARJETA MUTANTE: Se transforma y muestra el porcentaje al activarse
+          _buildActionCard(
+            title: aiState.isRunning
+                ? "IA TRABAJANDO..."
+                : "EXTRACCIÓN KARAOKE IA",
+            description: aiState.isRunning
+                ? aiState.status
+                : "Procesa la carpeta aislando las voces (Crea pistas _K.mp3) en segundo plano (Requiere PC).",
+            icon: aiState.isRunning ? Icons.memory : Icons.mic_external_off,
+            color: aiState.isRunning
+                ? Colors.orangeAccent
+                : const Color(0xFFB026FF),
+            isPrimary: false,
+            onTap: (dirState.currentPath.isEmpty || isBusy)
+                ? null
+                : () =>
+                      _executeKaraokeBatch(context, ref, dirState.currentPath),
+          ),
           _buildActionCard(
             title: "INFORME DE AUDITORÍA",
             description:
@@ -1265,6 +1353,8 @@ class DspNlpWorkspace extends ConsumerWidget {
                     Expanded(flex: 2, child: cardNodes[1]),
                     const SizedBox(width: 15),
                     Expanded(flex: 2, child: cardNodes[2]),
+                    const SizedBox(width: 15),
+                    Expanded(flex: 2, child: cardNodes[3]),
                   ],
                 ),
               ),
@@ -1800,6 +1890,71 @@ class DspNlpWorkspace extends ConsumerWidget {
       debugPrint("🔴 [AUDIT ERROR]: $e");
     } finally {
       pipe.reset();
+    }
+  }
+}
+
+class KaraokeAIEngine {
+  static void spawnBackgroundExtraction(String path, {WidgetRef? ref}) {
+    final isFile = File(path).existsSync();
+    final isDir = Directory(path).existsSync();
+
+    if (!isFile && !isDir) return;
+    if (isFile && !path.toLowerCase().endsWith('.mp3')) return;
+
+    if (ref != null && ref.read(aiEngineProvider).isRunning) {
+      debugPrint("⚠️ [AI ENGINE] Veto: Ya hay un proceso neuronal corriendo.");
+      return;
+    }
+
+    ref?.read(aiEngineProvider.notifier).start(path);
+    debugPrint("🤖 [AI ENGINE] Lanzando subproceso Demucs en: $path");
+
+    try {
+      Process.start('python', [
+        'C:\\Python\\djstudio_player\\karaoke_ai_processor.py',
+        path,
+      ], runInShell: true).then((Process process) {
+        const decoder = Utf8Decoder(allowMalformed: true);
+        String currentTrack = "";
+
+        process.stdout.transform(decoder).listen((data) {
+          final text = data.trim();
+          debugPrint("🔵 [DEMUCS]: $text");
+
+          if (text.contains('[Procesando IA Demucs SINGLE]')) {
+            currentTrack = text.split('SINGLE]').last.trim();
+            ref
+                ?.read(aiEngineProvider.notifier)
+                .updateStatus('Analizando: $currentTrack');
+          } else if (text.contains('[Exito]')) {
+            ref
+                ?.read(aiEngineProvider.notifier)
+                .updateStatus('¡Instrumental Listo!: $currentTrack');
+          }
+        });
+
+        process.stderr.transform(decoder).listen((data) {
+          final text = data.trim();
+          if (text.contains('%|')) {
+            final match = RegExp(r'(\d+)%').firstMatch(text);
+            if (match != null) {
+              final percent = match.group(0);
+              ref
+                  ?.read(aiEngineProvider.notifier)
+                  .updateStatus('Aislando Voces: $percent - $currentTrack');
+            }
+          }
+        });
+
+        process.exitCode.then((code) {
+          debugPrint("✅ [AI ENGINE] Extracción IA terminada con código: $code");
+          ref?.read(aiEngineProvider.notifier).stop();
+        });
+      });
+    } catch (e) {
+      debugPrint("🔴 [FATAL I/O] Fallo al iniciar puente Python: $e");
+      ref?.read(aiEngineProvider.notifier).stop();
     }
   }
 }

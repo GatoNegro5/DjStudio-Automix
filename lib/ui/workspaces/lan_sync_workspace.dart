@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:async';
 import 'dart:convert';
+import 'karaoke_workspace.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:mime/mime.dart';
@@ -153,6 +154,61 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
       }
     } catch (_) {}
     return paths;
+  }
+
+  void _showDidacticSuccessModal() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext ctx) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF101010),
+          shape: RoundedRectangleBorder(
+            side: const BorderSide(color: Color(0xFF39FF14), width: 3),
+            borderRadius: BorderRadius.circular(20),
+          ),
+          title: const Column(
+            children: [
+              Icon(Icons.rocket_launch, color: Color(0xFF39FF14), size: 60),
+              SizedBox(height: 15),
+              Text(
+                "¡CLONACIÓN EXITOSA!",
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Color(0xFF39FF14),
+                  fontWeight: FontWeight.w900,
+                  fontSize: 24,
+                ),
+              ),
+            ],
+          ),
+          content: const Text(
+            "La base de datos (Laptop) ha terminado de transmitir la música. \n\nHe refrescado automáticamente la memoria de este dispositivo.\n\n🎵 La pista de baile está lista.",
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.white, fontSize: 16, height: 1.5),
+          ),
+          actions: [
+            Center(
+              child: ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF39FF14),
+                  foregroundColor: Colors.black,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 40,
+                    vertical: 15,
+                  ),
+                ),
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text(
+                  "¡ENTENDIDO!",
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   void _scanLocalMusicFolders() {
@@ -313,6 +369,34 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
         return;
       }
 
+      // 🔍 NUEVO: Catálogo Recursivo para el Motor de Búsqueda del Karaoke
+      if (request.method == 'GET' && path == '/api/catalog') {
+        final targetPath = _resolvePath('ReGenial');
+        List<Map<String, dynamic>> fullCatalog = [];
+        final dir = Directory(targetPath);
+
+        if (dir.existsSync()) {
+          for (var f in dir.listSync(recursive: true).whereType<File>()) {
+            if (f.path.toLowerCase().endsWith('.mp3')) {
+              // Extraer nombre y género (nombre de la carpeta padre)
+              final fileName = f.uri.pathSegments.last;
+              final parentFolder = f.parent.uri.pathSegments.last;
+
+              fullCatalog.add({
+                "name": fileName.replaceAll('.mp3', ''),
+                "genre": parentFolder,
+                "path": f.path, // Ruta absoluta para el reproductor
+              });
+            }
+          }
+        }
+        request.response
+          ..headers.contentType = ContentType.json
+          ..write(jsonEncode(fullCatalog))
+          ..close();
+        return;
+      }
+
       if (request.method == 'GET' && path == '/api/download') {
         final targetPath = _resolvePath(query['file'] ?? '');
         final file = File(targetPath);
@@ -415,49 +499,173 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
         return;
       }
 
+      if (request.method == 'POST' && path == '/api/sync_complete') {
+        request.response
+          ..statusCode = 200
+          ..write("OK")
+          ..close();
+        Future.microtask(() {
+          _scanLocalMusicFolders();
+          if (_selectedLocalPath != null) {
+            _loadFilesInFolder(_selectedLocalPath!);
+          }
+          if (mounted) _showDidacticSuccessModal();
+        });
+        return;
+      }
+
+      // 🎤 KARAOKE WEB INTERFACE (FRONT-END SPA)
       if (request.method == 'GET' && path == '/karaoke') {
         const String htmlPayload = r'''
 <!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>DjStudio Karaoke Web</title>
   <style>
-    body { background: #0a0a0a; color: #fff; font-family: sans-serif; text-align: center; padding: 20px; }
-    button { background: #39ff14; color: #000; border: none; padding: 15px; font-weight: bold; border-radius: 8px; width: 100%; margin-top: 10px; cursor: pointer; }
-    select, input { width: 100%; padding: 12px; margin-top: 10px; background: #1a1a1a; color: #00ffff; border: 1px solid #00ffff; border-radius: 4px; box-sizing: border-box; }
+    :root { --bg: #0a0a0a; --neon: #39ff14; --dark: #1a1a1a; --text: #fff; --subtext: #888; }
+    body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 20px; }
+    h2 { text-align: center; margin-bottom: 25px; display: flex; align-items: center; justify-content: center; gap: 10px; }
+    
+    .input-group { margin-bottom: 15px; }
+    input { width: 100%; padding: 16px; background: var(--dark); color: var(--neon); border: 1px solid #333; border-radius: 12px; font-size: 16px; box-sizing: border-box; outline: none; transition: border-color 0.2s; }
+    input:focus { border-color: var(--neon); }
+    input::placeholder { color: #555; }
+    
+    .catalog-container { background: var(--dark); border-radius: 12px; border: 1px solid #333; overflow: hidden; display: flex; flex-direction: column; margin-bottom: 20px; }
+    .search-box { padding: 15px; border-bottom: 1px solid #333; background: #111; }
+    .search-box input { padding: 12px; border-radius: 8px; background: #000; border: 1px solid #222; }
+    
+    .song-list { max-height: 40vh; overflow-y: auto; padding: 5px; }
+    .song-list::-webkit-scrollbar { width: 6px; }
+    .song-list::-webkit-scrollbar-thumb { background: #333; border-radius: 4px; }
+    
+    .song-item { padding: 15px; border-bottom: 1px solid #222; cursor: pointer; transition: background 0.2s; border-radius: 8px; }
+    .song-item:active { background: #222; }
+    .song-item.selected { background: rgba(57, 255, 20, 0.1); border: 1px solid var(--neon); }
+    .song-title { font-weight: bold; font-size: 15px; margin-bottom: 4px; }
+    .song-genre { font-size: 12px; color: var(--subtext); text-transform: uppercase; letter-spacing: 1px; }
+    .empty-state { text-align: center; padding: 30px; color: var(--subtext); }
+
+    button { width: 100%; padding: 18px; border: none; border-radius: 12px; font-size: 16px; font-weight: bold; cursor: pointer; transition: transform 0.1s; }
+    button:active { transform: scale(0.98); }
+    .btn-primary { background: var(--neon); color: #000; margin-bottom: 15px; box-shadow: 0 4px 15px rgba(57, 255, 20, 0.2); }
+    .btn-primary:disabled { background: #333; color: #666; box-shadow: none; cursor: not-allowed; }
+    .btn-secondary { background: transparent; border: 1px solid #444; color: #aaa; }
+    
+    .votes { display: flex; justify-content: space-between; margin-top: 20px; gap: 10px; }
+    .vote-btn { flex: 1; background: var(--dark); font-size: 28px; padding: 15px 0; border: 1px solid #333; border-radius: 12px; }
   </style>
 </head>
 <body>
-  <h2>🎤 Pide tu Canción</h2>
-  <input type="text" id="userName" placeholder="Tu Nombre (Ej. Tía María)">
-  <select id="songSelect"><option value="">Cargando catálogo...</option></select>
-  <button onclick="sendToQueue()">ENVIAR A LA COLA</button>
+  <h2>🎤 Selecciona tu pista</h2>
+  
+  <div class="input-group">
+    <input type="text" id="userName" placeholder="¿Quién canta? (Tu nombre)" oninput="validateForm()">
+  </div>
+
+  <div class="catalog-container">
+    <div class="search-box">
+      <input type="text" id="searchInput" placeholder="🔍 Buscar por canción, artista o género..." oninput="filterCatalog()">
+    </div>
+    <div class="song-list" id="resultsList">
+      <div class="empty-state">Cargando biblioteca...</div>
+    </div>
+  </div>
+
+  <button class="btn-primary" id="sendBtn" onclick="sendToQueue()" disabled>ENVIAR A LA COLA</button>
+  <button class="btn-secondary" onclick="requestWishlist()">¿No está tu canción? Pídela aquí</button>
 
   <h2 style="margin-top:40px;">Votar en Vivo</h2>
-  <div style="display:flex; justify-content:space-around;">
-    <button style="width:30%; font-size:24px; padding:10px;" onclick="vote('👏')">👏</button>
-    <button style="width:30%; font-size:24px; padding:10px;" onclick="vote('🔥')">🔥</button>
-    <button style="width:30%; font-size:24px; padding:10px;" onclick="vote('💩')">💩</button>
+  <div class="votes">
+    <button class="vote-btn" onclick="vote('👏')">👏</button>
+    <button class="vote-btn" onclick="vote('🔥')">🔥</button>
+    <button class="vote-btn" onclick="vote('💩')">💩</button>
   </div>
 
   <script>
-    fetch('/api/files?dir=ReGenial')
-      .then(r => r.json())
-      .then(files => {
-        const select = document.getElementById('songSelect');
-        select.innerHTML = files.filter(f => f.name.endsWith('.mp3')).map(f => `<option value="${f.name}">${f.name}</option>`).join('');
-      })
-      .catch(e => console.error("Error al cargar catálogo:", e));
+    let catalog = [];
+    let selectedSongPath = null;
 
+    // Inicialización
+    fetch('/api/catalog')
+      .then(r => r.json())
+      .then(data => {
+        catalog = data;
+        renderList(catalog);
+      })
+      .catch(e => {
+        document.getElementById('resultsList').innerHTML = '<div class="empty-state">Error conectando con la base de datos.</div>';
+      });
+
+    // Motor de búsqueda en memoria
+    function filterCatalog() {
+      const q = document.getElementById('searchInput').value.toLowerCase();
+      const filtered = catalog.filter(s => 
+        s.name.toLowerCase().includes(q) || 
+        s.genre.toLowerCase().includes(q)
+      );
+      renderList(filtered);
+    }
+
+    // Renderizado del DOM
+    function renderList(items) {
+      const list = document.getElementById('resultsList');
+      if (items.length === 0) {
+        list.innerHTML = '<div class="empty-state">No se encontraron resultados.</div>';
+        return;
+      }
+      
+      list.innerHTML = items.map((song, index) => `
+        <div class="song-item ${song.path === selectedSongPath ? 'selected' : ''}" onclick="selectSong('${encodeURIComponent(song.path)}')">
+          <div class="song-title">${song.name}</div>
+          <div class="song-genre">📂 ${song.genre}</div>
+        </div>
+      `).join('');
+    }
+
+    // Lógica de Selección
+    function selectSong(encodedPath) {
+      selectedSongPath = decodeURIComponent(encodedPath);
+      filterCatalog(); // Re-render para aplicar el estilo 'selected'
+      validateForm();
+    }
+
+    // Validador de formulario reactivo
+    function validateForm() {
+      const user = document.getElementById('userName').value.trim();
+      const btn = document.getElementById('sendBtn');
+      if (user.length > 0 && selectedSongPath) {
+        btn.disabled = false;
+      } else {
+        btn.disabled = true;
+      }
+    }
+
+    // Acciones de Red
     function sendToQueue() {
-      const user = document.getElementById('userName').value;
-      const song = document.getElementById('songSelect').value;
-      if(!user || !song) return alert('Completa los datos');
-      fetch('/api/queue/add?user=' + encodeURIComponent(user) + '&song=' + encodeURIComponent(song), { method: 'POST' })
-        .then(() => alert('¡Agregada a la cola!'))
-        .catch(e => alert('Error al enviar'));
+      const user = document.getElementById('userName').value.trim();
+      if(!user || !selectedSongPath) return;
+      
+      fetch('/api/queue/add?user=' + encodeURIComponent(user) + '&song=' + encodeURIComponent(selectedSongPath), { method: 'POST' })
+        .then(() => {
+          alert('¡Agregada a la cola!');
+          selectedSongPath = null;
+          document.getElementById('searchInput').value = '';
+          filterCatalog();
+          validateForm();
+        })
+        .catch(e => alert('Error de conexión.'));
+    }
+
+    function requestWishlist() {
+      const requested = prompt("¿Qué canción o artista te gustaría cantar la próxima vez?");
+      if(requested && requested.trim().length > 0) {
+        fetch('/api/wishlist?song=' + encodeURIComponent(requested.trim()), { method: 'POST' })
+          .then(() => alert('¡Anotado! La descargaremos para la próxima.'))
+          .catch(e => alert('Error de conexión.'));
+      }
     }
 
     function vote(type) {
@@ -475,14 +683,11 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
         return;
       }
 
+      // 🎤 ENDPOINTS DEL KARAOKE CONECTADOS AL SINGLETON
       if (request.method == 'POST' && path == '/api/queue/add') {
         final user = query['user'] ?? 'Anónimo';
         final song = query['song'] ?? '';
-        if (song.isNotEmpty) {
-          setState(() {
-            _karaokeQueue.add({'user': user, 'song': song});
-          });
-        }
+        if (song.isNotEmpty) KaraokeCore().addToQueue(user, song);
         request.response
           ..statusCode = 200
           ..write("OK")
@@ -492,8 +697,35 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
 
       if (request.method == 'POST' && path == '/api/vote') {
         final type = query['type'];
-        if (type != null && _currentVotes.containsKey(type)) {
-          setState(() => _currentVotes[type] = _currentVotes[type]! + 1);
+        if (type != null) KaraokeCore().addVote(type);
+        request.response
+          ..statusCode = 200
+          ..write("OK")
+          ..close();
+        return;
+      }
+
+      // 📝 ENDPOINT: Persistencia de Wishlist
+      if (request.method == 'POST' && path == '/api/wishlist') {
+        final song = query['song'] ?? '';
+        if (song.isNotEmpty) {
+          try {
+            final targetPath = _resolvePath('ReGenial');
+            final wishlistFile = File(
+              '$targetPath${Platform.pathSeparator}wishlist_pedidos.txt',
+            );
+            if (!wishlistFile.existsSync()) {
+              wishlistFile.createSync(recursive: true);
+            }
+
+            final timestamp = DateTime.now().toString().split('.').first;
+            wishlistFile.writeAsStringSync(
+              '[$timestamp] - $song\n',
+              mode: FileMode.append,
+            );
+          } catch (e) {
+            debugPrint("🔴 Error escribiendo en wishlist: $e");
+          }
         }
         request.response
           ..statusCode = 200
@@ -866,7 +1098,6 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
       setState(() => _totalFiles = files.length);
 
       final localBaseDirPath = Directory(_selectedLocalPath!).path;
-      // 🛠️ FIX 2: Extraer el nombre de la carpeta origen (ej: "ReGenial")
       final rootFolderName = localBaseDirPath
           .split(Platform.pathSeparator)
           .last;
@@ -887,7 +1118,6 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
             relativeFolder = relPath.substring(0, lastSeparator);
           }
 
-          // 🛠️ FIX 3: Reconstruir la ruta inyectando el contenedor principal
           relativeFolder = relativeFolder.isEmpty
               ? rootFolderName
               : '$rootFolderName${Platform.pathSeparator}$relativeFolder';
@@ -930,8 +1160,22 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
           _skippedTransfers++;
         }
 
-        // 🛠️ FIX 4: Control de Flujo. Evita Port Exhaustion y colapso de sockets Wi-Fi
         await Future.delayed(const Duration(milliseconds: 15));
+      }
+
+      // 📡 WEBHOOK TRIGGER (Notificamos a la App destino que terminó)
+      if (_successfulTransfers > 0 && !_cancelRequested) {
+        try {
+          await http
+              .post(
+                Uri.parse(
+                  'http://$_selectedDeviceIp:$_restPort/api/sync_complete',
+                ),
+              )
+              .timeout(const Duration(seconds: 5));
+        } catch (e) {
+          debugPrint("🔴 Error notificando finalización al remoto: $e");
+        }
       }
     } else {
       final files = _currentRemoteFiles;
@@ -982,7 +1226,6 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
           _skippedTransfers++;
         }
 
-        // Control de flujo para descargas (PULL)
         await Future.delayed(const Duration(milliseconds: 15));
       }
       _scanLocalMusicFolders();

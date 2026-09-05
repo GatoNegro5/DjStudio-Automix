@@ -1,0 +1,46 @@
+---
+description: Leyes acústicas (DSP) del motor de mezcla, crossfade, duraciones y filtros
+globs: lib/providers/**/*.dart,lib/services/**/*.dart,lib/core/audio/**/*.dart
+alwaysApply: false
+---
+
+# Leyes acústicas (DSP)
+
+## Super Mezcla DAWN
+
+Crossfade logarítmico de alta energía, cero huecos acústicos. Multiplicador polinómico y
+suavizado obligatorios:
+
+```dart
+final rateIn = (progress * 1.8).clamp(0.0, 1.0);
+final rateOut = ((1.0 - progress) * 1.8).clamp(0.0, 1.0);
+final smoothRateIn = pow(rateIn, 1.2).toDouble();
+final smoothRateOut = pow(rateOut, 1.2).toDouble();
+```
+
+El cruce debe quedar garantizado por encima del 90 % de ganancia real.
+
+Prohibido usar `sin()` o `cos()` para la ganancia del crossfade: dan potencia constante
+(−3 dB en el punto medio) y contradicen el diseño de alta energía. La prohibición es exclusiva
+de la ganancia. Sí se permiten curvas trigonométricas para automatizar otros parámetros, como
+el retorno de `setRate()` al tempo natural tras igualar BPM, donde `sin(p * pi / 2)` aporta el
+aterrizaje suave deseado.
+
+## Duraciones de mezcla
+
+- **Automix: 18 s.** Valor preciso, no aproximado.
+- **Live DJ**: crossfade forzado entre el 65 % y el 80 % de la pista.
+- **Skip manual: 4,5 s**, sin permuta de graves — no hay margen musical.
+
+## Zero-Lag Trigger
+
+Extracción síncrona de `state.duration`. Prohibido usar bloqueos o pausas de hilo `timeout()`.
+
+## Hifi Filters
+
+Se inyectan nativamente en las propiedades de `libmpv`, vía la propiedad `af` del `platform`
+del `Player`. Prohibido usar bucles `for` de Dart para procesar efectos de audio.
+
+La cadena `af` no debe reconstruirse por frame: cada escritura reinicializa el pipeline de
+libmpv. La permuta de graves del bass swap se resuelve con una única escritura por deck,
+situada en el cruce, donde el nivel máximo de la mezcla la enmascara.

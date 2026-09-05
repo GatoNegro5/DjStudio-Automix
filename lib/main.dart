@@ -9,18 +9,19 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:djstudio_player/src/rust/frb_generated.dart';
 
 // --- IMPORTACIÓN DE MÓDULOS Y PROVIDERS ---
-import 'providers/player_provider.dart';
+import 'providers/automix_provider.dart';
 import 'providers/theme_provider.dart';
 
 import 'core/audio/dj_audio_handler.dart';
 
 // 🛠️ FIX: Rutas actualizadas a la nueva Clean Architecture
-import 'ui/workspaces/playerDj.dart';
+import 'ui/workspaces/automix_workspace.dart';
 import 'ui/workspaces/dsp_workspace.dart';
 import 'ui/workspaces/yt_workspace.dart';
 import 'ui/workspaces/lab_workspace.dart';
 import 'ui/workspaces/lan_sync_workspace.dart';
-import 'ui/workspaces/broadcast_workspace.dart';
+import 'ui/workspaces/livedj_workspace.dart';
+import 'ui/workspaces/karaoke_workspace.dart';
 
 // ==========================================
 // ENRUTADOR DE ESTADO (SPA - Single Page App)
@@ -205,7 +206,7 @@ class MainWorkspace extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final currentRoute = ref.watch(routerProvider);
-    final playerState = ref.watch(playerProvider);
+    final playerState = ref.watch(automixProvider);
 
     // 🛠️ SENSOR DE PLATAFORMA: Define qué puede hacer el hardware actual
     final bool isMobileOS = Platform.isAndroid || Platform.isIOS;
@@ -408,6 +409,36 @@ class MainWorkspace extends ConsumerWidget {
                             onTap: () =>
                                 ref.read(routerProvider.notifier).setRoute(5),
                           ),
+
+                          // 🎤 RUTINA 6: KARAOKE HOST (Inyección Nueva)
+                          ListTile(
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 15,
+                            ),
+                            leading: Icon(
+                              Icons.mic_external_on,
+                              size: 20,
+                              color: currentRoute == 6
+                                  ? const Color(
+                                      0xFF39FF14,
+                                    ) // Verde Neón Karaoke
+                                  : DjStudioTheme.textHidden,
+                            ),
+                            title: Text(
+                              "Karaoke",
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: currentRoute == 6
+                                    ? const Color(0xFF39FF14)
+                                    : DjStudioTheme.textMuted,
+                                fontWeight: currentRoute == 6
+                                    ? FontWeight.bold
+                                    : FontWeight.normal,
+                              ),
+                            ),
+                            onTap: () =>
+                                ref.read(routerProvider.notifier).setRoute(6),
+                          ),
                         ],
                       ),
                     ),
@@ -467,12 +498,13 @@ class MainWorkspace extends ConsumerWidget {
               child: IndexedStack(
                 index: currentRoute,
                 children: const [
-                  UnifiedDjWorkspace(),
+                  AutomixWorkspace(),
                   DspNlpWorkspace(),
                   YoutubeSearchAndDownloadWorkspace(),
                   LabWorkspace(),
                   LanSyncWorkspace(),
-                  BroadcastWorkspace(),
+                  LiveDjWorkspace(),
+                  KaraokeWorkspace(), // 🛠️ INSTANCIA DEL KARAOKE INYECTADA AL ÁRBOL
                 ],
               ),
             ),

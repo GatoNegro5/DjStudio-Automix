@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../providers/directory_provider.dart';
-import '../../providers/player_provider.dart';
+import '../../providers/automix_provider.dart';
 import '../../providers/pipeline_provider.dart';
 import '../../providers/dsp_provider.dart';
 import '../../providers/theme_provider.dart';
@@ -12,20 +12,17 @@ import '../../providers/theme_provider.dart';
 // =====================================================================
 // ROUTE 0: UNIFIED DJ WORKSPACE (IDE 3-PANEL REKORDBOX STYLE)
 // =====================================================================
-class UnifiedDjWorkspace extends ConsumerStatefulWidget {
-  const UnifiedDjWorkspace({super.key});
+class AutomixWorkspace extends ConsumerStatefulWidget {
+  const AutomixWorkspace({super.key});
 
   @override
-  ConsumerState<UnifiedDjWorkspace> createState() => _UnifiedDjWorkspaceState();
+  ConsumerState<AutomixWorkspace> createState() => _AutomixWorkspaceState();
 }
 
-class _UnifiedDjWorkspaceState extends ConsumerState<UnifiedDjWorkspace> {
+class _AutomixWorkspaceState extends ConsumerState<AutomixWorkspace> {
   @override
   Widget build(BuildContext context) {
-    // 🛠️ PATRÓN MUTEX: Listener Global Reactivo
-    // En lugar de inyectar bloqueos en cada botón, el sistema escucha la tarjeta de sonido.
-    // Si la música suena, el CPU se bloquea. Si se detiene, el CPU se libera automáticamente.
-    ref.listen<bool>(playerProvider.select((p) => p.isPlaying), (
+    ref.listen<bool>(automixProvider.select((p) => p.isPlaying), (
       previous,
       isPlaying,
     ) {
@@ -46,12 +43,10 @@ class _UnifiedDjWorkspaceState extends ConsumerState<UnifiedDjWorkspace> {
     final isDesktop = size.width > 800;
     final isMobileLandscape = size.height < 500;
 
-    // 🛠️ PANEL INFERIOR (COMPRESIÓN HORIZONTAL APLICADA)
     final Widget desktopBottomPanels = Row(
       children: [
         Material(
           color: DjStudioTheme.bgPanel,
-          // 🛠️ El Explorador se reduce a 150px en celulares
           child: SizedBox(
             width: isMobileLandscape ? 150 : 220,
             child: const LibraryTreePanel(),
@@ -74,24 +69,17 @@ class _UnifiedDjWorkspaceState extends ConsumerState<UnifiedDjWorkspace> {
       );
     }
 
-    // 🛠️ MÓVIL: RECALIBRACIÓN VERTICAL (EJE Y)
     return SafeArea(
       child: Column(
         children: [
-          // 🛠️ 65% DE ALTURA PARA EL MIXER (GARANTIZA ESPACIO PARA 2+ LÍNEAS DE LETRA)
           const Expanded(flex: 65, child: MixerPanel()),
           const Divider(height: 1, color: Colors.white10),
-          // 🛠️ 35% DE ALTURA PARA EL EXPLORADOR Y AUTOMIX
           Expanded(
             flex: 35,
             child: SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               physics: const BouncingScrollPhysics(),
-              child: SizedBox(
-                // 🛠️ MATRIZ REDUCIDA A 800px (Elimina casi por completo el scroll horizontal)
-                width: 800,
-                child: desktopBottomPanels,
-              ),
+              child: SizedBox(width: 800, child: desktopBottomPanels),
             ),
           ),
         ],
@@ -163,7 +151,6 @@ class _LibraryTreePanelState extends ConsumerState<LibraryTreePanel> {
     }
   }
 
-  // 🛠️ INYECCIÓN: El nodo ahora exige conocer la lista de rutas expandidas desde RAM
   Widget _buildFolderNode(Directory dir, int depth, Set<String> expandedPaths) {
     List<Directory> childDirs = [];
     try {
@@ -207,12 +194,9 @@ class _LibraryTreePanelState extends ConsumerState<LibraryTreePanel> {
         ),
       ),
       child: ExpansionTile(
-        // 🛠️ FIX: Forzamos el repintado inyectando el estado en la Key.
-        // Si el JSON dice "Abierto", Flutter reconstruirá el widget acatando la orden.
         key: Key('${dir.path}_$isExpanded'),
         initiallyExpanded: isExpanded,
         onExpansionChanged: (expanded) {
-          // 🛠️ DISPARADOR: Comunica a Riverpod y salva el JSON
           ref.read(directoryProvider.notifier).toggleNode(dir.path, expanded);
         },
         tilePadding: EdgeInsets.only(left: 15.0 + (depth * 15.0), right: 10.0),
@@ -243,17 +227,15 @@ class _LibraryTreePanelState extends ConsumerState<LibraryTreePanel> {
 
   @override
   Widget build(BuildContext context) {
-    // 🛠️ ESCUCHA: Riverpod le inyecta la memoria visual al componente padre
     final expandedPaths = ref.watch(
       directoryProvider.select((s) => s.expandedPaths),
     );
-    // 🛠️ SENSOR DE HARDWARE
     final bool isMobile = MediaQuery.of(context).size.width < 800;
 
     return Column(
       children: [
         Container(
-          padding: EdgeInsets.all(isMobile ? 6.0 : 12.0), // Compresión Y
+          padding: EdgeInsets.all(isMobile ? 6.0 : 12.0),
           decoration: const BoxDecoration(
             color: DjStudioTheme.bgPanel,
             border: Border(bottom: BorderSide(color: Colors.white10)),
@@ -293,482 +275,14 @@ class _LibraryTreePanelState extends ConsumerState<LibraryTreePanel> {
                 )
               : ListView.builder(
                   itemCount: _subDirs.length,
-                  itemBuilder: (context, index) => _buildFolderNode(
-                    _subDirs[index],
-                    0,
-                    expandedPaths,
-                  ), // 🛠️ Paso del estado por cascada
+                  itemBuilder: (context, index) =>
+                      _buildFolderNode(_subDirs[index], 0, expandedPaths),
                 ),
         ),
       ],
     );
   }
 }
-
-// 🛠️ ESTADOS GLOBALES DE GESTIÓN AUTOMIX Y RECORD
-enum TrackSortMode { alphabetical, bpmDesc, bpmAsc }
-
-class TrackSortNotifier extends Notifier<TrackSortMode> {
-  @override
-  TrackSortMode build() => TrackSortMode.alphabetical;
-  void updateMode(TrackSortMode mode) => state = mode;
-}
-
-final trackSortProvider = NotifierProvider<TrackSortNotifier, TrackSortMode>(
-  TrackSortNotifier.new,
-);
-
-class PlayedTracksNotifier extends Notifier<Set<String>> {
-  @override
-  Set<String> build() {
-    _loadSession();
-    return {};
-  }
-
-  String _getSessionFilePath() {
-    String baseDir;
-    if (Platform.isWindows) {
-      final userProfile = Platform.environment['USERPROFILE'];
-      baseDir = userProfile != null
-          ? '$userProfile\\Music\\DjPlaylists'
-          : 'C:\\Music\\DjPlaylists';
-    } else if (Platform.isMacOS || Platform.isLinux) {
-      final home = Platform.environment['HOME'];
-      baseDir = home != null ? '$home/Music/DjPlaylists' : '/tmp/DjPlaylists';
-    } else {
-      // Android / iOS safe path
-      baseDir = '/storage/emulated/0/Music/DjPlaylists';
-    }
-    final dir = Directory(baseDir);
-    if (!dir.existsSync()) dir.createSync(recursive: true);
-    return '${dir.path}${Platform.pathSeparator}_played_tracks_session.json';
-  }
-
-  Future<void> _loadSession() async {
-    try {
-      final file = File(_getSessionFilePath());
-      if (file.existsSync()) {
-        final content = await file.readAsString();
-        final data = jsonDecode(content) as List<dynamic>;
-        state = data.map((e) => e.toString()).toSet();
-      }
-    } catch (_) {}
-  }
-
-  Future<void> _saveSession(Set<String> currentPlayed) async {
-    try {
-      final file = File(_getSessionFilePath());
-      await file.writeAsString(jsonEncode(currentPlayed.toList()));
-    } catch (_) {}
-  }
-
-  void addTrack(String track) {
-    if (!state.contains(track)) {
-      final newState = {...state, track};
-      state = newState;
-      _saveSession(newState);
-    }
-  }
-
-  void removeTrack(String track) {
-    if (state.contains(track)) {
-      final newState = Set<String>.from(state);
-      newState.remove(track);
-      state = newState;
-      _saveSession(newState);
-    }
-  }
-}
-
-final playedTracksProvider =
-    NotifierProvider<PlayedTracksNotifier, Set<String>>(
-      PlayedTracksNotifier.new,
-    );
-
-class AutomixQueueNotifier extends Notifier<List<File>> {
-  @override
-  List<File> build() {
-    _loadSession();
-    return [];
-  }
-
-  String _getSessionFilePath() {
-    String baseDir;
-    if (Platform.isWindows) {
-      final userProfile = Platform.environment['USERPROFILE'];
-      baseDir = userProfile != null
-          ? '$userProfile\\Music\\DjPlaylists'
-          : 'C:\\Music\\DjPlaylists';
-    } else if (Platform.isMacOS || Platform.isLinux) {
-      final home = Platform.environment['HOME'];
-      baseDir = home != null ? '$home/Music/DjPlaylists' : '/tmp/DjPlaylists';
-    } else {
-      // Android / iOS safe path
-      baseDir = '/storage/emulated/0/Music/DjPlaylists';
-    }
-    final dir = Directory(baseDir);
-    if (!dir.existsSync()) dir.createSync(recursive: true);
-    return '${dir.path}${Platform.pathSeparator}_automix_session.json';
-  }
-
-  Future<void> _loadSession() async {
-    try {
-      final file = File(_getSessionFilePath());
-      if (file.existsSync()) {
-        final content = await file.readAsString();
-        final data = jsonDecode(content) as List<dynamic>;
-        List<File> files = [];
-        for (String p in data) {
-          if (File(p).existsSync()) files.add(File(p));
-        }
-        state = files;
-      }
-    } catch (_) {}
-  }
-
-  Future<void> _saveSession(List<File> currentQueue) async {
-    try {
-      final file = File(_getSessionFilePath());
-      final paths = currentQueue.map((f) => f.path).toList();
-      await file.writeAsString(jsonEncode(paths));
-    } catch (_) {}
-  }
-
-  void addTrack(File file) {
-    final newState = state.where((f) => f.path != file.path).toList();
-    newState.add(file);
-    state = newState;
-    _saveSession(newState);
-  }
-
-  void addAll(List<File> files) {
-    var newState = List<File>.from(state);
-    for (var f in files) {
-      newState.removeWhere((existing) => existing.path == f.path);
-      newState.add(f);
-    }
-    state = newState;
-    _saveSession(newState);
-  }
-
-  void removeTrack(String path) {
-    final newState = state.where((f) => f.path != path).toList();
-    state = newState;
-    _saveSession(newState);
-  }
-
-  void clearQueue() {
-    state = [];
-    _saveSession([]);
-  }
-
-  void restoreQueue(List<String> paths) {
-    List<File> files = [];
-    for (String p in paths) {
-      if (File(p).existsSync()) files.add(File(p));
-    }
-    state = files;
-    _saveSession(files);
-  }
-}
-
-final automixProvider = NotifierProvider<AutomixQueueNotifier, List<File>>(
-  AutomixQueueNotifier.new,
-);
-
-class BpmCacheNotifier extends Notifier<Map<String, double>> {
-  @override
-  Map<String, double> build() => {};
-
-  Future<void> loadCache(String directoryPath) async {
-    if (directoryPath.isEmpty) {
-      state = {};
-      return;
-    }
-    try {
-      await ref.read(dspWorkerProvider).generateStaticBpmCache(directoryPath);
-    } catch (_) {}
-
-    final file = File(
-      '$directoryPath${Platform.pathSeparator}_dj_metadata.json',
-    );
-    if (file.existsSync()) {
-      try {
-        final content = await file.readAsString();
-        final decoded = jsonDecode(content) as Map<String, dynamic>;
-        final Map<String, double> newCache = {};
-
-        decoded.forEach((key, value) {
-          if (value is num) {
-            newCache[key] = value.toDouble();
-          } else if (value is Map && value['bpm'] != null) {
-            newCache[key] = (value['bpm'] as num).toDouble();
-          }
-        });
-        state = newCache;
-      } catch (e) {
-        state = {};
-      }
-    } else {
-      state = {};
-    }
-  }
-}
-
-final bpmCacheProvider =
-    NotifierProvider<BpmCacheNotifier, Map<String, double>>(
-      BpmCacheNotifier.new,
-    );
-
-class WasapiRecordNotifier extends Notifier<bool> {
-  Process? _recordingProcess;
-  String? _currentOutputPath;
-  String _lastErrorLog = "";
-
-  @override
-  bool build() => false;
-
-  Future<void> toggleRecording(BuildContext context) async {
-    if (state) {
-      await stopRecording(context);
-    } else {
-      await startRecording(context);
-    }
-  }
-
-  String _getFFmpegPath() {
-    if (Platform.isAndroid || Platform.isIOS) return 'ffmpeg';
-    final exeDir = File(Platform.resolvedExecutable).parent.path;
-    final localFFmpeg = Platform.isWindows
-        ? '$exeDir\\ffmpeg.exe'
-        : '$exeDir/ffmpeg';
-    if (File(localFFmpeg).existsSync()) return localFFmpeg;
-    return 'ffmpeg';
-  }
-
-  Future<String> _getLoopbackDevice() async {
-    if (Platform.isWindows) {
-      try {
-        final process = await Process.run(_getFFmpegPath(), [
-          '-list_devices',
-          'true',
-          '-f',
-          'dshow',
-          '-i',
-          'dummy',
-        ]);
-        final logs = process.stderr.toString();
-        final lines = logs.split('\n');
-
-        for (int i = 0; i < lines.length; i++) {
-          final lowerLine = lines[i].toLowerCase();
-          if (lowerLine.contains('(audio)') &&
-              (lowerLine.contains('mezcla') ||
-                  lowerLine.contains('estéreo') ||
-                  lowerLine.contains('stereo'))) {
-            if (i + 1 < lines.length &&
-                lines[i + 1].toLowerCase().contains('alternative name')) {
-              final match = RegExp(r'"([^"]+)"').firstMatch(lines[i + 1]);
-              if (match != null) return 'audio=${match.group(1)!}';
-            }
-          }
-        }
-      } catch (_) {}
-      return r'audio=@device_cm_{33D9A762-90C8-11D0-BD43-00A0C911CE86}\wave_{E2847FF6-6193-463E-848F-0E16C78BD2EA}';
-    } else if (Platform.isMacOS) {
-      return ':0';
-    } else {
-      throw UnsupportedError(
-        'Driver de loopback no soportado en esta plataforma.',
-      );
-    }
-  }
-
-  Future<void> startRecording(BuildContext context) async {
-    if (Platform.isAndroid || Platform.isIOS) {
-      if (context.mounted) {
-        _showErrorDialog(
-          context,
-          "VETO TÉCNICO: Sandbox Restringido",
-          "La captura del Master Out en Android/iOS está bloqueada a nivel de Kernel por políticas de privacidad. Se requiere migrar a APIs nativas (MediaProjection/ReplayKit).",
-        );
-      }
-      return;
-    }
-
-    final userProfile =
-        Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'];
-    final baseDir = Platform.isWindows
-        ? '$userProfile\\Music\\GrabacionesDj'
-        : '$userProfile/Music/GrabacionesDj';
-
-    final dir = Directory(baseDir);
-    if (!dir.existsSync()) dir.createSync(recursive: true);
-
-    final dateStr = DateTime.now()
-        .toIso8601String()
-        .replaceAll(':', '-')
-        .split('.')
-        .first;
-    _currentOutputPath =
-        '${dir.path}${Platform.pathSeparator}LiveMix_$dateStr.mp3';
-    _lastErrorLog = "";
-
-    try {
-      final deviceName = await _getLoopbackDevice();
-      final format = Platform.isWindows ? 'dshow' : 'avfoundation';
-
-      debugPrint(
-        "🟢 [Hardware Tracker] Ruteando bus maestro a: $deviceName ($format)",
-      );
-
-      final args = [
-        '-y',
-        '-f',
-        format,
-        '-i',
-        deviceName,
-        '-c:a',
-        'libmp3lame',
-        '-b:a',
-        '320k',
-        _currentOutputPath!,
-      ];
-
-      _recordingProcess = await Process.start(_getFFmpegPath(), args);
-      state = true;
-
-      _recordingProcess!.stderr.transform(utf8.decoder).listen((log) {
-        _lastErrorLog += log;
-      });
-
-      _recordingProcess!.exitCode.then((code) {
-        if (code != 0 && code != 255 && state) {
-          state = false;
-          if (context.mounted) {
-            _showErrorDialog(
-              context,
-              "🔴 VETO TÉCNICO: FFmpeg Colapsó",
-              _lastErrorLog,
-            );
-          }
-        }
-      });
-
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              '🔴 GRABANDO MASTER OUT: LiveMix_$dateStr.mp3',
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            backgroundColor: Colors.redAccent,
-            duration: const Duration(seconds: 3),
-          ),
-        );
-      }
-    } catch (e) {
-      debugPrint("🔴 [RECORD FATAL]: $e");
-    }
-  }
-
-  Future<void> stopRecording(BuildContext context) async {
-    if (_recordingProcess != null) {
-      _recordingProcess!.stdin.writeln('q');
-      await Future.delayed(const Duration(milliseconds: 500));
-      _recordingProcess!.kill();
-      _recordingProcess = null;
-    }
-
-    state = false;
-
-    final file = File(_currentOutputPath ?? '');
-    final fileExists = file.existsSync() && file.lengthSync() > 0;
-
-    if (context.mounted) {
-      if (fileExists) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              '✅ Mezcla renderizada en: $_currentOutputPath',
-              style: const TextStyle(
-                color: Colors.black,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            backgroundColor: const Color(0xFF39FF14),
-            duration: const Duration(seconds: 4),
-          ),
-        );
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              '❌ ERROR: Archivo vacío o I/O bloqueado.',
-              style: TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            backgroundColor: Colors.redAccent,
-            duration: Duration(seconds: 4),
-          ),
-        );
-      }
-    }
-  }
-
-  void _showErrorDialog(BuildContext context, String title, String message) {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF121212),
-        shape: RoundedRectangleBorder(
-          side: const BorderSide(color: Colors.redAccent),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        title: Text(
-          title,
-          style: const TextStyle(
-            color: Colors.redAccent,
-            fontSize: 14,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        content: SizedBox(
-          width: 600,
-          height: 400,
-          child: SingleChildScrollView(
-            child: Text(
-              message,
-              style: const TextStyle(
-                color: Colors.white70,
-                fontFamily: 'Consolas',
-                fontSize: 11,
-              ),
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text(
-              "Cerrar",
-              style: TextStyle(color: Colors.white54),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-final wasapiRecordProvider = NotifierProvider<WasapiRecordNotifier, bool>(
-  WasapiRecordNotifier.new,
-);
 
 // --- COMPONENTE 2: BROWSER (Contenido Bruto de la Carpeta) ---
 class FolderContentPanel extends ConsumerWidget {
@@ -833,7 +347,7 @@ class FolderContentPanel extends ConsumerWidget {
                               .removeTrack(f.path);
                         }
                         ref
-                            .read(automixProvider.notifier)
+                            .read(automixQueueProvider.notifier)
                             .addAll(dirState.files);
                       },
                 icon: Icon(Icons.playlist_add, size: isMobile ? 14 : 16),
@@ -845,10 +359,7 @@ class FolderContentPanel extends ConsumerWidget {
                   backgroundColor: Colors.white10,
                   foregroundColor: const Color(0xFF39FF14),
                   padding: const EdgeInsets.symmetric(horizontal: 10),
-                  minimumSize: Size(
-                    0,
-                    isMobile ? 24 : 30,
-                  ), // Compresión de botón
+                  minimumSize: Size(0, isMobile ? 24 : 30),
                 ),
               ),
             ],
@@ -918,7 +429,7 @@ class FolderContentPanel extends ConsumerWidget {
                                     .read(playedTracksProvider.notifier)
                                     .removeTrack(file.path);
                                 ref
-                                    .read(automixProvider.notifier)
+                                    .read(automixQueueProvider.notifier)
                                     .addTrack(file);
                               },
                               tooltip: "Añadir al Automix",
@@ -949,7 +460,6 @@ class AutomixPanel extends ConsumerWidget {
       final home = Platform.environment['HOME'];
       return home != null ? '$home/Music/DjPlaylists' : '/tmp/DjPlaylists';
     } else {
-      // Android / iOS safe path
       return '/storage/emulated/0/Music/DjPlaylists';
     }
   }
@@ -961,7 +471,7 @@ class AutomixPanel extends ConsumerWidget {
   ) async {
     try {
       await ref
-          .read(playerProvider.notifier)
+          .read(automixProvider.notifier)
           .loadContextAndPlay(playlist, index);
     } catch (e) {
       debugPrint("🔴 [TRACKER ERROR FATAL]: $e");
@@ -1120,7 +630,7 @@ class AutomixPanel extends ConsumerWidget {
                                 .map((e) => e.toString())
                                 .toList();
                             ref
-                                .read(automixProvider.notifier)
+                                .read(automixQueueProvider.notifier)
                                 .restoreQueue(paths);
                             if (dialogContext.mounted) {
                               Navigator.pop(dialogContext);
@@ -1151,19 +661,19 @@ class AutomixPanel extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final currentTrackPath = ref.watch(
-      playerProvider.select((p) => p.currentTrackPath),
+      automixProvider.select((p) => p.currentTrackPath),
     );
-    final isPlaying = ref.watch(playerProvider.select((p) => p.isPlaying));
-    final playerNotifier = ref.read(playerProvider.notifier);
+    final isPlaying = ref.watch(automixProvider.select((p) => p.isPlaying));
+    final automixNotifier = ref.read(automixProvider.notifier);
 
-    final automixQueue = ref.watch(automixProvider);
+    final automixQueue = ref.watch(automixQueueProvider);
     final sortMode = ref.watch(trackSortProvider);
     final playedTracks = ref.watch(playedTracksProvider);
     final bpmCache = ref.watch(bpmCacheProvider);
     final isBusy = ref.watch(pipelineProvider.select((p) => !p.isIdle));
     final bool isMobile = MediaQuery.of(context).size.width < 800;
 
-    ref.listen<String?>(playerProvider.select((p) => p.currentTrackPath), (
+    ref.listen<String?>(automixProvider.select((p) => p.currentTrackPath), (
       previous,
       next,
     ) {
@@ -1212,7 +722,7 @@ class AutomixPanel extends ConsumerWidget {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (isPlaying || currentTrackPath != null) {
         final currentOrderedPaths = displayFiles.map((f) => f.path).toList();
-        playerNotifier.syncDynamicPlaylist(currentOrderedPaths);
+        automixNotifier.syncDynamicPlaylist(currentOrderedPaths);
       }
     });
 
@@ -1253,7 +763,7 @@ class AutomixPanel extends ConsumerWidget {
                         size: isMobile ? 14 : 16,
                       ),
                       onPressed: () =>
-                          ref.read(automixProvider.notifier).clearQueue(),
+                          ref.read(automixQueueProvider.notifier).clearQueue(),
                       tooltip: "Limpiar Cola",
                       constraints: const BoxConstraints(),
                       padding: const EdgeInsets.symmetric(horizontal: 5),
@@ -1326,7 +836,6 @@ class AutomixPanel extends ConsumerWidget {
                     ],
                   ),
                   const SizedBox(width: 5),
-
                   ElevatedButton.icon(
                     onPressed: displayFiles.isEmpty || isBusy
                         ? null
@@ -1429,16 +938,15 @@ class AutomixPanel extends ConsumerWidget {
                                   size: 18,
                                 ),
                                 onPressed: () => ref
-                                    .read(automixProvider.notifier)
+                                    .read(automixQueueProvider.notifier)
                                     .removeTrack(file.path),
                                 tooltip: "Quitar",
                               ),
-
                             GestureDetector(
                               behavior: HitTestBehavior.opaque,
                               onTap: () {
                                 if (isPlayingThisTrack) {
-                                  playerNotifier.togglePlayPause();
+                                  automixNotifier.togglePlayPause();
                                 } else {
                                   final allPaths = displayFiles
                                       .map((f) => f.path)
@@ -1490,20 +998,20 @@ class _MixerPanelState extends ConsumerState<MixerPanel> {
   @override
   Widget build(BuildContext context) {
     final currentTrackPath = ref.watch(
-      playerProvider.select((s) => s.currentTrackPath),
+      automixProvider.select((s) => s.currentTrackPath),
     );
-    final isPlaying = ref.watch(playerProvider.select((s) => s.isPlaying));
-    final lyrics = ref.watch(playerProvider.select((s) => s.lyrics));
-    final mixStrategy = ref.watch(playerProvider.select((s) => s.mixStrategy));
+    final isPlaying = ref.watch(automixProvider.select((s) => s.isPlaying));
+    final lyrics = ref.watch(automixProvider.select((s) => s.lyrics));
+    final mixStrategy = ref.watch(automixProvider.select((s) => s.mixStrategy));
     final autoMixArmed = ref.watch(
-      playerProvider.select((s) => s.autoMixArmed),
+      automixProvider.select((s) => s.autoMixArmed),
     );
     final isRecording = ref.watch(wasapiRecordProvider);
-    final playerNotifier = ref.read(playerProvider.notifier);
+    final automixNotifier = ref.read(automixProvider.notifier);
 
     final bool canRecord = Platform.isWindows || Platform.isLinux;
 
-    ref.listen<int>(playerProvider.select((state) => state.activeLyricIndex), (
+    ref.listen<int>(automixProvider.select((state) => state.activeLyricIndex), (
       previous,
       next,
     ) {
@@ -1566,8 +1074,8 @@ class _MixerPanelState extends ConsumerState<MixerPanel> {
                         ),
                       ),
                     ),
-                    onSync: () => playerNotifier.autoSyncFirstLyric(),
-                    onSyncMed: () => playerNotifier.autoSyncFromCurrentLyric(),
+                    onSync: () => automixNotifier.autoSyncFirstLyric(),
+                    onSyncMed: () => automixNotifier.autoSyncFromCurrentLyric(),
                     lyricsWidget: ListWheelScrollView(
                       controller: _lyricsController,
                       itemExtent: isMobileLandscape ? 22.0 : 32.0,
@@ -1578,7 +1086,7 @@ class _MixerPanelState extends ConsumerState<MixerPanel> {
                         return Consumer(
                           builder: (context, ref, _) {
                             final activeIdx = ref.watch(
-                              playerProvider.select((s) => s.activeLyricIndex),
+                              automixProvider.select((s) => s.activeLyricIndex),
                             );
                             final isCurrent = index == activeIdx;
                             final isNext = index == activeIdx + 1;
@@ -1591,7 +1099,8 @@ class _MixerPanelState extends ConsumerState<MixerPanel> {
                             if (isCurrent) {
                               textColor = const Color(0xFF39FF14);
                               fontSize = isMobileLandscape ? 15 : 24;
-                              fontWeight = FontWeight.bold;
+                              fontWeight =
+                                  FontWeight.bold; // 🛡️ FIX: Era '=' no ':'
                             } else if (isNext) {
                               textColor = Colors.white.withValues(alpha: 0.95);
                               fontSize = isMobileLandscape ? 11 : 14;
@@ -1642,38 +1151,24 @@ class _MixerPanelState extends ConsumerState<MixerPanel> {
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          SizedBox(
-                            height: 24,
-                            child: DropdownButton<MixStrategy>(
-                              value: mixStrategy,
-                              dropdownColor: DjStudioTheme.bgDark,
-                              icon: const Icon(
-                                Icons.shuffle,
-                                color: Color(0xFFB026FF),
-                                size: 16,
-                              ),
-                              underline: const SizedBox(),
-                              style: const TextStyle(
-                                color: Color(0xFFB026FF),
-                                fontSize: 11,
-                                fontWeight: FontWeight.bold,
-                              ),
-                              items: const [
-                                DropdownMenuItem(
-                                  value: MixStrategy.sequential,
-                                  child: Text("Secuencial"),
-                                ),
-                                DropdownMenuItem(
-                                  value: MixStrategy.random,
-                                  child: Text("Aleatorio"),
-                                ),
-                              ],
-                              onChanged: (MixStrategy? val) {
-                                if (val != null) {
-                                  playerNotifier.setMixStrategy(val);
-                                }
-                              },
+                          IconButton(
+                            iconSize: 28,
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(),
+                            icon: Icon(
+                              mixStrategy == MixStrategy.random
+                                  ? Icons.shuffle
+                                  : Icons.format_list_numbered,
                             ),
+                            color: mixStrategy == MixStrategy.random
+                                ? const Color(0xFF39FF14)
+                                : Colors.white54,
+                            tooltip: mixStrategy == MixStrategy.random
+                                ? 'Modo: Aleatorio (Shuffle)'
+                                : 'Modo: Secuencial',
+                            onPressed: () {
+                              automixNotifier.toggleMixStrategy();
+                            },
                           ),
                           const SizedBox(height: 8),
                           IconButton(
@@ -1686,7 +1181,7 @@ class _MixerPanelState extends ConsumerState<MixerPanel> {
                               color: const Color(0xFF39FF14),
                               size: 45,
                             ),
-                            onPressed: () => playerNotifier.togglePlayPause(),
+                            onPressed: () => automixNotifier.togglePlayPause(),
                           ),
                         ],
                       ),
@@ -1695,22 +1190,22 @@ class _MixerPanelState extends ConsumerState<MixerPanel> {
                       child: Consumer(
                         builder: (context, ref, _) {
                           final position = ref.watch(
-                            playerProvider.select((s) => s.position),
+                            automixProvider.select((s) => s.position),
                           );
                           final duration = ref.watch(
-                            playerProvider.select((s) => s.duration),
+                            automixProvider.select((s) => s.duration),
                           );
                           final triggerRemainingMs = ref.watch(
-                            playerProvider.select((s) => s.triggerRemainingMs),
+                            automixProvider.select((s) => s.triggerRemainingMs),
                           );
                           final customCueInMs = ref.watch(
-                            playerProvider.select((s) => s.customCueInMs),
+                            automixProvider.select((s) => s.customCueInMs),
                           );
                           final customMixOutMs = ref.watch(
-                            playerProvider.select((s) => s.customMixOutMs),
+                            automixProvider.select((s) => s.customMixOutMs),
                           );
                           final nextTrackPath = ref.watch(
-                            playerProvider.select((s) => s.nextTrackPath),
+                            automixProvider.select((s) => s.nextTrackPath),
                           );
 
                           return Column(
@@ -1734,7 +1229,7 @@ class _MixerPanelState extends ConsumerState<MixerPanel> {
                                       IconButton(
                                         onPressed: currentTrackPath == null
                                             ? null
-                                            : () => playerNotifier
+                                            : () => automixNotifier
                                                   .toggleAutoMixBypass(),
                                         icon: Icon(
                                           autoMixArmed
@@ -1758,7 +1253,7 @@ class _MixerPanelState extends ConsumerState<MixerPanel> {
                                             (currentTrackPath == null ||
                                                 autoMixArmed)
                                             ? null
-                                            : () => playerNotifier.setMixPoint(
+                                            : () => automixNotifier.setMixPoint(
                                                 'IN',
                                               ),
                                         style: ElevatedButton.styleFrom(
@@ -1790,12 +1285,12 @@ class _MixerPanelState extends ConsumerState<MixerPanel> {
                                                 autoMixArmed)
                                             ? null
                                             : () async {
-                                                await playerNotifier
+                                                await automixNotifier
                                                     .setMixPoint('OUT');
                                                 if (!ref
-                                                    .read(playerProvider)
+                                                    .read(automixProvider)
                                                     .autoMixArmed) {
-                                                  playerNotifier
+                                                  automixNotifier
                                                       .toggleAutoMixBypass();
                                                 }
                                               },
@@ -1826,7 +1321,7 @@ class _MixerPanelState extends ConsumerState<MixerPanel> {
                                             (currentTrackPath == null ||
                                                 autoMixArmed)
                                             ? null
-                                            : () => playerNotifier
+                                            : () => automixNotifier
                                                   .clearMixPoints(),
                                         icon: Icon(
                                           Icons.delete_sweep,
@@ -1868,7 +1363,7 @@ class _MixerPanelState extends ConsumerState<MixerPanel> {
                                       final targetMs =
                                           (percent * duration.inMilliseconds)
                                               .toInt();
-                                      playerNotifier.seek(
+                                      automixNotifier.seek(
                                         Duration(milliseconds: targetMs),
                                       );
                                     },
@@ -1881,7 +1376,7 @@ class _MixerPanelState extends ConsumerState<MixerPanel> {
                                       final targetMs =
                                           (percent * duration.inMilliseconds)
                                               .toInt();
-                                      playerNotifier.seek(
+                                      automixNotifier.seek(
                                         Duration(milliseconds: targetMs),
                                       );
                                     },
@@ -1936,7 +1431,7 @@ class _MixerPanelState extends ConsumerState<MixerPanel> {
                                         : 1.0,
                                     onChanged: (val) {
                                       if (duration.inMilliseconds > 0) {
-                                        playerNotifier.seek(
+                                        automixNotifier.seek(
                                           Duration(milliseconds: val.toInt()),
                                         );
                                       }
@@ -2004,7 +1499,7 @@ class LyricsSyncPanel extends ConsumerStatefulWidget {
   final Widget lyricsWidget;
   final Widget noLyricsWidget;
   final VoidCallback onSync;
-  final VoidCallback onSyncMed; // 🛠️ Inyección de la nueva rutina
+  final VoidCallback onSyncMed;
 
   const LyricsSyncPanel({
     super.key,
@@ -2033,18 +1528,17 @@ class _LyricsSyncPanelState extends ConsumerState<LyricsSyncPanel> {
     final file = File(trackPath);
     if (!file.existsSync()) return;
 
-    final playerState = ref.read(playerProvider);
-    final playerNotifier = ref.read(playerProvider.notifier);
+    final automixState = ref.read(automixProvider);
     final automixNotifier = ref.read(automixProvider.notifier);
 
-    int nextIndex = playerState.currentIndex + 1;
-    bool hasNext = nextIndex < playerState.playlist.length;
+    int nextIndex = automixState.currentIndex + 1;
+    bool hasNext = nextIndex < automixState.playlist.length;
 
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            playerState.isPlaying && hasNext
+            automixState.isPlaying && hasNext
                 ? "🧪 Mezclando pista entrante... Se aislará al terminar."
                 : "🧪 Desenganchando pista y aislando en Laboratorio...",
             style: const TextStyle(
@@ -2059,17 +1553,16 @@ class _LyricsSyncPanelState extends ConsumerState<LyricsSyncPanel> {
       );
     }
 
-    if (playerState.isPlaying) {
+    if (automixState.isPlaying) {
       if (hasNext) {
-        await playerNotifier.forceTransition(nextIndex);
+        await automixNotifier.forceTransition(nextIndex);
       } else {
-        await playerNotifier.stopAndRelease();
+        await automixNotifier.stopAndRelease();
       }
     } else {
-      await playerNotifier.stopAndRelease();
+      await automixNotifier.stopAndRelease();
     }
 
-    // 🛠️ FIX DE RUTA: Blindaje idéntico al de las bases de datos para Android/Mac/Linux
     String baseMusicPath;
     if (Platform.isWindows) {
       final userProfile = Platform.environment['USERPROFILE'];
@@ -2078,7 +1571,6 @@ class _LyricsSyncPanelState extends ConsumerState<LyricsSyncPanel> {
       final home = Platform.environment['HOME'];
       baseMusicPath = home != null ? '$home/Music' : '/tmp';
     } else {
-      // Android / iOS safe path
       baseMusicPath = '/storage/emulated/0/Music';
     }
 
@@ -2135,17 +1627,19 @@ class _LyricsSyncPanelState extends ConsumerState<LyricsSyncPanel> {
       }
       registryFile.writeAsStringSync(jsonEncode(registry));
 
+      // 🛡️ FIX: Se remueve de ambos Providers sincronizadamente
+      ref.read(automixQueueProvider.notifier).removeTrack(trackPath);
       automixNotifier.removeTrack(trackPath);
 
-      if (!playerState.isPlaying && hasNext) {
-        final newPlaylist = List<String>.from(playerState.playlist)
+      if (!automixState.isPlaying && hasNext) {
+        final newPlaylist = List<String>.from(automixState.playlist)
           ..remove(trackPath);
-        int loadIndex = playerState.currentIndex;
+        int loadIndex = automixState.currentIndex;
         if (loadIndex >= newPlaylist.length) loadIndex = 0;
 
         if (newPlaylist.isNotEmpty) {
-          await playerNotifier.loadContextAndPlay(newPlaylist, loadIndex);
-          await playerNotifier.pause();
+          await automixNotifier.loadContextAndPlay(newPlaylist, loadIndex);
+          await automixNotifier.pause();
         }
       }
 
@@ -2164,10 +1658,10 @@ class _LyricsSyncPanelState extends ConsumerState<LyricsSyncPanel> {
   }
 
   void _openFullscreenLyrics() {
-    final playerState = ref.read(playerProvider);
-    final lyrics = playerState.lyrics;
-    final displayTitle = playerState.currentTrackPath != null
-        ? playerState.currentTrackPath!.replaceAll('\\', '/').split('/').last
+    final automixState = ref.read(automixProvider);
+    final lyrics = automixState.lyrics;
+    final displayTitle = automixState.currentTrackPath != null
+        ? automixState.currentTrackPath!.replaceAll('\\', '/').split('/').last
         : "Visor de Letras en Vivo";
 
     showDialog(
@@ -2218,7 +1712,7 @@ class _LyricsSyncPanelState extends ConsumerState<LyricsSyncPanel> {
                     : Consumer(
                         builder: (context, ref, _) {
                           final activeIdx = ref.watch(
-                            playerProvider.select((s) => s.activeLyricIndex),
+                            automixProvider.select((s) => s.activeLyricIndex),
                           );
 
                           return ListView.builder(
@@ -2307,7 +1801,7 @@ class _LyricsSyncPanelState extends ConsumerState<LyricsSyncPanel> {
                 Consumer(
                   builder: (context, ref, child) {
                     final currentPath = ref.watch(
-                      playerProvider.select((p) => p.currentTrackPath),
+                      automixProvider.select((p) => p.currentTrackPath),
                     );
                     return IconButton(
                       icon: Icon(
@@ -2455,12 +1949,9 @@ class SemanticDeckPainter extends CustomPainter {
       canvas.drawRect(Rect.fromLTWH(lX, 1, 2, 8), vocalPaint);
     }
 
-    // 🛠️ FIX ARCH: Truncamiento visual de Crossfade por falsos positivos de VBR
     double visualMixWidth = size.width - triggerX;
     if (customMixOutMs > 0) {
-      visualMixWidth =
-          (8000 / durationMs) *
-          size.width; // Límite estricto de UI: 8 segundos de crossfade max.
+      visualMixWidth = (8000 / durationMs) * size.width;
       if (triggerX + visualMixWidth > size.width) {
         visualMixWidth = size.width - triggerX;
       }
@@ -2512,7 +2003,6 @@ class SemanticDeckPainter extends CustomPainter {
         Paint()..color = const Color(0xFFFF007F),
       );
 
-      // 🛠️ UI/UX: Renderizado de 'Dead Zone' (Sombreado de tiempo basura del archivo)
       double deadX = outX + visualMixWidth;
       if (deadX < size.width) {
         canvas.drawRect(
@@ -2539,7 +2029,6 @@ class SemanticDeckPainter extends CustomPainter {
         Paint()..color = const Color(0xFF00FFFF).withValues(alpha: 0.3),
       );
 
-      // 🛠️ UI/UX: Sombreado de 'Dead Zone' en la pista entrante (Deck B)
       if (customMixOutMs > 0) {
         double deadX = triggerX + visualMixWidth;
         if (deadX < size.width) {

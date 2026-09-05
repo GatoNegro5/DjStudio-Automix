@@ -10,42 +10,45 @@ import 'package:file_selector/file_selector.dart';
 import '../core/hal/platform_strategy.dart';
 import 'equalizer_provider.dart';
 
-enum BroadcastMixStrategy { sequential, random }
+enum LiveDjMixStrategy { sequential, random }
 
-enum BroadcastMixMode { activeSync, longBypass }
+enum LiveDjMixMode { activeSync, longBypass }
 
-class BroadcastState {
+class LiveDjState {
   final bool isPlaying;
   final Duration position;
   final Duration duration;
   final List<File> queue;
   final String? currentTrackPath;
-  final BroadcastMixMode currentMixMode;
+  final LiveDjMixMode currentMixMode;
   final int customCueInMs;
   final int customMixOutMs;
+  final LiveDjMixStrategy mixStrategy;
 
-  BroadcastState({
+  LiveDjState({
     this.isPlaying = false,
     this.position = Duration.zero,
     this.duration = Duration.zero,
     this.queue = const [],
     this.currentTrackPath,
-    this.currentMixMode = BroadcastMixMode.activeSync,
+    this.currentMixMode = LiveDjMixMode.activeSync,
     this.customCueInMs = -1,
     this.customMixOutMs = -1,
+    this.mixStrategy = LiveDjMixStrategy.sequential,
   });
 
-  BroadcastState copyWith({
+  LiveDjState copyWith({
     bool? isPlaying,
     Duration? position,
     Duration? duration,
     List<File>? queue,
     String? currentTrackPath,
-    BroadcastMixMode? currentMixMode,
+    LiveDjMixMode? currentMixMode,
     int? customCueInMs,
     int? customMixOutMs,
+    LiveDjMixStrategy? mixStrategy,
   }) {
-    return BroadcastState(
+    return LiveDjState(
       isPlaying: isPlaying ?? this.isPlaying,
       position: position ?? this.position,
       duration: duration ?? this.duration,
@@ -54,11 +57,12 @@ class BroadcastState {
       currentMixMode: currentMixMode ?? this.currentMixMode,
       customCueInMs: customCueInMs ?? this.customCueInMs,
       customMixOutMs: customMixOutMs ?? this.customMixOutMs,
+      mixStrategy: mixStrategy ?? this.mixStrategy,
     );
   }
 }
 
-class BroadcastNotifier extends Notifier<BroadcastState> {
+class LiveDjNotifier extends Notifier<LiveDjState> {
   late final Player _playerA;
   late final Player _playerB;
   bool _usePlayerA = true;
@@ -81,7 +85,7 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
   late final PlatformMixStrategy _liveStrategy;
 
   @override
-  BroadcastState build() {
+  LiveDjState build() {
     _playerA = Player();
     _playerB = Player();
 
@@ -100,10 +104,10 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
       _completedSub?.cancel();
     });
 
-    return BroadcastState();
+    return LiveDjState();
   }
 
-  bool _isMixTrack(int durationMs) => durationMs > 600000; // > 10 minutos
+  bool _isMixTrack(int durationMs) => durationMs > 600000;
 
   int _calculateSmartTrim(int durationMs) {
     if (_isMixTrack(durationMs)) return 0;
@@ -111,12 +115,37 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
     return 0;
   }
 
-  int _calculateRadioMixOut(int durationMs) {
+  // 🎛️ INYECCIÓN ADN DJ: Ahora el Cartridge aplica la regla 65%-80%
+  int _calculateRadioMixOut(int durationMs, String? path) {
     if (_isMixTrack(durationMs)) {
       return durationMs - 4000;
     }
-    if (durationMs > 60000) return durationMs - 20000;
-    return durationMs - 4000;
+    if (durationMs <= 0) return 0;
+
+    final trackPathLower = path?.toLowerCase() ?? '';
+    final isRemix = trackPathLower.contains('remix');
+    final isEdm =
+        trackPathLower.contains('electronica') ||
+        trackPathLower.contains('house');
+    final isTropical =
+        trackPathLower.contains('salsa') ||
+        trackPathLower.contains('cumbia') ||
+        trackPathLower.contains('merengue');
+
+    int safeMixOutMs = 0;
+    if (isRemix || isEdm) {
+      safeMixOutMs = (durationMs * 0.65).toInt();
+    } else if (isTropical) {
+      safeMixOutMs = (durationMs * 0.80).toInt();
+    } else {
+      safeMixOutMs = (durationMs * 0.75).toInt();
+    }
+
+    if (safeMixOutMs >= durationMs - 4000) {
+      safeMixOutMs = durationMs - 4000;
+    }
+
+    return safeMixOutMs;
   }
 
   Future<void> _saveSnapshot() async {
@@ -127,9 +156,63 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
         'currentTrackPath': state.currentTrackPath,
         'positionMs': state.position.inMilliseconds,
         'mixMode': state.currentMixMode.index,
+        'mixStrategy': state.mixStrategy.index,
       };
       await file.writeAsString(jsonEncode(data));
-    } catch (_) {}
+      debugPrint("✅ [TRACKER] Snapshot guardado en disco correctamente.");
+    } catch (e, stack) {
+      debugPrint(
+        "🔴 [TRACKER ERROR FATAL] Fallo al guardar Snapshot: $e\n$stack",
+      );
+    }
+  }
+
+  void shuffleQueue() {
+    debugPrint(
+      "🛠️ [TRACKER] shuffleQueue() INICIADO. Elementos en cola: ${state.queue.length}",
+    );
+    try {
+      if (state.queue.length <= 1) {
+        debugPrint("⚠️ [TRACKER] Cola muy pequeña. Forzando solo UI.");
+        state = state.copyWith(mixStrategy: LiveDjMixStrategy.random);
+        _saveSnapshot();
+        return;
+      }
+
+      final list = List<File>.from(state.queue);
+      list.shuffle(Random(DateTime.now().millisecondsSinceEpoch));
+
+      state = state.copyWith(
+        queue: list,
+        mixStrategy: LiveDjMixStrategy.random,
+      );
+
+      debugPrint(
+        "🔀 [TRACKER] Array barajado y Estado Mutado a RANDOM. Mandando señal a la UI...",
+      );
+      _saveSnapshot();
+    } catch (e, stack) {
+      debugPrint("🔴 [TRACKER ERROR FATAL] El Shuffle explotó: $e\n$stack");
+    }
+  }
+
+  void toggleMixStrategy() {
+    debugPrint(
+      "🖱️ [TRACKER] Clic recibido en toggleMixStrategy(). Estrategia actual: ${state.mixStrategy.name}",
+    );
+    try {
+      if (state.mixStrategy == LiveDjMixStrategy.sequential) {
+        shuffleQueue();
+      } else {
+        state = state.copyWith(mixStrategy: LiveDjMixStrategy.sequential);
+        debugPrint(
+          "➡️ [TRACKER] Estado Mutado a SECUENCIAL. Mandando señal a la UI...",
+        );
+        _saveSnapshot();
+      }
+    } catch (e, stack) {
+      debugPrint("🔴 [TRACKER ERROR FATAL] El Toggle explotó: $e\n$stack");
+    }
   }
 
   Future<void> _initPersistence() async {
@@ -149,11 +232,13 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
       final positionMs = data['positionMs'] as int?;
 
       final mixModeIdx = data['mixMode'] as int? ?? 0;
+      final mixStrategyIdx = data['mixStrategy'] as int? ?? 0;
 
       state = state.copyWith(
         queue: queueFiles,
         currentTrackPath: currentTrackPath,
-        currentMixMode: BroadcastMixMode.values[mixModeIdx],
+        currentMixMode: LiveDjMixMode.values[mixModeIdx],
+        mixStrategy: LiveDjMixStrategy.values[mixStrategyIdx],
       );
 
       if (currentTrackPath != null) {
@@ -199,17 +284,11 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
     _saveSnapshot();
   }
 
-  void shuffleQueue() {
-    final list = List<File>.from(state.queue)..shuffle();
-    state = state.copyWith(queue: list);
-    _saveSnapshot();
-  }
-
   Future<void> savePlaylist() async {
     if (state.queue.isEmpty) return;
     try {
       final FileSaveLocation? result = await getSaveLocation(
-        suggestedName: 'broadcast_playlist.json',
+        suggestedName: 'LiveDj_playlist.json',
         acceptedTypeGroups: [
           XTypeGroup(label: 'JSON', extensions: ['json']),
         ],
@@ -285,7 +364,7 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
       if (durMs > 0 &&
           state.currentTrackPath != null &&
           state.queue.isNotEmpty) {
-        final triggerMs = _calculateRadioMixOut(durMs);
+        final triggerMs = _calculateRadioMixOut(durMs, state.currentTrackPath);
 
         if (!_isStandbyArmed &&
             posMs >= (triggerMs - 10000) &&
@@ -306,11 +385,14 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
     _durationSub = player.stream.duration.listen((dur) async {
       state = state.copyWith(duration: dur);
       if (dur.inMilliseconds > 0 && state.currentTrackPath != null) {
-        final triggerMs = _calculateRadioMixOut(dur.inMilliseconds);
+        final triggerMs = _calculateRadioMixOut(
+          dur.inMilliseconds,
+          state.currentTrackPath,
+        );
         final cueInMs = _calculateSmartTrim(dur.inMilliseconds);
         final mode = _isMixTrack(dur.inMilliseconds)
-            ? BroadcastMixMode.longBypass
-            : BroadcastMixMode.activeSync;
+            ? LiveDjMixMode.longBypass
+            : LiveDjMixMode.activeSync;
 
         state = state.copyWith(
           customCueInMs: cueInMs,
@@ -344,68 +426,21 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
     if (!state.isPlaying) _saveSnapshot();
   }
 
-  Future<void> forceNext() async {
-    if (_isCrossfading || state.queue.isEmpty) return;
-    _triggerCrossfade(forceJit: true);
-  }
-
   Future<void> seek(Duration position) async {
     if (state.currentTrackPath == null || _isCrossfading) return;
     _isPrepModeBypass = false;
     await _activePlayer.seek(position);
   }
 
-  Future<void> _executeMixEngine({
-    required Player fadingPlayer,
-    required Player incomingPlayer,
-    required BroadcastMixMode mixProfile,
-  }) async {
-    final String currentBaseFilter = ref
-        .read(equalizerProvider.notifier)
-        .currentBaseFilter;
-
-    final platformOut = fadingPlayer.platform as dynamic;
-    final platformIn = incomingPlayer.platform as dynamic;
-
-    try {
-      platformIn?.setProperty('audio-pitch-correction', 'yes');
-      platformOut?.setProperty('audio-pitch-correction', 'yes');
-      platformIn?.setProperty('af', currentBaseFilter);
-      platformOut?.setProperty('af', currentBaseFilter);
-
-      await incomingPlayer.setVolume(100.0);
-
-      final fadeStopwatch = Stopwatch()..start();
-      final fadeOutDurationMs = mixProfile == BroadcastMixMode.longBypass
-          ? 4000
-          : 20000;
-
-      while (fadeStopwatch.elapsedMilliseconds < fadeOutDurationMs) {
-        final progress = (fadeStopwatch.elapsedMilliseconds / fadeOutDurationMs)
-            .clamp(0.0, 1.0);
-        final rateOut = cos(progress * (pi / 2));
-
-        await fadingPlayer.setVolume((rateOut * 100.0).clamp(0.0, 100.0));
-        await Future.delayed(const Duration(milliseconds: 32));
-      }
-    } catch (e) {
-      debugPrint("🔴 [ERROR DSP]: $e");
-    } finally {
-      await incomingPlayer.setVolume(100.0);
-      await incomingPlayer.setRate(1.0);
-      platformIn?.setProperty('af', currentBaseFilter);
-
-      platformOut?.setProperty('af', currentBaseFilter);
-      await fadingPlayer.setVolume(100.0);
-      await fadingPlayer.setRate(1.0);
-
-      await fadingPlayer.stop();
-
-      _isCrossfading = false;
-    }
+  Future<void> forceNext() async {
+    if (_isCrossfading || state.queue.isEmpty) return;
+    _triggerCrossfade(forceJit: true, isManualSkip: true);
   }
 
-  Future<void> _triggerCrossfade({bool forceJit = false}) async {
+  Future<void> _triggerCrossfade({
+    bool forceJit = false,
+    bool isManualSkip = false,
+  }) async {
     if (_isCrossfading || state.queue.isEmpty) return;
     _isCrossfading = true;
 
@@ -413,32 +448,39 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
     final Player fadingPlayer = _activePlayer;
     final Player incomingPlayer = _standbyPlayer;
 
-    int cueInMs = 10000;
-
     if (!_isStandbyArmed || forceJit) {
-      await incomingPlayer.setVolume(0.0);
-      await incomingPlayer.open(Media(nextTrack), play: false);
+      try {
+        await incomingPlayer.setVolume(0.0);
+        await incomingPlayer.open(Media(nextTrack), play: false);
+      } catch (_) {}
     }
 
-    BroadcastMixMode nextMode = BroadcastMixMode.activeSync;
-
+    // 🚀 EXTRACCIÓN SÍNCRONA DIRECTA (SIN TIMEOUT)
+    Duration trackDur = Duration.zero;
     try {
-      final dur = await incomingPlayer.stream.duration
-          .firstWhere((d) => d.inMilliseconds > 0)
-          .timeout(const Duration(milliseconds: 1500));
-      cueInMs = _calculateSmartTrim(dur.inMilliseconds);
-      nextMode = _isMixTrack(dur.inMilliseconds)
-          ? BroadcastMixMode.longBypass
-          : BroadcastMixMode.activeSync;
+      trackDur = incomingPlayer.state.duration;
     } catch (_) {}
 
-    if (cueInMs > 0) {
-      await incomingPlayer.seek(Duration(milliseconds: cueInMs));
-      await Future.delayed(const Duration(milliseconds: 200));
-    }
+    final int cueInMs = _calculateSmartTrim(trackDur.inMilliseconds);
+    final int triggerMs = _calculateRadioMixOut(
+      trackDur.inMilliseconds,
+      nextTrack,
+    );
+    final LiveDjMixMode nextMode = _isMixTrack(trackDur.inMilliseconds)
+        ? LiveDjMixMode.longBypass
+        : LiveDjMixMode.activeSync;
 
-    await incomingPlayer.setVolume(100.0);
-    await incomingPlayer.play();
+    try {
+      if (cueInMs > 0) {
+        await incomingPlayer.seek(Duration(milliseconds: cueInMs));
+        await Future.delayed(const Duration(milliseconds: 150));
+      }
+      await incomingPlayer.setVolume(0.0);
+      await incomingPlayer.play();
+    } catch (e) {
+      _isCrossfading = false;
+      return;
+    }
 
     _usePlayerA = !_usePlayerA;
     _isStandbyArmed = false;
@@ -451,6 +493,9 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
       queue: newQueue,
       currentTrackPath: nextTrack,
       position: Duration(milliseconds: cueInMs),
+      duration: trackDur,
+      customCueInMs: cueInMs,
+      customMixOutMs: triggerMs,
       currentMixMode: nextMode,
     );
 
@@ -460,10 +505,71 @@ class BroadcastNotifier extends Notifier<BroadcastState> {
       fadingPlayer: fadingPlayer,
       incomingPlayer: incomingPlayer,
       mixProfile: state.currentMixMode,
+      isManualSkip: isManualSkip,
     );
+  }
+
+  Future<void> _executeMixEngine({
+    required Player fadingPlayer,
+    required Player incomingPlayer,
+    required LiveDjMixMode mixProfile,
+    bool isManualSkip = false,
+  }) async {
+    final String currentBaseFilter = ref
+        .read(equalizerProvider.notifier)
+        .currentBaseFilter;
+    final platformOut = fadingPlayer.platform as dynamic;
+    final platformIn = incomingPlayer.platform as dynamic;
+
+    try {
+      platformIn?.setProperty('audio-pitch-correction', 'yes');
+      platformOut?.setProperty('audio-pitch-correction', 'yes');
+      platformIn?.setProperty('af', currentBaseFilter);
+      platformOut?.setProperty('af', currentBaseFilter);
+
+      await incomingPlayer.setVolume(0.0);
+
+      final fadeStopwatch = Stopwatch()..start();
+      final fadeOutDurationMs = isManualSkip
+          ? 4500
+          : (mixProfile == LiveDjMixMode.longBypass ? 4000 : 18000);
+
+      while (fadeStopwatch.elapsedMilliseconds < fadeOutDurationMs) {
+        final progress = (fadeStopwatch.elapsedMilliseconds / fadeOutDurationMs)
+            .clamp(0.0, 1.0);
+
+        // 🎛️ SUPER MEZCLA DAWN (Alta Energía / Cero Huecos Acústicos)
+        final rateIn = (progress * 1.8).clamp(0.0, 1.0);
+        final rateOut = ((1.0 - progress) * 1.8).clamp(0.0, 1.0);
+
+        final smoothRateIn = pow(rateIn, 1.2).toDouble();
+        final smoothRateOut = pow(rateOut, 1.2).toDouble();
+
+        await incomingPlayer.setVolume(
+          (smoothRateIn * 100.0).clamp(0.0, 100.0),
+        );
+        await fadingPlayer.setVolume((smoothRateOut * 100.0).clamp(0.0, 100.0));
+
+        await Future.delayed(const Duration(milliseconds: 32));
+      }
+    } catch (e) {
+      debugPrint("🔴 [ERROR DSP]: $e");
+    } finally {
+      try {
+        await incomingPlayer.setVolume(100.0);
+        await incomingPlayer.setRate(1.0);
+        platformIn?.setProperty('af', currentBaseFilter);
+        platformOut?.setProperty('af', currentBaseFilter);
+        await fadingPlayer.setVolume(0.0);
+        await fadingPlayer.setRate(1.0);
+        await fadingPlayer.stop();
+      } catch (_) {}
+
+      _isCrossfading = false;
+    }
   }
 }
 
-final broadcastProvider = NotifierProvider<BroadcastNotifier, BroadcastState>(
-  BroadcastNotifier.new,
+final liveDjProvider = NotifierProvider<LiveDjNotifier, LiveDjState>(
+  LiveDjNotifier.new,
 );

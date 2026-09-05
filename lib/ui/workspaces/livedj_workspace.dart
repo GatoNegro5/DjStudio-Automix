@@ -4,11 +4,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../providers/theme_provider.dart';
 import '../../providers/directory_provider.dart';
-import '../../providers/broadcast_provider.dart';
-import 'playerDj.dart';
+import '../../providers/livedj_provider.dart';
+import 'automix_workspace.dart';
 
-class BroadcastWorkspace extends ConsumerWidget {
-  const BroadcastWorkspace({super.key});
+class LiveDjWorkspace extends ConsumerWidget {
+  const LiveDjWorkspace({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -27,17 +27,17 @@ class BroadcastWorkspace extends ConsumerWidget {
             ),
           ),
           const VerticalDivider(width: 1, color: Colors.white10),
-          const Expanded(flex: 4, child: BroadcastFolderPanel()),
+          const Expanded(flex: 4, child: LiveDjFolderPanel()),
           const VerticalDivider(width: 1, color: Colors.white10),
-          const Expanded(flex: 5, child: BroadcastPlayerPanel()),
+          const Expanded(flex: 5, child: LiveDjPlayerPanel()),
         ],
       ),
     );
   }
 }
 
-class BroadcastFolderPanel extends ConsumerWidget {
-  const BroadcastFolderPanel({super.key});
+class LiveDjFolderPanel extends ConsumerWidget {
+  const LiveDjFolderPanel({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -79,7 +79,7 @@ class BroadcastFolderPanel extends ConsumerWidget {
                             .whereType<File>()
                             .toList();
                         ref
-                            .read(broadcastProvider.notifier)
+                            .read(liveDjProvider.notifier)
                             .addAllTracks(rawFiles);
                       },
                 icon: Icon(Icons.playlist_add_check, size: isMobile ? 14 : 16),
@@ -140,9 +140,8 @@ class BroadcastFolderPanel extends ConsumerWidget {
                             color: DjStudioTheme.cyanAccent,
                             size: 20,
                           ),
-                          onPressed: () => ref
-                              .read(broadcastProvider.notifier)
-                              .addTrack(file),
+                          onPressed: () =>
+                              ref.read(liveDjProvider.notifier).addTrack(file),
                           tooltip: "Añadir a la Cola",
                         ),
                       ),
@@ -155,33 +154,34 @@ class BroadcastFolderPanel extends ConsumerWidget {
   }
 }
 
-class BroadcastPlayerPanel extends ConsumerStatefulWidget {
-  const BroadcastPlayerPanel({super.key});
+class LiveDjPlayerPanel extends ConsumerStatefulWidget {
+  const LiveDjPlayerPanel({super.key});
 
   @override
-  ConsumerState<BroadcastPlayerPanel> createState() =>
-      _BroadcastPlayerPanelState();
+  ConsumerState<LiveDjPlayerPanel> createState() => _LiveDjPlayerPanelState();
 }
 
-class _BroadcastPlayerPanelState extends ConsumerState<BroadcastPlayerPanel> {
+class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
   double? _dragPosition;
 
   @override
   Widget build(BuildContext context) {
-    final state = ref.watch(broadcastProvider);
+    final state = ref.watch(liveDjProvider);
     final pos = state.position;
     final dur = state.duration;
     final currentName = state.currentTrackPath != null
         ? state.currentTrackPath!.replaceAll('\\', '/').split('/').last
         : "SISTEMA EN ESPERA";
 
-    final isMixBypass = state.currentMixMode == BroadcastMixMode.longBypass;
+    final isMixBypass = state.currentMixMode == LiveDjMixMode.longBypass;
     final engineModeStr = isMixBypass
         ? "BYPASS (MEZCLA PROTEGIDA)"
-        : "ACTIVE BEATMATCHING (20s OVERLAP)";
+        : "ACTIVE BEATMATCHING (DNA DJ 60-80%)";
     final engineModeColor = isMixBypass
         ? DjStudioTheme.cyanAccent
         : DjStudioTheme.syncActive;
+
+    final isShuffle = state.mixStrategy == LiveDjMixStrategy.random;
 
     return Column(
       children: [
@@ -223,12 +223,16 @@ class _BroadcastPlayerPanelState extends ConsumerState<BroadcastPlayerPanel> {
                 ),
               ),
               const SizedBox(width: 15),
-              const Text(
-                "STUDIO 1 - BROADCAST ENGINE",
-                style: TextStyle(
-                  color: Colors.white54,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 12,
+              const Expanded(
+                child: Text(
+                  "STUDIO 1 - LIVEDJ ENGINE",
+                  style: TextStyle(
+                    color: Colors.white54,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 12,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
             ],
@@ -326,7 +330,7 @@ class _BroadcastPlayerPanelState extends ConsumerState<BroadcastPlayerPanel> {
                     onChangeEnd: (val) {
                       if (dur.inMilliseconds > 0) {
                         ref
-                            .read(broadcastProvider.notifier)
+                            .read(liveDjProvider.notifier)
                             .seek(Duration(milliseconds: val.toInt()));
                       }
                       setState(() {
@@ -340,6 +344,20 @@ class _BroadcastPlayerPanelState extends ConsumerState<BroadcastPlayerPanel> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
+                  IconButton(
+                    iconSize: 28,
+                    icon: Icon(
+                      isShuffle ? Icons.shuffle : Icons.format_list_numbered,
+                    ),
+                    color: isShuffle ? const Color(0xFF39FF14) : Colors.white54,
+                    tooltip: isShuffle
+                        ? 'Modo: Aleatorio (Shuffle)'
+                        : 'Modo: Secuencial',
+                    onPressed: () {
+                      ref.read(liveDjProvider.notifier).toggleMixStrategy();
+                    },
+                  ),
+                  const SizedBox(width: 20),
                   IconButton(
                     icon: Icon(
                       state.isPlaying
@@ -355,7 +373,7 @@ class _BroadcastPlayerPanelState extends ConsumerState<BroadcastPlayerPanel> {
                         state.queue.isEmpty && state.currentTrackPath == null
                         ? null
                         : () => ref
-                              .read(broadcastProvider.notifier)
+                              .read(liveDjProvider.notifier)
                               .togglePlayPause(),
                   ),
                   const SizedBox(width: 20),
@@ -369,8 +387,7 @@ class _BroadcastPlayerPanelState extends ConsumerState<BroadcastPlayerPanel> {
                     ),
                     onPressed: state.queue.isEmpty
                         ? null
-                        : () =>
-                              ref.read(broadcastProvider.notifier).forceNext(),
+                        : () => ref.read(liveDjProvider.notifier).forceNext(),
                   ),
                 ],
               ),
@@ -455,7 +472,7 @@ class _BroadcastPlayerPanelState extends ConsumerState<BroadcastPlayerPanel> {
                 ),
                 onPressed: state.queue.isEmpty
                     ? null
-                    : () => ref.read(broadcastProvider.notifier).clearQueue(),
+                    : () => ref.read(liveDjProvider.notifier).clearQueue(),
                 tooltip: "Borrar Cola",
               ),
               IconButton(
@@ -466,7 +483,7 @@ class _BroadcastPlayerPanelState extends ConsumerState<BroadcastPlayerPanel> {
                 ),
                 onPressed: state.queue.isEmpty
                     ? null
-                    : () => ref.read(broadcastProvider.notifier).savePlaylist(),
+                    : () => ref.read(liveDjProvider.notifier).savePlaylist(),
                 tooltip: "Guardar Playlist",
               ),
               IconButton(
@@ -476,7 +493,7 @@ class _BroadcastPlayerPanelState extends ConsumerState<BroadcastPlayerPanel> {
                   size: 20,
                 ),
                 onPressed: () =>
-                    ref.read(broadcastProvider.notifier).loadPlaylist(),
+                    ref.read(liveDjProvider.notifier).loadPlaylist(),
                 tooltip: "Cargar Playlist",
               ),
             ],
@@ -522,7 +539,7 @@ class _BroadcastPlayerPanelState extends ConsumerState<BroadcastPlayerPanel> {
                           overflow: TextOverflow.ellipsis,
                         ),
                         onTap: () => ref
-                            .read(broadcastProvider.notifier)
+                            .read(liveDjProvider.notifier)
                             .playTrackFromQueue(index),
                         trailing: IconButton(
                           icon: const Icon(
@@ -531,7 +548,7 @@ class _BroadcastPlayerPanelState extends ConsumerState<BroadcastPlayerPanel> {
                             size: 16,
                           ),
                           onPressed: () => ref
-                              .read(broadcastProvider.notifier)
+                              .read(liveDjProvider.notifier)
                               .removeTrack(file.path),
                         ),
                       ),

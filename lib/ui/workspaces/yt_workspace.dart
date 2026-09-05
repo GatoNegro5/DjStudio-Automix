@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
@@ -632,19 +633,34 @@ class _YoutubeSearchAndDownloadWorkspaceState
           .read(metadataWorkerProvider)
           .processSingleFile(currentPath);
 
+      // 🧠 LÓGICA DE BYPASS POR PESO FÍSICO (REMIX/MEGAMIX)
+      final double fileSizeMB = File(currentPath).lengthSync() / (1024 * 1024);
+      final bool isHeavyMix = fileSizeMB > 16.0; // > 7 minutos a 320kbps
+
       final lrcPath = currentPath.replaceAll(
         RegExp(r'\.mp3$|\.webm$', caseSensitive: false),
         '.lrc',
       );
       final hasPreIngestedLrc = File(lrcPath).existsSync();
 
-      if (!hasPreIngestedLrc) {
-        setState(() => _statusText = "📝 Scraping LRCLIB (NLP)...");
-        await ref.read(nlpWorkerProvider).processSingleFile(currentPath);
-      } else {
-        debugPrint(
-          "🟢 [TRACKER PIPELINE] NLP Omitido. Procesando letra verificada por el usuario.",
+      if (isHeavyMix) {
+        setState(
+          () => _statusText =
+              "⏭️ Mix Pesado detectado (${fileSizeMB.toStringAsFixed(1)}MB). Omitiendo NLP...",
         );
+        debugPrint(
+          "🟢 [TRACKER] Mix/Remix detectado. Bypass de NLP y Karaoke activado.",
+        );
+        await Future.delayed(const Duration(seconds: 1));
+      } else {
+        if (!hasPreIngestedLrc) {
+          setState(() => _statusText = "📝 Scraping LRCLIB (NLP)...");
+          await ref.read(nlpWorkerProvider).processSingleFile(currentPath);
+        } else {
+          debugPrint(
+            "🟢 [TRACKER PIPELINE] NLP Omitido. Procesando letra verificada por el usuario.",
+          );
+        }
       }
 
       setState(() => _statusText = "🔊 Aplicando DSP (C++) & Trim...");
@@ -768,7 +784,18 @@ class _YoutubeSearchAndDownloadWorkspaceState
       final parentDir = Directory(currentPath).parent.path;
       await ref.read(dspWorkerProvider).generateStaticBpmCache(parentDir);
 
-      setState(() => _statusText = "✅ ¡Track inyectado y listo para Automix!");
+      // 🛠️ INYECCIÓN KRAEOKE FIRE-AND-FORGET POST-MASTERIZACIÓN (BYPASS APLICADO)
+      if (!isHeavyMix) {
+        setState(
+          () => _statusText =
+              "✅ Automix listo. 🤖 Generando Karaoke en 2do plano...",
+        );
+        KaraokeAIEngine.spawnBackgroundExtraction(currentPath);
+      } else {
+        setState(
+          () => _statusText = "✅ Automix listo. (Karaoke IA omitido por peso)",
+        );
+      }
     } catch (e) {
       setState(
         () => _statusText = "⚠️ Descargado, pero falló el Auto-Master: $e",
@@ -1256,5 +1283,49 @@ class _PreIngestModalState extends State<PreIngestModal> {
         ),
       ],
     );
+  }
+}
+
+class KaraokeAIEngine {
+  static void spawnBackgroundExtraction(String path) {
+    final isFile = File(path).existsSync();
+    final isDir = Directory(path).existsSync();
+
+    // 1. Verificamos que la ruta exista física en el disco
+    if (!isFile && !isDir) {
+      debugPrint("🔴 [AI ENGINE] Ruta ignorada (No existe): $path");
+      return;
+    }
+
+    // 2. Si es archivo, exigimos MP3. Si es carpeta, lo dejamos pasar libremente.
+    if (isFile && !path.toLowerCase().endsWith('.mp3')) {
+      debugPrint("🔴 [AI ENGINE] Archivo ignorado (No es MP3): $path");
+      return;
+    }
+
+    debugPrint("🤖 [AI ENGINE] Lanzando subproceso Demucs en: $path");
+
+    try {
+      Process.start('python', [
+        'C:\\Python\\djstudio_player\\karaoke_ai_processor.py',
+        path,
+      ], runInShell: true).then((Process process) {
+        // Blindaje contra bytes malformados (cp1252 vs utf8)
+        const decoder = Utf8Decoder(allowMalformed: true);
+
+        process.stdout.transform(decoder).listen((data) {
+          debugPrint("🔵 [DEMUCS]: ${data.trim()}");
+        });
+        process.stderr.transform(decoder).listen((data) {
+          debugPrint("🔴 [DEMUCS PROGRESS]: ${data.trim()}");
+        });
+
+        process.exitCode.then((code) {
+          debugPrint("✅ [AI ENGINE] Extracción IA terminada con código: $code");
+        });
+      });
+    } catch (e) {
+      debugPrint("🔴 [FATAL I/O] Fallo al iniciar puente Python: $e");
+    }
   }
 }

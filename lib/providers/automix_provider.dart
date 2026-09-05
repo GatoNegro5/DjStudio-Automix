@@ -2,20 +2,30 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:async';
 import 'dart:convert';
-import 'package:flutter/foundation.dart';
+// 🛡️ FIX: Se cambió foundation.dart por material.dart para dar acceso al BuildContext
+import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
+import 'package:flutter/foundation.dart';
 
-// 🛠️ INYECCIÓN: El HAL que contiene la lógica multiplataforma
 import '../core/hal/platform_strategy.dart';
 import '../core/audio/dj_audio_handler.dart';
 
 import 'db_provider.dart';
 import 'nlp_provider.dart';
 import 'equalizer_provider.dart';
+import 'dsp_provider.dart'; // 🛡️ FIX: Dependencia para dspWorkerProvider
 
 enum MixStrategy { sequential, random }
+
+/// Perfil acústico de la transición. Define si la mezcla permuta los graves
+/// entre decks o se limita al crossfade DAWN puro.
+enum AutomixMixProfile { smoothBassSwap, manualOverride }
+
+// 🎚️ Corte de graves de la permuta de bajos: Butterworth de 2 polos a 140 Hz.
+// Se inyecta en libmpv vía la propiedad 'af'; cero DSP por muestras en Dart.
+const String _bassKillFilter = 'highpass=f=140:poles=2';
 
 class LyricLine {
   final Duration timestamp;
@@ -23,7 +33,7 @@ class LyricLine {
   LyricLine({required this.timestamp, required this.text});
 }
 
-class PlayerState {
+class AutomixState {
   final bool isPlaying;
   final Duration position;
   final Duration duration;
@@ -39,7 +49,7 @@ class PlayerState {
   final int customMixOutMs;
   final bool autoMixArmed;
 
-  PlayerState({
+  AutomixState({
     this.isPlaying = false,
     this.position = Duration.zero,
     this.duration = Duration.zero,
@@ -56,7 +66,7 @@ class PlayerState {
     this.autoMixArmed = true,
   });
 
-  PlayerState copyWith({
+  AutomixState copyWith({
     bool? isPlaying,
     Duration? position,
     Duration? duration,
@@ -72,7 +82,7 @@ class PlayerState {
     int? customMixOutMs,
     bool? autoMixArmed,
   }) {
-    return PlayerState(
+    return AutomixState(
       isPlaying: isPlaying ?? this.isPlaying,
       position: position ?? this.position,
       duration: duration ?? this.duration,
@@ -91,12 +101,12 @@ class PlayerState {
   }
 }
 
-class PlayerNotifier extends Notifier<PlayerState> {
+class AutomixNotifier extends Notifier<AutomixState> {
   late final Player _playerA;
   late final Player _playerB;
   bool _usePlayerA = true;
 
-  Player get _activePlayer => _usePlayerA ? _playerA : _playerB;
+  Player get _activeAutomix => _usePlayerA ? _playerA : _playerB;
   Player get _standbyPlayer => _usePlayerA ? _playerB : _playerA;
   List<Player> get deckPlayers => [_playerA, _playerB];
 
@@ -113,7 +123,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
   late final PlatformMixStrategy _mixStrategy;
 
   @override
-  PlayerState build() {
+  AutomixState build() {
     _playerA = Player();
     _playerB = Player();
 
@@ -125,7 +135,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
     _attachListeners(_playerA);
     _initPersistence();
 
-    // 🛠️ PUENTE OS: Enlazar comandos del Lockscreen/Bluetooth a Riverpod
     globalAudioHandler.onPlayPause = () => togglePlayPause();
     globalAudioHandler.onNext = () => forceTransition(state.currentIndex + 1);
     globalAudioHandler.onPrevious = () =>
@@ -141,7 +150,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
       _playerB.dispose();
     });
 
-    return PlayerState();
+    return AutomixState();
   }
 
   Future<void> setMixPoint(String type) async {
@@ -214,18 +223,20 @@ class PlayerNotifier extends Notifier<PlayerState> {
 
         await _loadLyrics(playlist[index]);
         await _loadTrackMetadata(playlist[index]);
-        await _activePlayer.open(Media(playlist[index]), play: false);
+        await _activeAutomix.open(Media(playlist[index]), play: false);
 
         try {
-          await _activePlayer.stream.duration
+          await _activeAutomix.stream.duration
               .firstWhere((d) => d.inMilliseconds > 0)
               .timeout(const Duration(seconds: 2));
         } catch (_) {}
 
         if (positionMs != null && positionMs > 0) {
-          await _activePlayer.seek(Duration(milliseconds: positionMs));
+          await _activeAutomix.seek(Duration(milliseconds: positionMs));
         } else if (state.customCueInMs > 0) {
-          await _activePlayer.seek(Duration(milliseconds: state.customCueInMs));
+          await _activeAutomix.seek(
+            Duration(milliseconds: state.customCueInMs),
+          );
         }
       }
     } catch (_) {}
@@ -235,6 +246,44 @@ class PlayerNotifier extends Notifier<PlayerState> {
     state = state.copyWith(mixStrategy: strategy);
     _saveSnapshot();
     _recalculateMixWindow();
+  }
+
+  void shufflePlaylist() {
+    if (state.playlist.length <= 2) {
+      state = state.copyWith(mixStrategy: MixStrategy.random);
+      _saveSnapshot();
+      return;
+    }
+
+    final currentTrack = state.playlist.first;
+    List<String> remainingTracks = state.playlist.sublist(1);
+
+    remainingTracks.shuffle(Random(DateTime.now().millisecondsSinceEpoch));
+
+    List<String> newPlaylist = [currentTrack, ...remainingTracks];
+
+    state = state.copyWith(
+      playlist: newPlaylist,
+      currentIndex: 0,
+      mixStrategy: MixStrategy.random,
+    );
+
+    _saveSnapshot();
+    _recalculateMixWindow();
+
+    debugPrint(
+      "🔀 [DSP] True Shuffle aplicado. ${remainingTracks.length} pistas reordenadas.",
+    );
+  }
+
+  void toggleMixStrategy() {
+    if (state.mixStrategy == MixStrategy.sequential) {
+      shufflePlaylist();
+    } else {
+      state = state.copyWith(mixStrategy: MixStrategy.sequential);
+      _saveSnapshot();
+      debugPrint("➡️ [DSP] Modo SECUENCIAL activado.");
+    }
   }
 
   void toggleAutoMixBypass() {
@@ -334,7 +383,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
   Future<void> seek(Duration position) async {
     if (state.currentTrackPath == null || _isCrossfading) return;
     _isPrepModeBypass = false;
-    await _activePlayer.seek(position);
+    await _activeAutomix.seek(position);
   }
 
   double _extractBpm(String? path) {
@@ -347,86 +396,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
     return match != null ? double.parse(match.group(1)!) : 0.0;
   }
 
-  Future<void> _executeMixEngine({
-    required Player fadingPlayer,
-    required Player incomingPlayer,
-    required int mixDurationMs,
-    required String mixProfile,
-    required double incomingRate,
-  }) async {
-    final String currentBaseFilter = ref
-        .read(equalizerProvider.notifier)
-        .currentBaseFilter;
-
-    final platformOut = fadingPlayer.platform as dynamic;
-    final platformIn = incomingPlayer.platform as dynamic;
-
-    try {
-      platformIn?.setProperty('af', '$currentBaseFilter,lowshelf=g=-24:f=250');
-
-      await incomingPlayer.setVolume(100.0);
-      await fadingPlayer.setVolume(100.0);
-
-      await Future.delayed(const Duration(milliseconds: 4000));
-
-      platformOut?.setProperty('af', '$currentBaseFilter,lowshelf=g=-24:f=250');
-      platformIn?.setProperty('af', currentBaseFilter);
-
-      final fadeStopwatch = Stopwatch()..start();
-      // ✅ Ahora respeta el parámetro inyectado desde la base de datos o el enrutador
-      final int fadeOutDurationMs = mixDurationMs;
-
-      while (fadeStopwatch.elapsedMilliseconds < fadeOutDurationMs) {
-        final progress = (fadeStopwatch.elapsedMilliseconds / fadeOutDurationMs)
-            .clamp(0.0, 1.0);
-        final rateOut = cos(progress * (pi / 2));
-        await fadingPlayer.setVolume((rateOut * 100.0).clamp(0.0, 100.0));
-        await Future.delayed(const Duration(milliseconds: 32));
-      }
-    } catch (e) {
-      debugPrint("🔴 [ERROR DSP]: $e");
-    } finally {
-      await incomingPlayer.setVolume(100.0);
-      platformIn?.setProperty('af', currentBaseFilter);
-
-      platformOut?.setProperty('af', currentBaseFilter);
-
-      // Detenemos la reproducción acústica
-      await fadingPlayer.stop();
-
-      // 🛠️ FIX ARQUITECTÓNICO ANDROID (Prevención OOM)
-      // Sobrescribimos el reproductor en espera con un Playlist vacío.
-      // Esto obliga a libmpv a liberar inmediatamente los bloques de RAM
-      // que ocupaba el MP3 decodificado del deck anterior.
-      await fadingPlayer.open(Playlist([]), play: false);
-
-      await fadingPlayer.setVolume(100.0);
-      await fadingPlayer.setRate(1.0);
-    }
-
-    if (incomingRate != 1.0) {
-      final pitchStopwatch = Stopwatch()..start();
-      const int pitchReleaseDurationMs = 3000;
-      final double rateDiff = 1.0 - incomingRate;
-
-      while (pitchStopwatch.elapsedMilliseconds < pitchReleaseDurationMs) {
-        if ((_usePlayerA && incomingPlayer == _playerA) ||
-            (!_usePlayerA && incomingPlayer == _playerB)) {
-          final double p =
-              (pitchStopwatch.elapsedMilliseconds / pitchReleaseDurationMs)
-                  .clamp(0.0, 1.0);
-          final double currentRate = incomingRate + (rateDiff * p);
-
-          await incomingPlayer.setRate(currentRate.clamp(0.5, 2.0));
-          await Future.delayed(const Duration(milliseconds: 50));
-        } else {
-          break;
-        }
-      }
-      await incomingPlayer.setRate(1.0);
-    }
-  }
-
   Future<int> _calculateSmartCueIn(String path, Player player) async {
     final meta = await ref.read(dbServiceProvider).getTrackMetadata(path);
 
@@ -437,17 +406,8 @@ class PlayerNotifier extends Notifier<PlayerState> {
       return meta.cueInMs!;
     }
 
-    try {
-      Duration dur = player.state.duration;
-      if (dur.inMilliseconds <= 0) {
-        dur = await player.stream.duration
-            .firstWhere((d) => d.inMilliseconds > 0)
-            .timeout(const Duration(milliseconds: 1500));
-      }
-      if (dur.inMilliseconds > 30000) return 10000;
-    } catch (_) {
-      return 10000;
-    }
+    final int durMs = player.state.duration.inMilliseconds;
+    if (durMs > 30000) return 10000;
     return 0;
   }
 
@@ -459,18 +419,27 @@ class PlayerNotifier extends Notifier<PlayerState> {
     int safeMixOutMs = state.customMixOutMs;
     int safeCueInMs = state.customCueInMs;
 
+    final trackPathLower = state.currentTrackPath?.toLowerCase() ?? '';
+    final isRemix = trackPathLower.contains('remix');
+    final isEdm =
+        trackPathLower.contains('electronica') ||
+        trackPathLower.contains('house');
+    final isTropical =
+        trackPathLower.contains('salsa') ||
+        trackPathLower.contains('cumbia') ||
+        trackPathLower.contains('merengue');
+
     if (safeMixOutMs <= 0) {
       if (state.lyrics.isNotEmpty) {
         final lastLyricMs = state.lyrics.last.timestamp.inMilliseconds;
-        int dynamicOutMs = lastLyricMs + 4000;
-        if (dynamicOutMs < state.duration.inMilliseconds - 2000) {
-          safeMixOutMs = dynamicOutMs;
-        }
+        safeMixOutMs = lastLyricMs + 1500;
       } else {
-        if (state.duration.inMilliseconds > 60000) {
-          safeMixOutMs = state.duration.inMilliseconds - 20000;
-        } else if (state.duration.inMilliseconds > 30000) {
-          safeMixOutMs = state.duration.inMilliseconds - 10000;
+        if (isRemix || isEdm) {
+          safeMixOutMs = (state.duration.inMilliseconds * 0.65).toInt();
+        } else if (isTropical) {
+          safeMixOutMs = (state.duration.inMilliseconds * 0.80).toInt();
+        } else {
+          safeMixOutMs = (state.duration.inMilliseconds * 0.75).toInt();
         }
       }
     }
@@ -487,7 +456,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
     if (safeMixOutMs > 0) {
       triggerMs = state.duration.inMilliseconds - safeMixOutMs;
     } else {
-      triggerMs = 4000;
+      triggerMs = 8000;
     }
 
     state = state.copyWith(
@@ -504,20 +473,99 @@ class PlayerNotifier extends Notifier<PlayerState> {
 
   int _calculateNextIndex() {
     if (state.playlist.length <= 1) return -1;
+    if (state.currentIndex + 1 < state.playlist.length) {
+      return state.currentIndex + 1;
+    }
+    return 0;
+  }
 
-    if (state.mixStrategy == MixStrategy.random) {
-      int next = Random().nextInt(state.playlist.length);
-      int attempts = 0;
-      while (state.playlist[next] == state.currentTrackPath && attempts < 15) {
-        next = Random().nextInt(state.playlist.length);
-        attempts++;
-      }
-      return next;
+  Future<void> loadContextAndPlay(
+    List<String> newPlaylist,
+    int startIndex,
+  ) async {
+    if (startIndex < 0 || startIndex >= newPlaylist.length) return;
+
+    final String nextTrack = newPlaylist[startIndex];
+
+    if (!state.isPlaying || state.currentTrackPath == null) {
+      state = state.copyWith(
+        playlist: newPlaylist,
+        currentIndex: startIndex,
+        currentTrackPath: nextTrack,
+        position: Duration.zero,
+        lyrics: [],
+        activeLyricIndex: -1,
+      );
+
+      await _activeAutomix.setVolume(100.0);
+      await _activeAutomix.open(Media(nextTrack), play: true);
+      _attachListeners(_activeAutomix);
+
+      await _loadLyrics(nextTrack);
+      await _loadTrackMetadata(nextTrack);
+      try {
+        _recalculateMixWindow();
+      } catch (_) {}
+      _saveSnapshot();
+      return;
     }
 
-    int nextIdx = state.currentIndex + 1;
-    if (nextIdx >= state.playlist.length) return -1;
-    return nextIdx;
+    if (!_isCrossfading) {
+      _isCrossfading = true;
+      _isPrepModeBypass = false;
+
+      final Player fadingPlayer = _activeAutomix;
+      final Player incomingPlayer = _standbyPlayer;
+
+      try {
+        await incomingPlayer.setVolume(0.0);
+        await incomingPlayer.open(Media(nextTrack), play: false);
+      } catch (e) {
+        _isCrossfading = false;
+        return;
+      }
+
+      try {
+        await incomingPlayer.setRate(1.0);
+        await incomingPlayer.play();
+      } catch (e) {
+        _isCrossfading = false;
+        return;
+      }
+
+      _usePlayerA = !_usePlayerA;
+      _attachListeners(_activeAutomix);
+
+      List<String> updatedPlaylist = List.from(newPlaylist);
+      updatedPlaylist.remove(nextTrack);
+      updatedPlaylist.insert(0, nextTrack);
+
+      state = state.copyWith(
+        playlist: updatedPlaylist,
+        currentIndex: 0,
+        currentTrackPath: nextTrack,
+        position: Duration.zero,
+        duration: incomingPlayer.state.duration,
+        lyrics: [],
+        activeLyricIndex: -1,
+      );
+
+      await _loadLyrics(nextTrack);
+      await _loadTrackMetadata(nextTrack);
+      try {
+        _recalculateMixWindow();
+      } catch (_) {}
+      _saveSnapshot();
+
+      await _executeMixEngine(
+        fadingPlayer: fadingPlayer,
+        incomingPlayer: incomingPlayer,
+        mixDurationMs: 4500,
+        mixProfile: AutomixMixProfile.manualOverride,
+        incomingRate: 1.0,
+        isManualSkip: true,
+      );
+    }
   }
 
   Future<void> jumpToTrack(int index) async {
@@ -528,16 +576,25 @@ class PlayerNotifier extends Notifier<PlayerState> {
     _isPrepModeBypass = false;
 
     final String nextTrack = state.playlist[index];
-    final Player fadingPlayer = _activePlayer;
+    final Player fadingPlayer = _activeAutomix;
     final Player incomingPlayer = _standbyPlayer;
 
-    await incomingPlayer.setVolume(0.0);
-    await incomingPlayer.open(Media(nextTrack), play: false);
-
-    int cueInMs = await _calculateSmartCueIn(nextTrack, incomingPlayer);
-    if (cueInMs > 0) {
-      await incomingPlayer.seek(Duration(milliseconds: cueInMs));
+    try {
+      await incomingPlayer.setVolume(0.0);
+      await incomingPlayer.open(Media(nextTrack), play: false);
+    } catch (e) {
+      _isCrossfading = false;
+      return;
     }
+
+    int cueInMs = 0;
+    try {
+      cueInMs = await _calculateSmartCueIn(nextTrack, incomingPlayer);
+      if (cueInMs > 0) {
+        await incomingPlayer.seek(Duration(milliseconds: cueInMs));
+        await Future.delayed(const Duration(milliseconds: 150));
+      }
+    } catch (_) {}
 
     final fadingBpm = _extractBpm(state.currentTrackPath);
     final incomingBpm = _extractBpm(nextTrack);
@@ -549,47 +606,50 @@ class PlayerNotifier extends Notifier<PlayerState> {
         incomingRate = ratio;
       }
     }
-    await incomingPlayer.setRate(incomingRate);
-    await incomingPlayer.play();
+
+    try {
+      await incomingPlayer.setRate(incomingRate);
+      await incomingPlayer.play();
+    } catch (e) {
+      _isCrossfading = false;
+      return;
+    }
+
     _usePlayerA = !_usePlayerA;
-    _attachListeners(_activePlayer);
+    _attachListeners(_activeAutomix);
 
     List<String> newPlaylist = List.from(state.playlist);
-    int newIndex = 0;
-
-    if (state.mixStrategy == MixStrategy.random) {
-      newIndex = index;
-    } else {
-      if (state.currentTrackPath != null) {
-        newPlaylist.remove(state.currentTrackPath);
-      }
-      newPlaylist.remove(nextTrack);
-      newPlaylist.insert(0, nextTrack);
-      newIndex = 0;
+    if (state.currentTrackPath != null) {
+      newPlaylist.remove(state.currentTrackPath);
     }
+    newPlaylist.remove(nextTrack);
+    newPlaylist.insert(0, nextTrack);
 
     state = state.copyWith(
       playlist: newPlaylist,
-      currentIndex: newIndex,
+      currentIndex: 0,
       currentTrackPath: nextTrack,
       position: Duration(milliseconds: cueInMs),
+      duration: incomingPlayer.state.duration,
       lyrics: [],
       activeLyricIndex: -1,
     );
 
     await _loadLyrics(nextTrack);
     await _loadTrackMetadata(nextTrack);
+    try {
+      _recalculateMixWindow();
+    } catch (_) {}
     _saveSnapshot();
 
     await _executeMixEngine(
       fadingPlayer: fadingPlayer,
       incomingPlayer: incomingPlayer,
-      mixDurationMs: 8000,
-      mixProfile: 'eq_kill',
+      mixDurationMs: 4500,
+      mixProfile: AutomixMixProfile.manualOverride,
       incomingRate: incomingRate,
+      isManualSkip: true,
     );
-
-    _isCrossfading = false;
   }
 
   Future<void> _triggerCrossfade() async {
@@ -597,16 +657,25 @@ class PlayerNotifier extends Notifier<PlayerState> {
     _isCrossfading = true;
 
     final String nextTrack = state.nextTrackPath!;
-    final Player fadingPlayer = _activePlayer;
+    final Player fadingPlayer = _activeAutomix;
     final Player incomingPlayer = _standbyPlayer;
 
-    await incomingPlayer.setVolume(0.0);
-    await incomingPlayer.open(Media(nextTrack), play: false);
-
-    int cueInMs = await _calculateSmartCueIn(nextTrack, incomingPlayer);
-    if (cueInMs > 0) {
-      await incomingPlayer.seek(Duration(milliseconds: cueInMs));
+    try {
+      await incomingPlayer.setVolume(0.0);
+      await incomingPlayer.open(Media(nextTrack), play: false);
+    } catch (e) {
+      _isCrossfading = false;
+      return;
     }
+
+    int cueInMs = 0;
+    try {
+      cueInMs = await _calculateSmartCueIn(nextTrack, incomingPlayer);
+      if (cueInMs > 0) {
+        await incomingPlayer.seek(Duration(milliseconds: cueInMs));
+        await Future.delayed(const Duration(milliseconds: 150));
+      }
+    } catch (_) {}
 
     final fadingBpm = _extractBpm(state.currentTrackPath);
     final incomingBpm = _extractBpm(nextTrack);
@@ -618,48 +687,157 @@ class PlayerNotifier extends Notifier<PlayerState> {
         incomingRate = ratio;
       }
     }
-    await incomingPlayer.setRate(incomingRate);
-    await incomingPlayer.play();
+
+    try {
+      await incomingPlayer.setRate(incomingRate);
+      await incomingPlayer.play();
+    } catch (e) {
+      _isCrossfading = false;
+      return;
+    }
+
     _usePlayerA = !_usePlayerA;
-    _attachListeners(_activePlayer);
+    _attachListeners(_activeAutomix);
 
     List<String> newPlaylist = List.from(state.playlist);
-    int newIndex = 0;
-
-    if (state.mixStrategy == MixStrategy.random) {
-      newIndex = newPlaylist.indexOf(nextTrack);
-      if (newIndex == -1) newIndex = 0;
-    } else {
-      if (state.currentTrackPath != null) {
-        newPlaylist.remove(state.currentTrackPath);
-      }
-      newPlaylist.remove(nextTrack);
-      newPlaylist.insert(0, nextTrack);
-      newIndex = 0;
+    if (state.currentTrackPath != null) {
+      newPlaylist.remove(state.currentTrackPath);
     }
+    newPlaylist.remove(nextTrack);
+    newPlaylist.insert(0, nextTrack);
 
     state = state.copyWith(
       playlist: newPlaylist,
-      currentIndex: newIndex,
+      currentIndex: 0,
       currentTrackPath: nextTrack,
       position: Duration(milliseconds: cueInMs),
+      duration: incomingPlayer.state.duration,
       lyrics: [],
       activeLyricIndex: -1,
     );
 
     await _loadLyrics(nextTrack);
     await _loadTrackMetadata(nextTrack);
+    try {
+      _recalculateMixWindow();
+    } catch (_) {}
     _saveSnapshot();
+
+    final bool isAutomix = state.lyrics.isNotEmpty;
+    final int mixDuration = isAutomix ? 14000 : 18000;
 
     await _executeMixEngine(
       fadingPlayer: fadingPlayer,
       incomingPlayer: incomingPlayer,
-      mixDurationMs: 8000,
-      mixProfile: 'eq_kill',
+      mixDurationMs: mixDuration,
+      mixProfile: AutomixMixProfile.smoothBassSwap,
       incomingRate: incomingRate,
+      isManualSkip: false,
     );
+  }
 
-    _isCrossfading = false;
+  // 🛡️ FIX: INYECCIÓN DE LA SUPER MEZCLA DAWN Y PARÁMETROS CORREGIDOS
+  Future<void> _executeMixEngine({
+    required Player fadingPlayer,
+    required Player incomingPlayer,
+    required int mixDurationMs,
+    required AutomixMixProfile mixProfile,
+    double incomingRate = 1.0,
+    bool isManualSkip = false,
+  }) async {
+    final String currentBaseFilter = ref
+        .read(equalizerProvider.notifier)
+        .currentBaseFilter;
+    final platformOut = fadingPlayer.platform as dynamic;
+    final platformIn = incomingPlayer.platform as dynamic;
+
+    // Un skip manual de 4,5 s no da margen musical para permutar graves.
+    final bool useBassSwap = mixProfile == AutomixMixProfile.smoothBassSwap;
+    final String lowCutFilter = '$currentBaseFilter,$_bassKillFilter';
+    bool bassSwapped = false;
+
+    try {
+      platformIn?.setProperty('audio-pitch-correction', 'yes');
+      platformOut?.setProperty('audio-pitch-correction', 'yes');
+      // La entrante nace sin graves para que nunca convivan dos líneas de bajo
+      // sumando energía en el cruce. Inaudible: su volumen todavía es 0.
+      platformIn?.setProperty(
+        'af',
+        useBassSwap ? lowCutFilter : currentBaseFilter,
+      );
+      platformOut?.setProperty('af', currentBaseFilter);
+
+      await incomingPlayer.setVolume(0.0);
+
+      final fadeStopwatch = Stopwatch()..start();
+      final actualDuration = isManualSkip ? 4500 : mixDurationMs;
+
+      while (fadeStopwatch.elapsedMilliseconds < actualDuration) {
+        final progress = (fadeStopwatch.elapsedMilliseconds / actualDuration)
+            .clamp(0.0, 1.0);
+
+        // 🎛️ SUPER MEZCLA DAWN (Alta Energía / Cero Huecos Acústicos)
+        final rateIn = (progress * 1.8).clamp(0.0, 1.0);
+        final rateOut = ((1.0 - progress) * 1.8).clamp(0.0, 1.0);
+
+        final smoothRateIn = pow(rateIn, 1.2).toDouble();
+        final smoothRateOut = pow(rateOut, 1.2).toDouble();
+
+        // 🔀 PERMUTA DE GRAVES en el cruce, donde ambas rondan el 0.9: la
+        // saliente cede el bajo y la entrante lo recupera. Una única
+        // reconstrucción de la cadena af por deck, enmascarada por el nivel
+        // máximo de la mezcla.
+        if (useBassSwap && !bassSwapped && progress >= 0.5) {
+          bassSwapped = true;
+          platformOut?.setProperty('af', lowCutFilter);
+          platformIn?.setProperty('af', currentBaseFilter);
+        }
+
+        await incomingPlayer.setVolume(
+          (smoothRateIn * 100.0).clamp(0.0, 100.0),
+        );
+        await fadingPlayer.setVolume((smoothRateOut * 100.0).clamp(0.0, 100.0));
+
+        await Future.delayed(const Duration(milliseconds: 32));
+      }
+    } catch (e) {
+      debugPrint("🔴 [ERROR DSP AUTOMIX]: $e");
+    } finally {
+      // 🛡️ FIX: el glide de tempo arranca en incomingRate. Fijar aquí el rate a
+      // 1.0 provocaba un salto de velocidad hacia atrás al iniciar la rampa.
+      final bool willGlideRate = incomingRate != 1.0 && !isManualSkip;
+
+      try {
+        await incomingPlayer.setVolume(100.0);
+        if (!willGlideRate) await incomingPlayer.setRate(1.0);
+        platformIn?.setProperty('af', currentBaseFilter);
+        platformOut?.setProperty('af', currentBaseFilter);
+        await fadingPlayer.setVolume(0.0);
+        await fadingPlayer.setRate(1.0);
+        await fadingPlayer.stop();
+      } catch (_) {}
+
+      if (willGlideRate) {
+        try {
+          final pitchStopwatch = Stopwatch()..start();
+          final double rateDiff = 1.0 - incomingRate;
+          while (pitchStopwatch.elapsedMilliseconds < 3000) {
+            final double p = (pitchStopwatch.elapsedMilliseconds / 3000).clamp(
+              0.0,
+              1.0,
+            );
+            final double curve = sin(p * (pi / 2));
+            await incomingPlayer.setRate(incomingRate + (rateDiff * curve));
+            await Future.delayed(const Duration(milliseconds: 50));
+          }
+        } catch (_) {}
+        try {
+          await incomingPlayer.setRate(1.0);
+        } catch (_) {}
+      }
+
+      _isCrossfading = false;
+    }
   }
 
   void _attachListeners(Player player) {
@@ -705,7 +883,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
         _saveSnapshot();
       }
 
-      // 🛠️ TRANSMISIÓN AL KERNEL: Posición actual para la barra de estado del celular
       globalAudioHandler.updateOsPlaybackState(state.isPlaying, pos);
 
       if (state.autoMixArmed &&
@@ -725,7 +902,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
       state = state.copyWith(duration: dur);
       _recalculateMixWindow();
 
-      // 🛠️ TRANSMISIÓN AL KERNEL: Metadatos para la pantalla de bloqueo
       if (state.currentTrackPath != null) {
         final fileName = state.currentTrackPath!
             .replaceAll('\\', '/')
@@ -737,7 +913,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
 
     _playingSub = player.stream.playing.listen((playing) {
       state = state.copyWith(isPlaying: playing);
-      // 🛠️ TRANSMISIÓN AL KERNEL: Estado de Play/Pause
       globalAudioHandler.updateOsPlaybackState(playing, state.position);
     });
 
@@ -750,47 +925,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
         _triggerCrossfade();
       }
     });
-  }
-
-  Future<void> loadContextAndPlay(List<String> playlist, int startIndex) async {
-    _isPrepModeBypass = false;
-
-    final remainingPlaylist = playlist.sublist(startIndex);
-
-    state = state.copyWith(
-      playlist: remainingPlaylist,
-      currentIndex: 0,
-      currentTrackPath: remainingPlaylist.isNotEmpty
-          ? remainingPlaylist.first
-          : null,
-      customCueInMs: -1,
-      customMixOutMs: -1,
-      autoMixArmed: true,
-    );
-    _saveSnapshot();
-
-    if (remainingPlaylist.isEmpty) return;
-
-    final path = remainingPlaylist.first;
-    await _loadLyrics(path);
-    await _loadTrackMetadata(path);
-
-    int cueInMs = 0;
-    final meta = await ref.read(dbServiceProvider).getTrackMetadata(path);
-    if (meta != null && meta.cueInMs != null) cueInMs = meta.cueInMs!;
-
-    await _activePlayer.setVolume(100.0);
-    await _activePlayer.open(Media(path), play: false);
-
-    if (cueInMs > 0) {
-      try {
-        await _activePlayer.stream.duration
-            .firstWhere((d) => d.inMilliseconds > 0)
-            .timeout(const Duration(seconds: 2));
-      } catch (_) {}
-      await _activePlayer.seek(Duration(milliseconds: cueInMs));
-    }
-    await _activePlayer.play();
   }
 
   Future<void> _executeQuickFadeOut(Player player) async {
@@ -902,16 +1036,16 @@ class PlayerNotifier extends Notifier<PlayerState> {
 
     if (!state.isPlaying && state.customCueInMs > 0) {
       if (state.position.inMilliseconds < state.customCueInMs) {
-        await _activePlayer.seek(Duration(milliseconds: state.customCueInMs));
+        await _activeAutomix.seek(Duration(milliseconds: state.customCueInMs));
       }
     }
-    await _activePlayer.playOrPause();
+    await _activeAutomix.playOrPause();
     if (!state.isPlaying) _saveSnapshot();
   }
 
   Future<void> pause() async {
     if (state.isPlaying) {
-      await _activePlayer.pause();
+      await _activeAutomix.pause();
       _saveSnapshot();
     }
   }
@@ -935,14 +1069,14 @@ class PlayerNotifier extends Notifier<PlayerState> {
     await _loadLyrics(newPath);
     await _loadTrackMetadata(newPath);
 
-    final Player fadingPlayer = _activePlayer;
+    final Player fadingPlayer = _activeAutomix;
     final Player incomingPlayer = _standbyPlayer;
 
     await incomingPlayer.setVolume(100.0);
     await incomingPlayer.open(Media(newPath), play: true);
 
     _usePlayerA = !_usePlayerA;
-    _attachListeners(_activePlayer);
+    _attachListeners(_activeAutomix);
     _executeQuickFadeOut(fadingPlayer);
   }
 
@@ -994,6 +1128,16 @@ class PlayerNotifier extends Notifier<PlayerState> {
     debugPrint(
       "🗑️ [PAPELERA] Cues y archivo NLP destruidos y reseteados para: $path",
     );
+  }
+
+  void removeTrack(String path) {
+    final newPlaylist = List<String>.from(state.playlist)..remove(path);
+    int newIndex = state.currentIndex;
+    if (state.currentTrackPath != null && state.currentTrackPath != path) {
+      newIndex = newPlaylist.indexOf(state.currentTrackPath!);
+    }
+    state = state.copyWith(playlist: newPlaylist, currentIndex: newIndex);
+    _saveSnapshot();
   }
 
   Future<void> autoSyncFirstLyric() async {
@@ -1160,6 +1304,469 @@ class PlayerNotifier extends Notifier<PlayerState> {
   }
 }
 
-final playerProvider = NotifierProvider<PlayerNotifier, PlayerState>(
-  PlayerNotifier.new,
+class PlayedTracksNotifier extends Notifier<Set<String>> {
+  @override
+  Set<String> build() {
+    _loadSession();
+    return {};
+  }
+
+  String _getSessionFilePath() {
+    String baseDir;
+    if (Platform.isWindows) {
+      final userProfile = Platform.environment['USERPROFILE'];
+      baseDir = userProfile != null
+          ? '$userProfile\\Music\\DjPlaylists'
+          : 'C:\\Music\\DjPlaylists';
+    } else if (Platform.isMacOS || Platform.isLinux) {
+      final home = Platform.environment['HOME'];
+      baseDir = home != null ? '$home/Music/DjPlaylists' : '/tmp/DjPlaylists';
+    } else {
+      baseDir = '/storage/emulated/0/Music/DjPlaylists';
+    }
+    final dir = Directory(baseDir);
+    if (!dir.existsSync()) dir.createSync(recursive: true);
+    return '${dir.path}${Platform.pathSeparator}_played_tracks_session.json';
+  }
+
+  Future<void> _loadSession() async {
+    try {
+      final file = File(_getSessionFilePath());
+      if (file.existsSync()) {
+        final content = await file.readAsString();
+        final data = jsonDecode(content) as List<dynamic>;
+        state = data.map((e) => e.toString()).toSet();
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _saveSession(Set<String> currentPlayed) async {
+    try {
+      final file = File(_getSessionFilePath());
+      await file.writeAsString(jsonEncode(currentPlayed.toList()));
+    } catch (_) {}
+  }
+
+  void addTrack(String track) {
+    if (!state.contains(track)) {
+      final newState = {...state, track};
+      state = newState;
+      _saveSession(newState);
+    }
+  }
+
+  void removeTrack(String track) {
+    if (state.contains(track)) {
+      final newState = Set<String>.from(state);
+      newState.remove(track);
+      state = newState;
+      _saveSession(newState);
+    }
+  }
+}
+
+class AutomixQueueNotifier extends Notifier<List<File>> {
+  @override
+  List<File> build() {
+    _loadSession();
+    return [];
+  }
+
+  String _getSessionFilePath() {
+    String baseDir;
+    if (Platform.isWindows) {
+      final userProfile = Platform.environment['USERPROFILE'];
+      baseDir = userProfile != null
+          ? '$userProfile\\Music\\DjPlaylists'
+          : 'C:\\Music\\DjPlaylists';
+    } else if (Platform.isMacOS || Platform.isLinux) {
+      final home = Platform.environment['HOME'];
+      baseDir = home != null ? '$home/Music/DjPlaylists' : '/tmp/DjPlaylists';
+    } else {
+      baseDir = '/storage/emulated/0/Music/DjPlaylists';
+    }
+    final dir = Directory(baseDir);
+    if (!dir.existsSync()) dir.createSync(recursive: true);
+    return '${dir.path}${Platform.pathSeparator}_automix_session.json';
+  }
+
+  Future<void> _loadSession() async {
+    try {
+      final file = File(_getSessionFilePath());
+      if (file.existsSync()) {
+        final content = await file.readAsString();
+        final data = jsonDecode(content) as List<dynamic>;
+        List<File> files = [];
+        for (String p in data) {
+          if (File(p).existsSync()) files.add(File(p));
+        }
+        state = files;
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _saveSession(List<File> currentQueue) async {
+    try {
+      final file = File(_getSessionFilePath());
+      final paths = currentQueue.map((f) => f.path).toList();
+      await file.writeAsString(jsonEncode(paths));
+    } catch (_) {}
+  }
+
+  void addTrack(File file) {
+    final newState = state.where((f) => f.path != file.path).toList();
+    newState.add(file);
+    state = newState;
+    _saveSession(newState);
+  }
+
+  void addAll(List<File> files) {
+    var newState = List<File>.from(state);
+    for (var f in files) {
+      newState.removeWhere((existing) => existing.path == f.path);
+      newState.add(f);
+    }
+    state = newState;
+    _saveSession(newState);
+  }
+
+  void removeTrack(String path) {
+    final newState = state.where((f) => f.path != path).toList();
+    state = newState;
+    _saveSession(newState);
+  }
+
+  void clearQueue() {
+    state = [];
+    _saveSession([]);
+  }
+
+  void restoreQueue(List<String> paths) {
+    List<File> files = [];
+    for (String p in paths) {
+      if (File(p).existsSync()) files.add(File(p));
+    }
+    state = files;
+    _saveSession(files);
+  }
+}
+
+enum TrackSortMode { alphabetical, bpmDesc, bpmAsc }
+
+class TrackSortNotifier extends Notifier<TrackSortMode> {
+  @override
+  TrackSortMode build() => TrackSortMode.alphabetical;
+  void updateMode(TrackSortMode mode) => state = mode;
+}
+
+class BpmCacheNotifier extends Notifier<Map<String, double>> {
+  @override
+  Map<String, double> build() => {};
+
+  Future<void> loadCache(String directoryPath) async {
+    if (directoryPath.isEmpty) {
+      state = {};
+      return;
+    }
+    try {
+      await ref.read(dspWorkerProvider).generateStaticBpmCache(directoryPath);
+    } catch (_) {}
+
+    final file = File(
+      '$directoryPath${Platform.pathSeparator}_dj_metadata.json',
+    );
+    if (file.existsSync()) {
+      try {
+        final content = await file.readAsString();
+        final decoded = jsonDecode(content) as Map<String, dynamic>;
+        final Map<String, double> newCache = {};
+
+        decoded.forEach((key, value) {
+          if (value is num) {
+            newCache[key] = value.toDouble();
+          } else if (value is Map && value['bpm'] != null) {
+            newCache[key] = (value['bpm'] as num).toDouble();
+          }
+        });
+        state = newCache;
+      } catch (e) {
+        state = {};
+      }
+    } else {
+      state = {};
+    }
+  }
+}
+
+class WasapiRecordNotifier extends Notifier<bool> {
+  Process? _recordingProcess;
+  String? _currentOutputPath;
+  String _lastErrorLog = "";
+
+  @override
+  bool build() => false;
+
+  Future<void> toggleRecording(BuildContext context) async {
+    if (state) {
+      await stopRecording(context);
+    } else {
+      await startRecording(context);
+    }
+  }
+
+  String _getFFmpegPath() {
+    if (Platform.isAndroid || Platform.isIOS) return 'ffmpeg';
+    final exeDir = File(Platform.resolvedExecutable).parent.path;
+    final localFFmpeg = Platform.isWindows
+        ? '$exeDir\\ffmpeg.exe'
+        : '$exeDir/ffmpeg';
+    if (File(localFFmpeg).existsSync()) return localFFmpeg;
+    return 'ffmpeg';
+  }
+
+  Future<String> _getLoopbackDevice() async {
+    if (Platform.isWindows) {
+      try {
+        final process = await Process.run(_getFFmpegPath(), [
+          '-list_devices',
+          'true',
+          '-f',
+          'dshow',
+          '-i',
+          'dummy',
+        ]);
+        final logs = process.stderr.toString();
+        final lines = logs.split('\n');
+
+        for (int i = 0; i < lines.length; i++) {
+          final lowerLine = lines[i].toLowerCase();
+          if (lowerLine.contains('(audio)') &&
+              (lowerLine.contains('mezcla') ||
+                  lowerLine.contains('estéreo') ||
+                  lowerLine.contains('stereo'))) {
+            if (i + 1 < lines.length &&
+                lines[i + 1].toLowerCase().contains('alternative name')) {
+              final match = RegExp(r'"([^"]+)"').firstMatch(lines[i + 1]);
+              if (match != null) return 'audio=${match.group(1)!}';
+            }
+          }
+        }
+      } catch (_) {}
+      return r'audio=@device_cm_{33D9A762-90C8-11D0-BD43-00A0C911CE86}\wave_{E2847FF6-6193-463E-848F-0E16C78BD2EA}';
+    } else if (Platform.isMacOS) {
+      return ':0';
+    } else {
+      throw UnsupportedError(
+        'Driver de loopback no soportado en esta plataforma.',
+      );
+    }
+  }
+
+  Future<void> startRecording(BuildContext context) async {
+    if (Platform.isAndroid || Platform.isIOS) {
+      if (context.mounted) {
+        _showErrorDialog(
+          context,
+          "VETO TÉCNICO: Sandbox Restringido",
+          "La captura del Master Out en Android/iOS está bloqueada a nivel de Kernel por políticas de privacidad. Se requiere migrar a APIs nativas (MediaProjection/ReplayKit).",
+        );
+      }
+      return;
+    }
+
+    final userProfile =
+        Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'];
+    final baseDir = Platform.isWindows
+        ? '$userProfile\\Music\\GrabacionesDj'
+        : '$userProfile/Music/GrabacionesDj';
+
+    final dir = Directory(baseDir);
+    if (!dir.existsSync()) dir.createSync(recursive: true);
+
+    final dateStr = DateTime.now()
+        .toIso8601String()
+        .replaceAll(':', '-')
+        .split('.')
+        .first;
+    _currentOutputPath =
+        '${dir.path}${Platform.pathSeparator}LiveMix_$dateStr.mp3';
+    _lastErrorLog = "";
+
+    try {
+      final deviceName = await _getLoopbackDevice();
+      final format = Platform.isWindows ? 'dshow' : 'avfoundation';
+
+      debugPrint(
+        "🟢 [Hardware Tracker] Ruteando bus maestro a: $deviceName ($format)",
+      );
+
+      final args = [
+        '-y',
+        '-f',
+        format,
+        '-i',
+        deviceName,
+        '-c:a',
+        'libmp3lame',
+        '-b:a',
+        '320k',
+        _currentOutputPath!,
+      ];
+
+      _recordingProcess = await Process.start(_getFFmpegPath(), args);
+      state = true;
+
+      _recordingProcess!.stderr.transform(utf8.decoder).listen((log) {
+        _lastErrorLog += log;
+      });
+
+      _recordingProcess!.exitCode.then((code) {
+        if (code != 0 && code != 255 && state) {
+          state = false;
+          if (context.mounted) {
+            _showErrorDialog(
+              context,
+              "🔴 VETO TÉCNICO: FFmpeg Colapsó",
+              _lastErrorLog,
+            );
+          }
+        }
+      });
+
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '🔴 GRABANDO MASTER OUT: LiveMix_$dateStr.mp3',
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            backgroundColor: Colors.redAccent,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint("🔴 [RECORD FATAL]: $e");
+    }
+  }
+
+  Future<void> stopRecording(BuildContext context) async {
+    if (_recordingProcess != null) {
+      _recordingProcess!.stdin.writeln('q');
+      await Future.delayed(const Duration(milliseconds: 500));
+      _recordingProcess!.kill();
+      _recordingProcess = null;
+    }
+
+    state = false;
+
+    final file = File(_currentOutputPath ?? '');
+    final fileExists = file.existsSync() && file.lengthSync() > 0;
+
+    if (context.mounted) {
+      if (fileExists) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '✅ Mezcla renderizada en: $_currentOutputPath',
+              style: const TextStyle(
+                color: Colors.black,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            backgroundColor: const Color(0xFF39FF14),
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              '❌ ERROR: Archivo vacío o I/O bloqueado.',
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            backgroundColor: Colors.redAccent,
+            duration: Duration(seconds: 4),
+          ),
+        );
+      }
+    }
+  }
+
+  void _showErrorDialog(BuildContext context, String title, String message) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF121212),
+        shape: RoundedRectangleBorder(
+          side: const BorderSide(color: Colors.redAccent),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        title: Text(
+          title,
+          style: const TextStyle(
+            color: Colors.redAccent,
+            fontSize: 14,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        content: SizedBox(
+          width: 600,
+          height: 400,
+          child: SingleChildScrollView(
+            child: Text(
+              message,
+              style: const TextStyle(
+                color: Colors.white70,
+                fontFamily: 'Consolas',
+                fontSize: 11,
+              ),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text(
+              "Cerrar",
+              style: TextStyle(color: Colors.white54),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// 🛡️ DECLARACIÓN DE LOS PROVIDERS SEPARADOS:
+final automixProvider = NotifierProvider<AutomixNotifier, AutomixState>(
+  AutomixNotifier.new,
+);
+
+final automixQueueProvider = NotifierProvider<AutomixQueueNotifier, List<File>>(
+  AutomixQueueNotifier.new,
+);
+
+final playedTracksProvider =
+    NotifierProvider<PlayedTracksNotifier, Set<String>>(
+      PlayedTracksNotifier.new,
+    );
+
+final trackSortProvider = NotifierProvider<TrackSortNotifier, TrackSortMode>(
+  TrackSortNotifier.new,
+);
+
+final bpmCacheProvider =
+    NotifierProvider<BpmCacheNotifier, Map<String, double>>(
+      BpmCacheNotifier.new,
+    );
+
+final wasapiRecordProvider = NotifierProvider<WasapiRecordNotifier, bool>(
+  WasapiRecordNotifier.new,
 );
