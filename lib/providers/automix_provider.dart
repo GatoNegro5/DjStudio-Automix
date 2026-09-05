@@ -8,6 +8,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
+import 'package:djstudio_player/src/rust/api/core_dsp.dart' as rust_dsp;
 
 import '../core/hal/platform_strategy.dart';
 import '../core/audio/dj_audio_handler.dart';
@@ -26,6 +27,18 @@ enum AutomixMixProfile { smoothBassSwap, manualOverride }
 // 🎚️ Corte de graves de la permuta de bajos: Butterworth de 2 polos a 140 Hz.
 // Se inyecta en libmpv vía la propiedad 'af'; cero DSP por muestras en Dart.
 const String _bassKillFilter = 'highpass=f=140:poles=2';
+
+// ⏱️ Ventana DAWN automática: entra 5 s antes del SET OUT y se prolonga sobre
+// la cola de energía que `silencedetect` encuentre después del punto — nunca
+// menos de 2 s ni más de 5 s. El SET OUT deja de ser un final seco.
+const int kDawnLeadMs = 5000;
+const int _dawnTailMinMs = 2000;
+const int _dawnTailMaxMs = 5000;
+
+// 🎚️ Cambio manual: el fundido se dimensiona con la pista entrante, no con una
+// constante. Fraseo 4/4 acotado a esta banda.
+const int _manualMixMinMs = 8000;
+const int _manualMixMaxMs = 18000;
 
 class LyricLine {
   final Duration timestamp;
@@ -47,6 +60,7 @@ class AutomixState {
   final MixStrategy mixStrategy;
   final int customCueInMs;
   final int customMixOutMs;
+  final int customMixDurationMs;
   final bool autoMixArmed;
 
   AutomixState({
@@ -63,6 +77,7 @@ class AutomixState {
     this.mixStrategy = MixStrategy.sequential,
     this.customCueInMs = -1,
     this.customMixOutMs = -1,
+    this.customMixDurationMs = 18000,
     this.autoMixArmed = true,
   });
 
@@ -80,6 +95,7 @@ class AutomixState {
     MixStrategy? mixStrategy,
     int? customCueInMs,
     int? customMixOutMs,
+    int? customMixDurationMs,
     bool? autoMixArmed,
   }) {
     return AutomixState(
@@ -96,6 +112,7 @@ class AutomixState {
       mixStrategy: mixStrategy ?? this.mixStrategy,
       customCueInMs: customCueInMs ?? this.customCueInMs,
       customMixOutMs: customMixOutMs ?? this.customMixOutMs,
+      customMixDurationMs: customMixDurationMs ?? this.customMixDurationMs,
       autoMixArmed: autoMixArmed ?? this.autoMixArmed,
     );
   }
@@ -116,9 +133,17 @@ class AutomixNotifier extends Notifier<AutomixState> {
   StreamSubscription? _completedSub;
 
   bool _isCrossfading = false;
-  final int _triggerRemainingMs = 4000;
   bool _isPrepModeBypass = false;
   int _lastSavedPositionMs = 0;
+  bool _mixOutIsManual = false;
+  bool _cueInIsManual = false;
+  bool _mixPlanReady = false;
+  int _autoMixAnchorMs = 0;
+  String? _outroPlanToken;
+  String? _lastDurationPlanKey;
+  int _lastUiPosMs = -1;
+  int _lastLyricIndex = -2;
+  final Map<String, int> _outroEnergyEndCache = {};
 
   late final PlatformMixStrategy _mixStrategy;
 
@@ -164,6 +189,7 @@ class AutomixNotifier extends Notifier<AutomixState> {
         cueInMs: currentPosMs,
         isManualCue: true,
       );
+      _cueInIsManual = true;
       state = state.copyWith(customCueInMs: currentPosMs);
     } else {
       await db.saveTrackMetadata(
@@ -171,7 +197,13 @@ class AutomixNotifier extends Notifier<AutomixState> {
         mixOutMs: currentPosMs,
         isManualCue: true,
       );
-      state = state.copyWith(customMixOutMs: currentPosMs, autoMixArmed: true);
+      _mixOutIsManual = true;
+      state = state.copyWith(
+        customMixOutMs: currentPosMs,
+        // Provisional hasta que el análisis del outro fije la cola real.
+        customMixDurationMs: kDawnLeadMs + _dawnTailMinMs,
+        autoMixArmed: true,
+      );
       _recalculateMixWindow();
       if (!state.isPlaying) _isPrepModeBypass = true;
     }
@@ -372,6 +404,9 @@ class AutomixNotifier extends Notifier<AutomixState> {
         .read(dbServiceProvider)
         .getTrackMetadata(audioPath);
 
+    final bool manual = metadata?.isManualCue ?? false;
+    _cueInIsManual = manual && (metadata?.cueInMs ?? 0) > 0;
+    _mixOutIsManual = manual && (metadata?.mixOutMs ?? 0) > 0;
     state = state.copyWith(
       customCueInMs: metadata?.cueInMs ?? -1,
       customMixOutMs: metadata?.mixOutMs ?? -1,
@@ -416,39 +451,41 @@ class AutomixNotifier extends Notifier<AutomixState> {
     final nextIdx = _calculateNextIndex();
     final nextPath = nextIdx != -1 ? state.playlist[nextIdx] : null;
 
-    int safeMixOutMs = state.customMixOutMs;
+    int safeMixOutMs = _mixOutIsManual ? state.customMixOutMs : -1;
     int safeCueInMs = state.customCueInMs;
 
-    final trackPathLower = state.currentTrackPath?.toLowerCase() ?? '';
-    final isRemix = trackPathLower.contains('remix');
-    final isEdm =
-        trackPathLower.contains('electronica') ||
-        trackPathLower.contains('house');
-    final isTropical =
-        trackPathLower.contains('salsa') ||
-        trackPathLower.contains('cumbia') ||
-        trackPathLower.contains('merengue');
+    // SET IN / SET OUT mandan. Letra y ADN solo rellenan huecos.
+    if (!_mixOutIsManual && safeMixOutMs <= 0) {
+      final trackPathLower = state.currentTrackPath?.toLowerCase() ?? '';
+      final isRemix = trackPathLower.contains('remix');
+      final isEdm =
+          trackPathLower.contains('electronica') ||
+          trackPathLower.contains('house');
+      final isTropical =
+          trackPathLower.contains('salsa') ||
+          trackPathLower.contains('cumbia') ||
+          trackPathLower.contains('merengue');
 
-    if (safeMixOutMs <= 0) {
       if (state.lyrics.isNotEmpty) {
         final lastLyricMs = state.lyrics.last.timestamp.inMilliseconds;
         safeMixOutMs = lastLyricMs + 1500;
+      } else if (isRemix || isEdm) {
+        safeMixOutMs = (state.duration.inMilliseconds * 0.65).toInt();
+      } else if (isTropical) {
+        safeMixOutMs = (state.duration.inMilliseconds * 0.80).toInt();
       } else {
-        if (isRemix || isEdm) {
-          safeMixOutMs = (state.duration.inMilliseconds * 0.65).toInt();
-        } else if (isTropical) {
-          safeMixOutMs = (state.duration.inMilliseconds * 0.80).toInt();
-        } else {
-          safeMixOutMs = (state.duration.inMilliseconds * 0.75).toInt();
-        }
+        safeMixOutMs = (state.duration.inMilliseconds * 0.75).toInt();
       }
     }
 
-    if (safeMixOutMs > 0 &&
+    if (!_mixOutIsManual &&
+        safeMixOutMs > 0 &&
         safeMixOutMs >= state.duration.inMilliseconds - 4000) {
       safeMixOutMs = state.duration.inMilliseconds - 4000;
     }
-    if (safeCueInMs > 0 && safeCueInMs > state.duration.inMilliseconds ~/ 2) {
+    if (!_cueInIsManual &&
+        safeCueInMs > 0 &&
+        safeCueInMs > state.duration.inMilliseconds ~/ 2) {
       safeCueInMs = 0;
     }
 
@@ -459,12 +496,164 @@ class AutomixNotifier extends Notifier<AutomixState> {
       triggerMs = 8000;
     }
 
+    _autoMixAnchorMs = safeMixOutMs;
+    _mixPlanReady = _mixOutIsManual;
     state = state.copyWith(
       nextTrackPath: nextPath,
       triggerRemainingMs: triggerMs,
       customMixOutMs: safeMixOutMs,
       customCueInMs: safeCueInMs,
     );
+
+    // Análisis del outro fuera del hilo acústico: ajusta mixOut + duración DAWN.
+    unawaited(_planVariableMixWindow());
+  }
+
+  String _resolveFfmpeg() {
+    if (Platform.isAndroid || Platform.isIOS) return 'ffmpeg';
+    final exeDir = File(Platform.resolvedExecutable).parent.path;
+    final localFFmpeg = Platform.isWindows
+        ? '$exeDir\\ffmpeg.exe'
+        : '$exeDir/ffmpeg';
+    return File(localFFmpeg).existsSync() ? localFFmpeg : 'ffmpeg';
+  }
+
+  /// Detecta dónde muere la energía del outro (silencedetect en libav).
+  /// Cero DSP por muestras en Dart. Resultado cacheado por ruta.
+  Future<int> _probeOutroEnergyEndMs(String path, int durationMs) async {
+    final cached = _outroEnergyEndCache[path];
+    if (cached != null) return cached;
+    if (durationMs <= 0) return 0;
+
+    // Android: FFmpeg por pista satura CPU/RAM y tumba el proceso (~20 temas).
+    if (Platform.isAndroid || Platform.isIOS) {
+      _outroEnergyEndCache[path] = durationMs;
+      return durationMs;
+    }
+
+    if (_outroEnergyEndCache.length >= 48) {
+      _outroEnergyEndCache.remove(_outroEnergyEndCache.keys.first);
+    }
+
+    const windowMs = 25000;
+    final seekMs = durationMs > windowMs ? durationMs - windowMs : 0;
+
+    try {
+      final result = await Process.run(_resolveFfmpeg(), [
+        '-hide_banner',
+        '-nostdin',
+        '-ss',
+        (seekMs / 1000.0).toStringAsFixed(3),
+        '-i',
+        path,
+        '-t',
+        ((durationMs - seekMs) / 1000.0).toStringAsFixed(3),
+        '-af',
+        'silencedetect=noise=-32dB:d=0.4',
+        '-f',
+        'null',
+        '-',
+      ]);
+      final log = '${result.stderr}';
+      final hits = RegExp(r'silence_start:\s*([0-9.]+)').allMatches(log);
+      if (hits.isNotEmpty) {
+        final relSec = double.parse(hits.last.group(1)!);
+        final energyEnd = seekMs + (relSec * 1000).round();
+        final clamped = energyEnd.clamp(
+          (durationMs * 0.55).toInt(),
+          durationMs,
+        );
+        _outroEnergyEndCache[path] = clamped;
+        debugPrint(
+          '🎛️ [TRACKER OUTRO] $path energyEnd=${clamped}ms / dur=$durationMs',
+        );
+        return clamped;
+      }
+    } catch (e) {
+      debugPrint('🔴 [TRACKER OUTRO] silencedetect falló: $e');
+    }
+
+    _outroEnergyEndCache[path] = durationMs;
+    return durationMs;
+  }
+
+  /// Dimensiona un cambio manual con la pista que entra: compases 4/4 sobre su
+  /// BPM, acotados a 8–18 s. Sin BPM legible en el nombre cae al largo relativo
+  /// de la pista. Jamás una constante fija.
+  int _planManualMixDurationMs(String? incomingPath, int incomingDurationMs) {
+    final double bpm = _extractBpm(incomingPath);
+    if (bpm >= 60 && bpm <= 200) {
+      final double barMs = (60000.0 / bpm) * 4;
+      for (final int bars in const [16, 8, 4, 2]) {
+        final int span = (barMs * bars).round();
+        if (span >= _manualMixMinMs && span <= _manualMixMaxMs) return span;
+      }
+    }
+    if (incomingDurationMs > 0) {
+      return (incomingDurationMs * 0.06).round().clamp(
+        _manualMixMinMs,
+        _manualMixMaxMs,
+      );
+    }
+    return 12000;
+  }
+
+  Future<void> _planVariableMixWindow() async {
+    final path = state.currentTrackPath;
+    final durationMs = state.duration.inMilliseconds;
+    if (path == null || durationMs <= 0) return;
+
+    final token = '$path|$durationMs|${state.lyrics.length}';
+    _outroPlanToken = token;
+
+    // El análisis del outro decide cuánta cola real queda después del SET OUT.
+    final int energyEnd = await _probeOutroEnergyEndMs(path, durationMs);
+    if (_outroPlanToken != token || state.currentTrackPath != path) return;
+
+    int mixOut = _mixOutIsManual
+        ? state.customMixOutMs
+        : (_autoMixAnchorMs > 0
+              ? _autoMixAnchorMs
+              : (durationMs * 0.75).toInt());
+    mixOut = mixOut.clamp(0, durationMs);
+
+    // La cola no puede rebasar ni la energía del outro ni el final del archivo.
+    final int physicalTail = (durationMs - mixOut).clamp(0, _dawnTailMaxMs);
+    final int energyTail = (energyEnd - mixOut).clamp(0, _dawnTailMaxMs);
+    final int tailMs = min(
+      energyTail >= _dawnTailMinMs ? energyTail : _dawnTailMinMs,
+      physicalTail,
+    );
+
+    int fadeMs = kDawnLeadMs + tailMs;
+    if (mixOut - kDawnLeadMs < 0) {
+      fadeMs = mixOut + tailMs;
+    }
+
+    debugPrint(
+      '🎛️ [TRACKER MIX PLAN] out=${mixOut}ms lead=${kDawnLeadMs}ms '
+      'cola=${tailMs}ms fade=${fadeMs}ms energyEnd=$energyEnd',
+    );
+
+    _mixPlanReady = true;
+    state = state.copyWith(customMixOutMs: mixOut, customMixDurationMs: fadeMs);
+
+    final next = state.nextTrackPath;
+    if (next != null &&
+        !Platform.isAndroid &&
+        !Platform.isIOS &&
+        !_outroEnergyEndCache.containsKey(next)) {
+      unawaited(_prefetchNextOutro(next));
+    }
+  }
+
+  Future<void> _prefetchNextOutro(String nextPath) async {
+    try {
+      final dur = await rust_dsp.getAudioDurationMs(inputPath: nextPath);
+      await _probeOutroEnergyEndMs(nextPath, dur.toInt());
+    } catch (e) {
+      debugPrint('🔴 [TRACKER OUTRO] prefetch $nextPath: $e');
+    }
   }
 
   Future<void> forceTransition(int index) async {
@@ -525,8 +714,24 @@ class AutomixNotifier extends Notifier<AutomixState> {
         return;
       }
 
+      int cueInMs = 0;
       try {
-        await incomingPlayer.setRate(1.0);
+        cueInMs = await _calculateSmartCueIn(nextTrack, incomingPlayer);
+        if (cueInMs > 0) {
+          await incomingPlayer.seek(Duration(milliseconds: cueInMs));
+        }
+      } catch (_) {}
+
+      final fadingBpm = _extractBpm(state.currentTrackPath);
+      final incomingBpm = _extractBpm(nextTrack);
+      double incomingRate = 1.0;
+      if (fadingBpm > 60 && incomingBpm > 60) {
+        final ratio = fadingBpm / incomingBpm;
+        if (ratio >= 0.88 && ratio <= 1.12) incomingRate = ratio;
+      }
+
+      try {
+        await incomingPlayer.setRate(incomingRate);
         await incomingPlayer.play();
       } catch (e) {
         _isCrossfading = false;
@@ -544,7 +749,7 @@ class AutomixNotifier extends Notifier<AutomixState> {
         playlist: updatedPlaylist,
         currentIndex: 0,
         currentTrackPath: nextTrack,
-        position: Duration.zero,
+        position: Duration(milliseconds: cueInMs),
         duration: incomingPlayer.state.duration,
         lyrics: [],
         activeLyricIndex: -1,
@@ -560,9 +765,12 @@ class AutomixNotifier extends Notifier<AutomixState> {
       await _executeMixEngine(
         fadingPlayer: fadingPlayer,
         incomingPlayer: incomingPlayer,
-        mixDurationMs: 4500,
+        mixDurationMs: _planManualMixDurationMs(
+          nextTrack,
+          incomingPlayer.state.duration.inMilliseconds,
+        ),
         mixProfile: AutomixMixProfile.manualOverride,
-        incomingRate: 1.0,
+        incomingRate: incomingRate,
         isManualSkip: true,
       );
     }
@@ -645,7 +853,10 @@ class AutomixNotifier extends Notifier<AutomixState> {
     await _executeMixEngine(
       fadingPlayer: fadingPlayer,
       incomingPlayer: incomingPlayer,
-      mixDurationMs: 4500,
+      mixDurationMs: _planManualMixDurationMs(
+        nextTrack,
+        incomingPlayer.state.duration.inMilliseconds,
+      ),
       mixProfile: AutomixMixProfile.manualOverride,
       incomingRate: incomingRate,
       isManualSkip: true,
@@ -657,6 +868,10 @@ class AutomixNotifier extends Notifier<AutomixState> {
     _isCrossfading = true;
 
     final String nextTrack = state.nextTrackPath!;
+    final int outgoingMixDuration = state.customMixDurationMs.clamp(
+      kDawnLeadMs,
+      kDawnLeadMs + _dawnTailMaxMs,
+    );
     final Player fadingPlayer = _activeAutomix;
     final Player incomingPlayer = _standbyPlayer;
 
@@ -723,13 +938,10 @@ class AutomixNotifier extends Notifier<AutomixState> {
     } catch (_) {}
     _saveSnapshot();
 
-    final bool isAutomix = state.lyrics.isNotEmpty;
-    final int mixDuration = isAutomix ? 14000 : 18000;
-
     await _executeMixEngine(
       fadingPlayer: fadingPlayer,
       incomingPlayer: incomingPlayer,
-      mixDurationMs: mixDuration,
+      mixDurationMs: outgoingMixDuration,
       mixProfile: AutomixMixProfile.smoothBassSwap,
       incomingRate: incomingRate,
       isManualSkip: false,
@@ -770,7 +982,7 @@ class AutomixNotifier extends Notifier<AutomixState> {
       await incomingPlayer.setVolume(0.0);
 
       final fadeStopwatch = Stopwatch()..start();
-      final actualDuration = isManualSkip ? 4500 : mixDurationMs;
+      final actualDuration = mixDurationMs;
 
       while (fadeStopwatch.elapsedMilliseconds < actualDuration) {
         final progress = (fadeStopwatch.elapsedMilliseconds / actualDuration)
@@ -805,7 +1017,7 @@ class AutomixNotifier extends Notifier<AutomixState> {
     } finally {
       // 🛡️ FIX: el glide de tempo arranca en incomingRate. Fijar aquí el rate a
       // 1.0 provocaba un salto de velocidad hacia atrás al iniciar la rampa.
-      final bool willGlideRate = incomingRate != 1.0 && !isManualSkip;
+      final bool willGlideRate = incomingRate != 1.0;
 
       try {
         await incomingPlayer.setVolume(100.0);
@@ -841,6 +1053,9 @@ class AutomixNotifier extends Notifier<AutomixState> {
   }
 
   void _attachListeners(Player player) {
+    _lastUiPosMs = -1;
+    _lastLyricIndex = -2;
+    _lastDurationPlanKey = null;
     _positionSub?.cancel();
     _durationSub?.cancel();
     _playingSub?.cancel();
@@ -857,17 +1072,24 @@ class AutomixNotifier extends Notifier<AutomixState> {
       }
 
       if (state.autoMixArmed &&
+          _mixPlanReady &&
           state.customMixOutMs > 0 &&
           state.nextTrackPath != null) {
-        if (posMs >= (state.customMixOutMs - 150)) {
+        // DAWN arranca 5 s antes del SET OUT; la cola se consume después de él.
+        final triggerMs = (state.customMixOutMs - kDawnLeadMs).clamp(
+          0,
+          state.customMixOutMs,
+        );
+        if (posMs >= (triggerMs - 150)) {
           if (!_isCrossfading && !_isPrepModeBypass) {
             _triggerCrossfade();
           }
         }
       }
 
-      int newLyricIndex = -1;
+      int newLyricIndex = _lastLyricIndex;
       if (state.lyrics.isNotEmpty) {
+        newLyricIndex = -1;
         for (int i = state.lyrics.length - 1; i >= 0; i--) {
           if (pos >= state.lyrics[i].timestamp) {
             newLyricIndex = i;
@@ -876,14 +1098,22 @@ class AutomixNotifier extends Notifier<AutomixState> {
         }
       }
 
-      state = state.copyWith(position: pos, activeLyricIndex: newLyricIndex);
+      final bool uiTick = (posMs - _lastUiPosMs).abs() >= 120;
+      final bool lyricTick = newLyricIndex != _lastLyricIndex;
+      if (uiTick || lyricTick) {
+        _lastUiPosMs = posMs;
+        _lastLyricIndex = newLyricIndex;
+        state = state.copyWith(position: pos, activeLyricIndex: newLyricIndex);
+      }
 
-      if ((pos.inMilliseconds - _lastSavedPositionMs).abs() > 5000) {
-        _lastSavedPositionMs = pos.inMilliseconds;
+      if ((posMs - _lastSavedPositionMs).abs() > 15000) {
+        _lastSavedPositionMs = posMs;
         _saveSnapshot();
       }
 
-      globalAudioHandler.updateOsPlaybackState(state.isPlaying, pos);
+      if (uiTick) {
+        globalAudioHandler.updateOsPlaybackState(state.isPlaying, pos);
+      }
 
       if (state.autoMixArmed &&
           state.customMixOutMs <= 0 &&
@@ -899,6 +1129,9 @@ class AutomixNotifier extends Notifier<AutomixState> {
     });
 
     _durationSub = player.stream.duration.listen((dur) {
+      final key = '${state.currentTrackPath}|${dur.inMilliseconds}';
+      if (key == _lastDurationPlanKey) return;
+      _lastDurationPlanKey = key;
       state = state.copyWith(duration: dur);
       _recalculateMixWindow();
 
@@ -925,17 +1158,6 @@ class AutomixNotifier extends Notifier<AutomixState> {
         _triggerCrossfade();
       }
     });
-  }
-
-  Future<void> _executeQuickFadeOut(Player player) async {
-    double vol = 100.0;
-    for (int i = 0; i < 15; i++) {
-      vol -= 6.6;
-      await player.setVolume(vol.clamp(0.0, 100.0));
-      await Future.delayed(const Duration(milliseconds: 100));
-    }
-    await player.stop();
-    await player.setVolume(100.0);
   }
 
   Future<void> _loadLyrics(String audioPath) async {
@@ -977,6 +1199,9 @@ class AutomixNotifier extends Notifier<AutomixState> {
       state = state.copyWith(lyrics: [], activeLyricIndex: -1);
       _fetchLyricsAsync(audioPath, lrcPath);
     }
+    try {
+      await _recalculateMixWindow();
+    } catch (_) {}
   }
 
   Future<void> _fetchLyricsAsync(String audioPath, String lrcPath) async {
@@ -1051,11 +1276,16 @@ class AutomixNotifier extends Notifier<AutomixState> {
   }
 
   Future<void> updateCurrentTrackAndPlay(String newPath) async {
-    if (state.currentIndex < 0) return;
+    if (state.currentIndex < 0 || _isCrossfading) return;
     _isPrepModeBypass = false;
 
     final currentList = List<String>.from(state.playlist);
     currentList[state.currentIndex] = newPath;
+
+    final bool wasPlaying = state.isPlaying;
+    _mixOutIsManual = false;
+    _cueInIsManual = false;
+    _mixPlanReady = false;
 
     state = state.copyWith(
       playlist: currentList,
@@ -1072,12 +1302,45 @@ class AutomixNotifier extends Notifier<AutomixState> {
     final Player fadingPlayer = _activeAutomix;
     final Player incomingPlayer = _standbyPlayer;
 
-    await incomingPlayer.setVolume(100.0);
-    await incomingPlayer.open(Media(newPath), play: true);
+    // Sustitución en frío: sin audio saliente no hay nada que fundir.
+    if (!wasPlaying) {
+      await incomingPlayer.setVolume(100.0);
+      await incomingPlayer.open(Media(newPath), play: true);
+      _usePlayerA = !_usePlayerA;
+      _attachListeners(_activeAutomix);
+      return;
+    }
+
+    _isCrossfading = true;
+    try {
+      await incomingPlayer.setVolume(0.0);
+      await incomingPlayer.open(Media(newPath), play: false);
+      if (state.customCueInMs > 0) {
+        await incomingPlayer.seek(Duration(milliseconds: state.customCueInMs));
+      }
+      await incomingPlayer.setRate(1.0);
+      await incomingPlayer.play();
+    } catch (e) {
+      _isCrossfading = false;
+      debugPrint('🔴 [AUTOMIX SWAP] $e');
+      return;
+    }
 
     _usePlayerA = !_usePlayerA;
     _attachListeners(_activeAutomix);
-    _executeQuickFadeOut(fadingPlayer);
+
+    // Reemplazo de pista en caliente: mezcla DAWN, jamás corte.
+    await _executeMixEngine(
+      fadingPlayer: fadingPlayer,
+      incomingPlayer: incomingPlayer,
+      mixDurationMs: _planManualMixDurationMs(
+        newPath,
+        incomingPlayer.state.duration.inMilliseconds,
+      ),
+      mixProfile: AutomixMixProfile.manualOverride,
+      incomingRate: 1.0,
+      isManualSkip: true,
+    );
   }
 
   Future<void> stopAndRelease() async {
@@ -1091,10 +1354,23 @@ class AutomixNotifier extends Notifier<AutomixState> {
     await Future.delayed(const Duration(milliseconds: 600));
   }
 
+  /// Apaga ambos decks si este módulo no está sonando. Evita 4× libmpv en idle.
+  Future<void> parkIdleDecks() async {
+    if (state.isPlaying || _isCrossfading) return;
+    try {
+      await _playerA.stop();
+    } catch (_) {}
+    try {
+      await _playerB.stop();
+    } catch (_) {}
+  }
+
   Future<void> clearMixPoints() async {
     if (state.currentTrackPath == null) return;
     final path = state.currentTrackPath!;
 
+    _cueInIsManual = false;
+    _mixOutIsManual = false;
     state = state.copyWith(customCueInMs: 0, customMixOutMs: 0);
 
     final lrcPath = path.replaceAll(

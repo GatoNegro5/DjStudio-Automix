@@ -23,9 +23,7 @@ class TvSyncServer {
             );
 
             ws.listen(
-              (data) {
-                // Aquí podríamos recibir comandos desde la TV (ej. pausar) si lo deseas a futuro
-              },
+              (data) {},
               onDone: () {
                 _clients.remove(ws);
                 debugPrint("🔴 [TV SYNC] TV Desconectada.");
@@ -36,9 +34,7 @@ class TvSyncServer {
             );
           });
         } else {
-          request.response
-            ..statusCode = HttpStatus.forbidden
-            ..close();
+          _serveKaraokeFile(request);
         }
       });
     } catch (e) {
@@ -74,6 +70,69 @@ class TvSyncServer {
       'positionMs': positionMs,
       'isPlaying': isPlaying,
     });
+  }
+
+  void broadcastEdgeExecute({
+    required String mp3Url,
+    required String lrcUrl,
+    required String trackName,
+    required String singer,
+  }) {
+    broadcastPayload({
+      'type': 'EDGE_EXECUTE',
+      'mp3_url': mp3Url,
+      'lrc_url': lrcUrl,
+      'track_name': trackName,
+      'singer': singer,
+    });
+  }
+
+  void broadcastEdgeStop() {
+    broadcastPayload({'type': 'EDGE_STOP'});
+  }
+
+  Future<void> _serveKaraokeFile(HttpRequest request) async {
+    try {
+      if (request.method != 'GET') {
+        request.response
+          ..statusCode = HttpStatus.methodNotAllowed
+          ..close();
+        return;
+      }
+
+      final raw = request.uri.queryParameters['p'];
+      if (raw == null || raw.isEmpty) {
+        request.response
+          ..statusCode = HttpStatus.badRequest
+          ..close();
+        return;
+      }
+
+      final file = File(raw);
+      final lower = raw.toLowerCase();
+      final allowed =
+          (lower.endsWith('.mp3') || lower.endsWith('.lrc')) &&
+          file.existsSync();
+      if (!allowed) {
+        request.response
+          ..statusCode = HttpStatus.forbidden
+          ..close();
+        return;
+      }
+
+      request.response.headers.contentType = lower.endsWith('.lrc')
+          ? ContentType('text', 'plain', charset: 'utf-8')
+          : ContentType('audio', 'mpeg');
+      await request.response.addStream(file.openRead());
+      await request.response.close();
+    } catch (e) {
+      debugPrint('🔴 [TV SYNC] HTTP $e');
+      try {
+        request.response
+          ..statusCode = HttpStatus.internalServerError
+          ..close();
+      } catch (_) {}
+    }
   }
 
   void stop() {

@@ -8,11 +8,20 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_selector/file_selector.dart';
 
 import '../core/hal/platform_strategy.dart';
+import 'db_provider.dart';
 import 'equalizer_provider.dart';
 
 enum LiveDjMixStrategy { sequential, random }
 
 enum LiveDjMixMode { activeSync, longBypass }
+
+// 🎚️ Corte de graves de la permuta de bajos: Butterworth de 2 polos a 140 Hz.
+// Idéntico al de Automix. Se inyecta en libmpv vía 'af'; cero DSP por muestras.
+const String _bassKillFilter = 'highpass=f=140:poles=2';
+
+// 🎚️ Banda del fundido en cambios manuales; la pista entrante elige el punto.
+const int _manualMixMinMs = 8000;
+const int _manualMixMaxMs = 18000;
 
 class LiveDjState {
   final bool isPlaying;
@@ -81,6 +90,7 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
   bool _isStandbyArmed = false;
   bool _isPrepModeBypass = false;
   int _lastSavedPositionMs = 0;
+  int _lastUiPosMs = -1;
 
   late final PlatformMixStrategy _liveStrategy;
 
@@ -109,9 +119,49 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
 
   bool _isMixTrack(int durationMs) => durationMs > 600000;
 
-  int _calculateSmartTrim(int durationMs) {
-    if (_isMixTrack(durationMs)) return 0;
-    if (durationMs > 30000) return 5000;
+  /// Cambio manual: el fundido lo dicta la pista entrante — compases 4/4 sobre
+  /// su BPM acotados a 8–18 s. Idéntico criterio que Automix.
+  int _planManualMixDurationMs(String? incomingPath, int incomingDurationMs) {
+    final double bpm = _extractBpm(incomingPath);
+    if (bpm >= 60 && bpm <= 200) {
+      final double barMs = (60000.0 / bpm) * 4;
+      for (final int bars in const [16, 8, 4, 2]) {
+        final int span = (barMs * bars).round();
+        if (span >= _manualMixMinMs && span <= _manualMixMaxMs) return span;
+      }
+    }
+    if (incomingDurationMs > 0) {
+      return (incomingDurationMs * 0.06).round().clamp(
+        _manualMixMinMs,
+        _manualMixMaxMs,
+      );
+    }
+    return 12000;
+  }
+
+  double _extractBpm(String? path) {
+    if (path == null) return 0.0;
+    final fileName = path.replaceAll('\\', '/').split('/').last;
+    final match = RegExp(
+      r'(?:\b|_|-)(\d{2,3}(?:\.\d+)?)\s*bpm\b',
+      caseSensitive: false,
+    ).firstMatch(fileName);
+    return match != null ? double.parse(match.group(1)!) : 0.0;
+  }
+
+  Future<int> _calculateSmartCueIn(String path, Player player) async {
+    final meta = await ref.read(dbServiceProvider).getTrackMetadata(path);
+
+    if (meta != null &&
+        meta.isManualCue &&
+        meta.cueInMs != null &&
+        meta.cueInMs! > 0) {
+      return meta.cueInMs!;
+    }
+
+    if (_isMixTrack(player.state.duration.inMilliseconds)) return 0;
+    final int durMs = player.state.duration.inMilliseconds;
+    if (durMs > 30000) return 10000;
     return 0;
   }
 
@@ -345,6 +395,7 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
   }
 
   void _attachListeners(Player player) {
+    _lastUiPosMs = -1;
     _positionSub?.cancel();
     _durationSub?.cancel();
     _playingSub?.cancel();
@@ -354,9 +405,12 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
       final posMs = pos.inMilliseconds;
       final durMs = state.duration.inMilliseconds;
 
-      state = state.copyWith(position: pos);
+      if ((posMs - _lastUiPosMs).abs() >= 120) {
+        _lastUiPosMs = posMs;
+        state = state.copyWith(position: pos);
+      }
 
-      if ((posMs - _lastSavedPositionMs).abs() > 5000) {
+      if ((posMs - _lastSavedPositionMs).abs() > 15000) {
         _lastSavedPositionMs = posMs;
         _saveSnapshot();
       }
@@ -389,7 +443,10 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
           dur.inMilliseconds,
           state.currentTrackPath,
         );
-        final cueInMs = _calculateSmartTrim(dur.inMilliseconds);
+        final cueInMs = await _calculateSmartCueIn(
+          state.currentTrackPath!,
+          player,
+        );
         final mode = _isMixTrack(dur.inMilliseconds)
             ? LiveDjMixMode.longBypass
             : LiveDjMixMode.activeSync;
@@ -434,7 +491,7 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
 
   Future<void> forceNext() async {
     if (_isCrossfading || state.queue.isEmpty) return;
-    _triggerCrossfade(forceJit: true, isManualSkip: true);
+    await _triggerCrossfade(forceJit: true, isManualSkip: true);
   }
 
   Future<void> _triggerCrossfade({
@@ -461,7 +518,7 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
       trackDur = incomingPlayer.state.duration;
     } catch (_) {}
 
-    final int cueInMs = _calculateSmartTrim(trackDur.inMilliseconds);
+    final int cueInMs = await _calculateSmartCueIn(nextTrack, incomingPlayer);
     final int triggerMs = _calculateRadioMixOut(
       trackDur.inMilliseconds,
       nextTrack,
@@ -470,11 +527,23 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
         ? LiveDjMixMode.longBypass
         : LiveDjMixMode.activeSync;
 
+    final fadingBpm = _extractBpm(state.currentTrackPath);
+    final incomingBpm = _extractBpm(nextTrack);
+    double incomingRate = 1.0;
+
+    if (fadingBpm > 60 && incomingBpm > 60) {
+      final ratio = fadingBpm / incomingBpm;
+      if (ratio >= 0.88 && ratio <= 1.12) {
+        incomingRate = ratio;
+      }
+    }
+
     try {
       if (cueInMs > 0) {
         await incomingPlayer.seek(Duration(milliseconds: cueInMs));
         await Future.delayed(const Duration(milliseconds: 150));
       }
+      await incomingPlayer.setRate(incomingRate);
       await incomingPlayer.setVolume(0.0);
       await incomingPlayer.play();
     } catch (e) {
@@ -504,8 +573,12 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
     await _executeMixEngine(
       fadingPlayer: fadingPlayer,
       incomingPlayer: incomingPlayer,
-      mixProfile: state.currentMixMode,
+      mixProfile: nextMode,
+      incomingRate: incomingRate,
       isManualSkip: isManualSkip,
+      manualMixDurationMs: isManualSkip
+          ? _planManualMixDurationMs(nextTrack, trackDur.inMilliseconds)
+          : null,
     );
   }
 
@@ -513,7 +586,9 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
     required Player fadingPlayer,
     required Player incomingPlayer,
     required LiveDjMixMode mixProfile,
+    double incomingRate = 1.0,
     bool isManualSkip = false,
+    int? manualMixDurationMs,
   }) async {
     final String currentBaseFilter = ref
         .read(equalizerProvider.notifier)
@@ -521,17 +596,24 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
     final platformOut = fadingPlayer.platform as dynamic;
     final platformIn = incomingPlayer.platform as dynamic;
 
+    final bool useBassSwap = mixProfile == LiveDjMixMode.activeSync;
+    final String lowCutFilter = '$currentBaseFilter,$_bassKillFilter';
+    bool bassSwapped = false;
+
     try {
       platformIn?.setProperty('audio-pitch-correction', 'yes');
       platformOut?.setProperty('audio-pitch-correction', 'yes');
-      platformIn?.setProperty('af', currentBaseFilter);
+      platformIn?.setProperty(
+        'af',
+        useBassSwap ? lowCutFilter : currentBaseFilter,
+      );
       platformOut?.setProperty('af', currentBaseFilter);
 
       await incomingPlayer.setVolume(0.0);
 
       final fadeStopwatch = Stopwatch()..start();
       final fadeOutDurationMs = isManualSkip
-          ? 4500
+          ? (manualMixDurationMs ?? 12000)
           : (mixProfile == LiveDjMixMode.longBypass ? 4000 : 18000);
 
       while (fadeStopwatch.elapsedMilliseconds < fadeOutDurationMs) {
@@ -545,6 +627,12 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
         final smoothRateIn = pow(rateIn, 1.2).toDouble();
         final smoothRateOut = pow(rateOut, 1.2).toDouble();
 
+        if (useBassSwap && !bassSwapped && progress >= 0.5) {
+          bassSwapped = true;
+          platformOut?.setProperty('af', lowCutFilter);
+          platformIn?.setProperty('af', currentBaseFilter);
+        }
+
         await incomingPlayer.setVolume(
           (smoothRateIn * 100.0).clamp(0.0, 100.0),
         );
@@ -555,9 +643,11 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
     } catch (e) {
       debugPrint("🔴 [ERROR DSP]: $e");
     } finally {
+      final bool willGlideRate = incomingRate != 1.0;
+
       try {
         await incomingPlayer.setVolume(100.0);
-        await incomingPlayer.setRate(1.0);
+        if (!willGlideRate) await incomingPlayer.setRate(1.0);
         platformIn?.setProperty('af', currentBaseFilter);
         platformOut?.setProperty('af', currentBaseFilter);
         await fadingPlayer.setVolume(0.0);
@@ -565,8 +655,37 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
         await fadingPlayer.stop();
       } catch (_) {}
 
+      if (willGlideRate) {
+        try {
+          final pitchStopwatch = Stopwatch()..start();
+          final double rateDiff = 1.0 - incomingRate;
+          while (pitchStopwatch.elapsedMilliseconds < 3000) {
+            final double p = (pitchStopwatch.elapsedMilliseconds / 3000).clamp(
+              0.0,
+              1.0,
+            );
+            final double curve = sin(p * (pi / 2));
+            await incomingPlayer.setRate(incomingRate + (rateDiff * curve));
+            await Future.delayed(const Duration(milliseconds: 50));
+          }
+        } catch (_) {}
+        try {
+          await incomingPlayer.setRate(1.0);
+        } catch (_) {}
+      }
+
       _isCrossfading = false;
     }
+  }
+
+  Future<void> parkIdleDecks() async {
+    if (state.isPlaying || _isCrossfading) return;
+    try {
+      await _playerA.stop();
+    } catch (_) {}
+    try {
+      await _playerB.stop();
+    } catch (_) {}
   }
 }
 

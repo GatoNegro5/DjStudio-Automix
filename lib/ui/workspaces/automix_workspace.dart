@@ -6,7 +6,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../providers/directory_provider.dart';
 import '../../providers/automix_provider.dart';
 import '../../providers/pipeline_provider.dart';
-import '../../providers/dsp_provider.dart';
 import '../../providers/theme_provider.dart';
 
 // =====================================================================
@@ -1204,6 +1203,11 @@ class _MixerPanelState extends ConsumerState<MixerPanel> {
                           final customMixOutMs = ref.watch(
                             automixProvider.select((s) => s.customMixOutMs),
                           );
+                          final customMixDurationMs = ref.watch(
+                            automixProvider.select(
+                              (s) => s.customMixDurationMs,
+                            ),
+                          );
                           final nextTrackPath = ref.watch(
                             automixProvider.select((s) => s.nextTrackPath),
                           );
@@ -1393,6 +1397,8 @@ class _MixerPanelState extends ConsumerState<MixerPanel> {
                                             .last,
                                         customCueInMs: customCueInMs,
                                         customMixOutMs: customMixOutMs,
+                                        customMixDurationMs:
+                                            customMixDurationMs,
                                         autoMixArmed: autoMixArmed,
                                       ),
                                     ),
@@ -1910,6 +1916,7 @@ class SemanticDeckPainter extends CustomPainter {
   final String? nextTrackName;
   final int customCueInMs;
   final int customMixOutMs;
+  final int customMixDurationMs;
   final bool autoMixArmed;
 
   SemanticDeckPainter({
@@ -1920,6 +1927,7 @@ class SemanticDeckPainter extends CustomPainter {
     this.nextTrackName,
     required this.customCueInMs,
     required this.customMixOutMs,
+    required this.customMixDurationMs,
     required this.autoMixArmed,
   });
 
@@ -1949,17 +1957,21 @@ class SemanticDeckPainter extends CustomPainter {
       canvas.drawRect(Rect.fromLTWH(lX, 1, 2, 8), vocalPaint);
     }
 
+    double visualMixStartX = triggerX;
+    double visualMixEndX = size.width;
     double visualMixWidth = size.width - triggerX;
     if (customMixOutMs > 0) {
-      visualMixWidth = (8000 / durationMs) * size.width;
-      if (triggerX + visualMixWidth > size.width) {
-        visualMixWidth = size.width - triggerX;
-      }
+      // DAWN entra 5 s antes del SET OUT y se prolonga sobre la cola del outro.
+      final mixStartMs = (customMixOutMs - kDawnLeadMs).clamp(0, durationMs);
+      final mixEndMs = (mixStartMs + customMixDurationMs).clamp(0, durationMs);
+      visualMixStartX = (mixStartMs / durationMs) * size.width;
+      visualMixEndX = (mixEndMs / durationMs) * size.width;
+      visualMixWidth = ((mixEndMs - mixStartMs) / durationMs) * size.width;
     }
 
     if (autoMixArmed) {
       canvas.drawRect(
-        Rect.fromLTWH(triggerX, 0, visualMixWidth, 10),
+        Rect.fromLTWH(visualMixStartX, 0, visualMixWidth, 10),
         Paint()..color = const Color(0xFFFF007F).withValues(alpha: 0.4),
       );
     }
@@ -2003,7 +2015,7 @@ class SemanticDeckPainter extends CustomPainter {
         Paint()..color = const Color(0xFFFF007F),
       );
 
-      double deadX = outX + visualMixWidth;
+      double deadX = visualMixEndX;
       if (deadX < size.width) {
         canvas.drawRect(
           Rect.fromLTWH(deadX, 0, size.width - deadX, 10),
@@ -2025,12 +2037,12 @@ class SemanticDeckPainter extends CustomPainter {
 
     if (autoMixArmed && nextTrackName != null) {
       canvas.drawRect(
-        Rect.fromLTWH(triggerX, 18, visualMixWidth, 10),
+        Rect.fromLTWH(visualMixStartX, 18, visualMixWidth, 10),
         Paint()..color = const Color(0xFF00FFFF).withValues(alpha: 0.3),
       );
 
       if (customMixOutMs > 0) {
-        double deadX = triggerX + visualMixWidth;
+        double deadX = visualMixEndX;
         if (deadX < size.width) {
           canvas.drawRect(
             Rect.fromLTWH(deadX, 18, size.width - deadX, 10),
@@ -2070,5 +2082,6 @@ class SemanticDeckPainter extends CustomPainter {
       durationMs != oldDelegate.durationMs ||
       customCueInMs != oldDelegate.customCueInMs ||
       customMixOutMs != oldDelegate.customMixOutMs ||
+      customMixDurationMs != oldDelegate.customMixDurationMs ||
       autoMixArmed != oldDelegate.autoMixArmed;
 }

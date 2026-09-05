@@ -136,6 +136,7 @@ class _BootScreenState extends State<BootScreen> {
               ),
               const SizedBox(height: 30),
               ElevatedButton(
+                autofocus: true,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF39FF14),
                   foregroundColor: Colors.black,

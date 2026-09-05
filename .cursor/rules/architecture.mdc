@@ -24,9 +24,14 @@ crossfade matemático entre el 65 % y el 80 % de la pista (Remix, EDM, Tropical)
 *Propósito*: fiestas y reuniones. No se escucha la pista entera ni se canta; es más mezcla que
 música, así que el empate entre pistas debe ser exacto.
 
-### Karaoke — `karaoke_workspace.dart`
-*Propósito*: el invitado escanea un QR desde el móvil, entra a una web y elige de mi lista. Una
-app instalada en el TV Google reproduce el MP3 sin voz junto con la letra.
+### Karaoke — `karaoke_workspace.dart` + `djstudio_tv/`
+*Propósito*: el invitado escanea un QR desde el móvil, entra a una web y elige de mi lista. El
+host emite `EDGE_EXECUTE` (MP3 `_K.mp3` + LRC por HTTP :55056). La app `djstudio_tv` se instala
+en Google TV (LEANBACK) y reproduce el instrumental con la letra.
+
+La lupa del panel TV usa `tv_adb_deployment_service.dart` (ADB + mDNS `_adb-tls-*`, no el
+radar REST :55055 — la TV no escucha ahí). Compila `djstudio_tv/`, instala por `adb install -r`
+y lanza por LEANBACK. Requiere Depuración inalámbrica y emparejamiento con código en pantalla.
 
 ### Auto-Master — `dsp_workspace.dart`
 *Propósito*: masterizar y mejorar el MP3 — calcular BPM, obtener la letra, eliminar ruido y
@@ -44,7 +49,8 @@ Ingesta híbrida Anti-DRM: subproceso Python yt-dlp → FFmpeg MP3 320 kbps.
 *Propósito*: descargar canciones nuevas de YouTube.
 
 ### LAN Sync — `lan_sync_workspace.dart`
-Túnel TCP crudo (puerto 8080). Virtual Flat-Tree para aplanar directorios profundos en memoria
+Servidor REST propio en `:55055` (`/api/whoami` identifica nodos; radar de subred por lotes
+de 50 IPs). Virtual Flat-Tree para aplanar directorios profundos en memoria
 y evitar `UnsupportedError` en Flutter.
 
 *Propósito*: pasar los archivos ya masterizados de la laptop al móvil u otro dispositivo en la

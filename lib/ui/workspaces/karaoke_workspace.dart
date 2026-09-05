@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../services/tv_sync_server.dart';
+import '../../services/tv_adb_deployment_service.dart';
 // 🛠️ NUEVO
 import 'package:media_kit/media_kit.dart';
 
@@ -68,6 +69,7 @@ class KaraokeWorkspace extends ConsumerStatefulWidget {
 
 class _KaraokeWorkspaceState extends ConsumerState<KaraokeWorkspace> {
   final ScrollController _lrcScrollController = ScrollController();
+  final TvAdbDeploymentService _tvDeploymentService = TvAdbDeploymentService();
   Map<Duration, String> _currentLyrics = {};
   Duration _currentAudioPosition = Duration.zero;
   StreamSubscription? _audioPositionSub;
@@ -78,11 +80,16 @@ class _KaraokeWorkspaceState extends ConsumerState<KaraokeWorkspace> {
   int _countdown = 0;
 
   String _tvSyncUrl = "Escaneando red...";
+  String _hostIp = '127.0.0.1';
   int _lastTvSyncMs = 0;
 
   @override
   void initState() {
     super.initState();
+    // El nodo WS :55056 es lazy. Sin esta lectura la TV no tiene a quién
+    // conectarse hasta que suene la primera pista.
+    ref.read(tvSyncProvider);
+    unawaited(_ensureTvFirewallRule());
     _fetchTvSyncUrl();
 
     _audioPositionSub = _player.stream.position.listen((Duration position) {
@@ -111,11 +118,37 @@ class _KaraokeWorkspaceState extends ConsumerState<KaraokeWorkspace> {
         });
         try {
           ref.read(tvSyncProvider).broadcastSyncPing(0, false);
+          ref.read(tvSyncProvider).broadcastEdgeStop();
         } catch (_) {}
       }
     });
 
     KaraokeCore().currentSingerNotifier.addListener(_onSingerChanged);
+  }
+
+  /// Abre el puerto del nodo TV en Windows Defender. La regla de LAN Sync solo
+  /// cubre :55055; sin esta, la Google TV no completa el upgrade WebSocket.
+  Future<void> _ensureTvFirewallRule() async {
+    if (!Platform.isWindows) return;
+    const ruleName = 'DjStudio TV Sync';
+    try {
+      final probe = await Process.run('powershell', [
+        '-Command',
+        'Get-NetFirewallRule -DisplayName "$ruleName" '
+            '-ErrorAction SilentlyContinue',
+      ]);
+      if (probe.stdout.toString().contains(ruleName)) return;
+
+      await Process.run('powershell', [
+        '-Command',
+        'Start-Process powershell -Verb runAs -WindowStyle Hidden '
+            '-ArgumentList "-Command New-NetFirewallRule '
+            "-DisplayName '$ruleName' -Direction Inbound "
+            '-LocalPort 55056 -Protocol TCP -Action Allow"',
+      ]);
+    } catch (e) {
+      debugPrint('🔴 [KARAOKE TV] Firewall :55056 $e');
+    }
   }
 
   Future<void> _fetchTvSyncUrl() async {
@@ -132,7 +165,36 @@ class _KaraokeWorkspaceState extends ConsumerState<KaraokeWorkspace> {
       debugPrint("🔴 Error obteniendo IP para TV Sync: $e");
     }
     if (mounted) {
-      setState(() => _tvSyncUrl = 'ws://$hostIp:55056');
+      setState(() {
+        _hostIp = hostIp;
+        _tvSyncUrl = 'ws://$hostIp:55056';
+      });
+    }
+  }
+
+  void _dispatchEdgeExecute({
+    required String audioPath,
+    required String originalPath,
+    required String singer,
+  }) {
+    try {
+      final lrcPath = originalPath.replaceAll(
+        RegExp(r'\.mp3$', caseSensitive: false),
+        '.lrc',
+      );
+      final trackName = originalPath.replaceAll('\\', '/').split('/').last;
+      final encodedAudio = Uri.encodeQueryComponent(audioPath);
+      final encodedLrc = Uri.encodeQueryComponent(lrcPath);
+      ref
+          .read(tvSyncProvider)
+          .broadcastEdgeExecute(
+            mp3Url: 'http://$_hostIp:55056/karaoke/audio?p=$encodedAudio',
+            lrcUrl: 'http://$_hostIp:55056/karaoke/lrc?p=$encodedLrc',
+            trackName: trackName,
+            singer: singer,
+          );
+    } catch (e) {
+      debugPrint('🔴 [KARAOKE TV] EDGE_EXECUTE: $e');
     }
   }
 
@@ -161,7 +223,15 @@ class _KaraokeWorkspaceState extends ConsumerState<KaraokeWorkspace> {
 
       _player.open(Media(finalAudioPath));
       _player.play();
+      _dispatchEdgeExecute(
+        audioPath: finalAudioPath,
+        originalPath: originalPath,
+        singer: songData['user'] ?? '',
+      );
     } else {
+      try {
+        ref.read(tvSyncProvider).broadcastEdgeStop();
+      } catch (_) {}
       _player.stop();
       setState(() {
         _currentLyrics = {};
@@ -355,6 +425,15 @@ class _KaraokeWorkspaceState extends ConsumerState<KaraokeWorkspace> {
     );
   }
 
+  Future<void> _showTvInstaller() async {
+    if (!Platform.isWindows && !Platform.isMacOS && !Platform.isLinux) return;
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => TvDeploymentDialog(service: _tvDeploymentService),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -531,14 +610,28 @@ class _KaraokeWorkspaceState extends ConsumerState<KaraokeWorkspace> {
                     width: double.infinity,
                     child: Column(
                       children: [
-                        const Text(
-                          "📺 NODO TV (WEBSOCKET)",
-                          style: TextStyle(
-                            color: Color(0xFFB026FF),
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
-                            letterSpacing: 2,
-                          ),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Text(
+                              "📺 NODO TV (WEBSOCKET)",
+                              style: TextStyle(
+                                color: Color(0xFFB026FF),
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 2,
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            IconButton(
+                              onPressed: _showTvInstaller,
+                              icon: const Icon(
+                                Icons.search,
+                                color: Color(0xFF39FF14),
+                              ),
+                              tooltip: 'Buscar e instalar en Google TV',
+                            ),
+                          ],
                         ),
                         const SizedBox(height: 8),
                         Text(
@@ -714,6 +807,394 @@ class _KaraokeWorkspaceState extends ConsumerState<KaraokeWorkspace> {
           ),
         ),
       ],
+    );
+  }
+}
+
+class TvDeploymentDialog extends StatefulWidget {
+  final TvAdbDeploymentService service;
+
+  const TvDeploymentDialog({super.key, required this.service});
+
+  @override
+  State<TvDeploymentDialog> createState() => _TvDeploymentDialogState();
+}
+
+class _TvDeploymentDialogState extends State<TvDeploymentDialog> {
+  List<TvAdbTarget> _targets = const [];
+  bool _busy = false;
+  String _status = 'Activa Depuración inalámbrica en Google TV.';
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_scan());
+  }
+
+  Future<void> _scan() async {
+    if (_busy) return;
+    setState(() {
+      _busy = true;
+      _status = 'Buscando Google TV por ADB/mDNS…';
+    });
+    try {
+      final targets = await widget.service.discover();
+      if (!mounted) return;
+      setState(() {
+        _targets = targets;
+        _status = targets.isEmpty
+            ? 'No se encontró TV. Activa Opciones de desarrollador → '
+                  'Depuración inalámbrica.'
+            : '${targets.length} destino(s) detectado(s).';
+      });
+    } catch (e) {
+      if (mounted) setState(() => _status = 'Error de radar: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _pair(TvAdbTarget target) async {
+    final endpointController = TextEditingController(
+      text: target.pairingEndpoint ?? '${target.host}:',
+    );
+    final codeController = TextEditingController();
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: const Color(0xFF121212),
+        title: const Text(
+          'Emparejar Google TV',
+          style: TextStyle(color: Color(0xFF39FF14)),
+        ),
+        content: SizedBox(
+          width: 420,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'En la TV entra en Depuración inalámbrica → Emparejar '
+                'dispositivo. Copia el IP:PUERTO y el código de 6 dígitos que '
+                'muestra esa pantalla; ese puerto es distinto al de conexión.',
+                style: TextStyle(color: Colors.white70, height: 1.4),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: endpointController,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontFamily: 'Consolas',
+                ),
+                decoration: const InputDecoration(
+                  labelText: 'IP:puerto de emparejamiento',
+                  hintText: '192.168.1.9:38791',
+                  labelStyle: TextStyle(color: Colors.white54),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: codeController,
+                autofocus: true,
+                keyboardType: TextInputType.number,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 24,
+                  letterSpacing: 5,
+                ),
+                decoration: const InputDecoration(
+                  labelText: 'Código de vinculación',
+                  labelStyle: TextStyle(color: Colors.white54),
+                ),
+                onSubmitted: (_) => Navigator.pop(dialogContext, true),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('CANCELAR'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('EMPAREJAR'),
+          ),
+        ],
+      ),
+    );
+
+    final endpoint = endpointController.text.trim();
+    final code = codeController.text.trim();
+    endpointController.dispose();
+    codeController.dispose();
+
+    if (confirmed != true || code.isEmpty) return;
+    if (!RegExp(r'^\d{1,3}(?:\.\d{1,3}){3}:\d+$').hasMatch(endpoint)) {
+      setState(() => _status = 'IP:puerto de emparejamiento inválido.');
+      return;
+    }
+
+    setState(() {
+      _busy = true;
+      _status = 'Emparejando $endpoint…';
+    });
+    try {
+      await widget.service.pair(endpoint: endpoint, code: code);
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _status = 'TV emparejada. Actualizando radar…';
+      });
+      await _scan();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _status = 'Emparejamiento fallido: $e';
+      });
+    }
+  }
+
+  Future<void> _addManualEndpoint() async {
+    final controller = TextEditingController(text: '192.168.1.');
+    final endpoint = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: const Color(0xFF121212),
+        title: const Text(
+          'Conexión ADB manual',
+          style: TextStyle(color: Color(0xFF00FFFF)),
+        ),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          style: const TextStyle(color: Colors.white, fontFamily: 'Consolas'),
+          decoration: const InputDecoration(
+            labelText: 'IP:puerto que muestra la TV',
+            hintText: '192.168.1.40:5555',
+          ),
+          onSubmitted: (value) => Navigator.pop(dialogContext, value),
+        ),
+        actions: [
+          ElevatedButton(
+            onPressed: () => Navigator.pop(dialogContext, controller.text),
+            child: const Text('AÑADIR'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (endpoint == null || !endpoint.contains(':')) return;
+    setState(() {
+      _targets = [
+        ..._targets,
+        TvAdbTarget(
+          endpoint: endpoint.trim(),
+          name: 'Google TV manual',
+          state: TvAdbTargetState.discoverable,
+        ),
+      ];
+    });
+  }
+
+  Future<void> _install(TvAdbTarget target) async {
+    if (_busy) return;
+    setState(() {
+      _busy = true;
+      _status = 'Preparando instalación…';
+    });
+    try {
+      await widget.service.buildInstallAndLaunch(
+        target: target,
+        onProgress: (message) {
+          if (mounted) setState(() => _status = message);
+        },
+      );
+    } catch (e) {
+      if (mounted) setState(() => _status = 'Instalación fallida: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: const Color(0xFF0B0D10),
+      shape: RoundedRectangleBorder(
+        side: const BorderSide(color: Color(0xFF39FF14)),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 720, maxHeight: 620),
+        child: Padding(
+          padding: const EdgeInsets.all(22),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.live_tv, color: Color(0xFF39FF14), size: 32),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'DEPLOY GOOGLE TV',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w900,
+                            fontSize: 18,
+                            letterSpacing: 2,
+                          ),
+                        ),
+                        Text(
+                          'Compila, instala y abre DJ Studio Karaoke',
+                          style: TextStyle(color: Colors.white54),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: _busy ? null : _scan,
+                    tooltip: 'Buscar TV',
+                    icon: const Icon(Icons.search, color: Color(0xFF39FF14)),
+                  ),
+                  IconButton(
+                    onPressed: _busy ? null : _addManualEndpoint,
+                    tooltip: 'IP manual',
+                    icon: const Icon(Icons.add_link, color: Color(0xFF00FFFF)),
+                  ),
+                  IconButton(
+                    onPressed: _busy ? null : () => Navigator.pop(context),
+                    icon: const Icon(Icons.close, color: Colors.white54),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.black,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.white12),
+                ),
+                child: const Text(
+                  'TV: Ajustes → Sistema → Información → pulsa “Compilación” '
+                  '7 veces → Opciones de desarrollador → Depuración '
+                  'inalámbrica → Emparejar dispositivo.\n'
+                  'La primera vez pulsa 🔑 en la TV listada y escribe el '
+                  'IP:PUERTO y el código de la pantalla; recién después usa '
+                  'INSTALAR Y ABRIR.',
+                  style: TextStyle(color: Colors.white70, height: 1.4),
+                ),
+              ),
+              const SizedBox(height: 14),
+              Expanded(
+                child: _targets.isEmpty
+                    ? Center(
+                        child: _busy
+                            ? const CircularProgressIndicator(
+                                color: Color(0xFF39FF14),
+                              )
+                            : const Icon(
+                                Icons.tv_off,
+                                color: Colors.white24,
+                                size: 72,
+                              ),
+                      )
+                    : ListView.separated(
+                        itemCount: _targets.length,
+                        separatorBuilder: (_, _) =>
+                            const Divider(color: Colors.white10),
+                        itemBuilder: (context, index) {
+                          final target = _targets[index];
+                          final needsPairing =
+                              target.state == TvAdbTargetState.pairingRequired;
+                          return ListTile(
+                            leading: Icon(
+                              needsPairing ? Icons.lock : Icons.tv,
+                              color: needsPairing
+                                  ? const Color(0xFFFFAA00)
+                                  : const Color(0xFF39FF14),
+                            ),
+                            title: Text(
+                              target.name,
+                              style: const TextStyle(color: Colors.white),
+                            ),
+                            subtitle: Text(
+                              target.endpoint,
+                              style: const TextStyle(
+                                color: Colors.white54,
+                                fontFamily: 'Consolas',
+                              ),
+                            ),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(
+                                  onPressed: _busy ? null : () => _pair(target),
+                                  tooltip: 'Emparejar con código de la TV',
+                                  icon: const Icon(
+                                    Icons.key,
+                                    size: 20,
+                                    color: Color(0xFFFFAA00),
+                                  ),
+                                ),
+                                const SizedBox(width: 4),
+                                ElevatedButton.icon(
+                                  onPressed: _busy || needsPairing
+                                      ? null
+                                      : () => _install(target),
+                                  icon: const Icon(
+                                    Icons.install_mobile,
+                                    size: 17,
+                                  ),
+                                  label: const Text('INSTALAR Y ABRIR'),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+              ),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(12),
+                color: const Color(0xFF111820),
+                child: Row(
+                  children: [
+                    if (_busy) ...[
+                      const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Color(0xFF00FFFF),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                    ],
+                    Expanded(
+                      child: Text(
+                        _status,
+                        style: const TextStyle(
+                          color: Color(0xFF00FFFF),
+                          fontFamily: 'Consolas',
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

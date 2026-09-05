@@ -28,9 +28,15 @@ aterrizaje suave deseado.
 
 ## Duraciones de mezcla
 
-- **Automix: 18 s.** Valor preciso, no aproximado.
-- **Live DJ**: crossfade forzado entre el 65 % y el 80 % de la pista.
-- **Skip manual: 4,5 s**, sin permuta de graves — no hay margen musical.
+- **Automix automático: 7–10 s.** DAWN entra `kDawnLeadMs` (5 s) antes del SET OUT y se
+  prolonga sobre la cola del outro: `silencedetect` mide cuánta energía queda después del
+  punto y esa cola se acota a 2–5 s. El SET OUT nunca es un final seco. Sin cue manual,
+  letra/ADN fijan el punto. La entrante arranca siempre en su SET IN.
+- **Cambio manual (Automix y Live DJ): 8–18 s, jamás constante.** La duración la dicta la
+  pista *entrante*: compases 4/4 sobre su BPM (16/8/4/2 compases, el primero que caiga en
+  banda); sin BPM en el nombre, 6 % de su duración.
+- **Live DJ automático**: 18 s (`activeSync`) / 4 s (sets >10 min).
+- Toda selección/cambio manual debe usar DAWN. Prohibido cortar audio.
 
 ## Zero-Lag Trigger
 
