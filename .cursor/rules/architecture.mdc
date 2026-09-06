@@ -25,9 +25,15 @@ crossfade matemático entre el 65 % y el 80 % de la pista (Remix, EDM, Tropical)
 música, así que el empate entre pistas debe ser exacto.
 
 ### Karaoke — `karaoke_workspace.dart` + `djstudio_tv/`
-*Propósito*: el invitado escanea un QR desde el móvil, entra a una web y elige de mi lista. El
-host emite `EDGE_EXECUTE` (MP3 `_K.mp3` + LRC por HTTP :55056). La app `djstudio_tv` se instala
-en Google TV (LEANBACK) y reproduce el instrumental con la letra.
+*Propósito*: el invitado escanea el QR en la TV, entra a `/karaoke` y elige de la lista.
+Laptop = mesa de control (conexiones, cola, pausa, skip, borrar). TV = escenario
+(letra, audio, QR, cola, votos). El audio solo decodifica en la TV; la laptop no abre
+`media_kit`. Toggle de monitor de letra en laptop (reloj visual, sin sonido).
+
+`INICIAR KARAOKE` dispara `EDGE_EXECUTE` (`_K.mp3` + `.lrc` por HTTP :55056).
+`STAGE_STATE` replica cola/QR/votos/pausa. `TV_PAUSE` / `TV_SKIP` / `TV_REMOVE`
+suben desde el mando. Al terminar: scoreboard 8 s y avance automático; skip corta
+el scoreboard. `FINALIZAR` (TV o laptop) emite `SESSION_END`.
 
 La lupa del panel TV usa `tv_adb_deployment_service.dart` (ADB + mDNS `_adb-tls-*`, no el
 radar REST :55055 — la TV no escucha ahí). Compila `djstudio_tv/`, instala por `adb install -r`

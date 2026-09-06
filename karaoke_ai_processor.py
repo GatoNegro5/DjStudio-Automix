@@ -1,36 +1,30 @@
 import os
 import sys
-import subprocess
-import shutil
 import time
+import shutil
 import ctypes
+import subprocess
 
-# ==========================================
-# MITIGACIÓN TÉRMICA Y LÍMITES DE HARDWARE
-# ==========================================
-# 1. Limitar hilos de PyTorch/Demucs para no incendiar la CPU (Core Capping)
-os.environ["OMP_NUM_THREADS"] = "4"
-os.environ["MKL_NUM_THREADS"] = "4"
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["TORCH_NUM_THREADS"] = "1"
+os.environ["TORCH_NUM_INTEROP_THREADS"] = "1"
 
-# 2. Forzar baja prioridad en el planificador de Windows (OS Niceness)
-# Esto permite que Windows estrangule este proceso automáticamente si detecta sobrecalentamiento.
 try:
-    # 0x00004000 = BELOW_NORMAL_PRIORITY_CLASS
     ctypes.windll.kernel32.SetPriorityClass(
-        ctypes.windll.kernel32.GetCurrentProcess(), 0x00004000
+        ctypes.windll.kernel32.GetCurrentProcess(), 0x00000040
     )
 except Exception:
     pass
 
-# ==========================================
-# CONFIGURACION DEL PIPELINE
-# ==========================================
 DEFAULT_TARGET_DIR = r"C:\Users\ASUS\Music\ReGenial"
 TEMP_DIR = r"C:\Users\ASUS\Music\ReGenial_TempAI"
+STOP_FLAG = os.path.join(TEMP_DIR, ".karaoke_ai_stop")
 SUFFIX = "_K"
-COOLING_TIME_SECONDS = 120  # 2 Minutos de enfriamiento entre pistas
+COOLDOWN_SEC = 25
 
-# Forzar UTF-8 en Windows Console para evitar UnicodeEncodeError
+
 if sys.stdout.encoding != "utf-8":
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -38,7 +32,144 @@ if sys.stdout.encoding != "utf-8":
         pass
 
 
-def process_single_file(file_path):
+def _resolve_device():
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            print("[INFO] Demucs en CUDA.")
+            return "cuda"
+    except Exception:
+        pass
+    print("[INFO] Demucs en CPU (1 hilo, 1 pista, cooldown automatico).")
+    return "cpu"
+
+
+def _karaoke_path(file_path):
+    base_name = os.path.splitext(os.path.basename(file_path))[0]
+    root_dir = os.path.dirname(file_path)
+    return os.path.join(root_dir, f"{base_name}{SUFFIX}.mp3"), base_name
+
+
+def _duration_sec(path):
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                path,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return float((result.stdout or "").strip())
+    except Exception:
+        return 0.0
+
+
+def _usable_instrumental(path, source_path=None):
+    if not os.path.exists(path) or os.path.getsize(path) < 256 * 1024:
+        return False
+    if source_path and os.path.exists(source_path):
+        src_size = os.path.getsize(source_path)
+        if src_size > 0 and os.path.getsize(path) < src_size * 0.45:
+            return False
+        src_dur = _duration_sec(source_path)
+        out_dur = _duration_sec(path)
+        if src_dur > 8 and out_dur > 0 and out_dur < src_dur * 0.85:
+            return False
+    return True
+
+
+def _run_demucs(file_path, device):
+    cmd = [
+        "demucs",
+        "--two-stems=vocals",
+        "-n",
+        "htdemucs",
+        "-o",
+        TEMP_DIR,
+        "--device",
+        device,
+        "--jobs",
+        "1",
+        "--shifts",
+        "0",
+        "--overlap",
+        "0.15",
+    ]
+    if device == "cpu":
+        cmd.extend(["--segment", "5"])
+    cmd.append(file_path)
+    subprocess.run(cmd, check=True)
+
+
+def _compress_wav(wav_path, dest_mp3):
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-threads",
+            "1",
+            "-i",
+            wav_path,
+            "-b:a",
+            "320k",
+            dest_mp3,
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def _cooldown():
+    print(f"[COOLDOWN] {COOLDOWN_SEC}s para no saturar el procesador.")
+    sys.stdout.flush()
+    for _ in range(COOLDOWN_SEC):
+        if _stop_requested():
+            return
+        time.sleep(1)
+
+
+def _finalize_file(file_path):
+    karaoke_mp3_path, base_name = _karaoke_path(file_path)
+    ai_output_folder = os.path.join(TEMP_DIR, "htdemucs", base_name)
+    no_vocals_wav = os.path.join(ai_output_folder, "no_vocals.wav")
+
+    if not os.path.exists(no_vocals_wav):
+        print(f"[ERROR I/O] Demucs no genero el archivo esperado para {base_name}")
+        return False
+
+    print(f"[Comprimiendo a MP3 320kbps] {os.path.basename(karaoke_mp3_path)}")
+    try:
+        _compress_wav(no_vocals_wav, karaoke_mp3_path)
+    except subprocess.CalledProcessError as e:
+        print(f"[ERROR CRITICO] ffmpeg {base_name}. Codigo: {e.returncode}")
+        return False
+
+    if os.path.exists(ai_output_folder):
+        shutil.rmtree(ai_output_folder, ignore_errors=True)
+
+    if not _usable_instrumental(karaoke_mp3_path, file_path):
+        print(f"[ERROR I/O] _K.mp3 truncado o invalido para {base_name}, se descarta.")
+        try:
+            os.remove(karaoke_mp3_path)
+        except OSError:
+            pass
+        return False
+
+    print(f"[Exito] Pista Instrumental generada: {os.path.basename(karaoke_mp3_path)}\n")
+    return True
+
+
+def process_single_file(file_path, device=None, rest=True):
     if not os.path.exists(file_path):
         print(f"[ERROR] El archivo {file_path} no existe.")
         return False
@@ -47,60 +178,39 @@ def process_single_file(file_path):
         print("[ERROR] El archivo no es un MP3.")
         return False
 
-    base_name = os.path.splitext(os.path.basename(file_path))[0]
-    root_dir = os.path.dirname(file_path)
-    karaoke_mp3_name = f"{base_name}{SUFFIX}.mp3"
-    karaoke_mp3_path = os.path.join(root_dir, karaoke_mp3_name)
-
-    # BLINDAJE DE EVASIÓN FÍSICA: Si existe el _K, se omite de inmediato
-    if os.path.exists(karaoke_mp3_path):
+    karaoke_mp3_path, base_name = _karaoke_path(file_path)
+    if _usable_instrumental(karaoke_mp3_path, file_path):
         print(f"[SKIP] La pista instrumental ya existe para {base_name}")
         return False
 
     print(f"\n[Procesando IA Demucs SINGLE] {base_name}")
+    sys.stdout.flush()
     os.makedirs(TEMP_DIR, exist_ok=True)
+    device = device or _resolve_device()
 
     try:
-        demucs_cmd = ["demucs", "--two-stems=vocals", "-o", TEMP_DIR, file_path]
-
-        subprocess.run(demucs_cmd, check=True)
-
-        ai_output_folder = os.path.join(TEMP_DIR, "htdemucs", base_name)
-        no_vocals_wav = os.path.join(ai_output_folder, "no_vocals.wav")
-
-        if not os.path.exists(no_vocals_wav):
-            print(f"[ERROR I/O] Demucs no genero el archivo esperado para {base_name}")
-            return False
-
-        print(f"[Comprimiendo a MP3 320kbps] {karaoke_mp3_name}")
-        ffmpeg_cmd = [
-            "ffmpeg",
-            "-y",
-            "-i",
-            no_vocals_wav,
-            "-b:a",
-            "320k",
-            karaoke_mp3_path,
-        ]
-
-        subprocess.run(
-            ffmpeg_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
-
-        if os.path.exists(ai_output_folder):
-            shutil.rmtree(ai_output_folder)
-
-        print(f"[Exito] Pista Instrumental generada: {karaoke_mp3_name}\n")
-        return True  # Retorna True solo si hizo trabajo pesado de IA
-
+        _run_demucs(file_path, device)
+        ok = _finalize_file(file_path)
+        if rest:
+            _cooldown()
+        return ok
     except subprocess.CalledProcessError as e:
-        print(
-            f"[ERROR CRITICO] procesando {base_name}. Codigo de salida: {e.returncode}"
-        )
+        print(f"[ERROR CRITICO] procesando {base_name}. Codigo de salida: {e.returncode}")
         return False
     except Exception as ex:
         print(f"[ERROR INESPERADO] en {base_name}: {ex}")
         return False
+
+
+def _stop_requested():
+    return os.path.exists(STOP_FLAG)
+
+
+def _clear_stop_flag():
+    try:
+        os.remove(STOP_FLAG)
+    except OSError:
+        pass
 
 
 def process_catalog(directory):
@@ -110,35 +220,40 @@ def process_catalog(directory):
 
     print(f"[INFO] Escaneando directorio: {directory}")
     os.makedirs(TEMP_DIR, exist_ok=True)
+    _clear_stop_flag()
+    device = _resolve_device()
 
     files_to_process = []
     for root, _, files in os.walk(directory):
         for file in files:
-            # BLINDAJE DE EVASIÓN DE ESCANEO
-            if file.lower().endswith(".mp3") and not file.endswith(f"{SUFFIX}.mp3"):
-                files_to_process.append(os.path.join(root, file))
+            if not file.lower().endswith(".mp3") or file.endswith(f"{SUFFIX}.mp3"):
+                continue
+            full = os.path.join(root, file)
+            karaoke_mp3_path, _ = _karaoke_path(full)
+            if _usable_instrumental(karaoke_mp3_path, full):
+                continue
+            files_to_process.append(full)
 
     total = len(files_to_process)
-    for i, original_mp3_path in enumerate(files_to_process):
-        did_heavy_lifting = process_single_file(original_mp3_path)
+    print(f"[INFO] {total} pista(s) pendientes. Una por una, con cooldown.")
 
-        # 3. DUTY CYCLE: Descanso térmico solo si la IA corrió y no es la última pista
-        if did_heavy_lifting and i < total - 1:
-            print(
-                f"[TERMAL] Duty Cycle Activado. Dejando enfriar la CPU por {COOLING_TIME_SECONDS}s..."
-            )
-            for sec in range(COOLING_TIME_SECONDS, 0, -1):
-                # Imprimir silenciosamente a stderr para no romper el parser de Flutter
-                sys.stderr.write(f"\r🧊 Enfriando Procesador... {sec}s restantes")
-                sys.stderr.flush()
-                time.sleep(1)
-            sys.stderr.write("\n")
-            sys.stderr.flush()
+    cancelled = False
+    for index, path in enumerate(files_to_process, start=1):
+        if _stop_requested():
+            cancelled = True
+            print("[CANCEL] Cola detenida. La pista en curso ya termino.")
+            break
+        print(f"[INFO] {index}/{total}")
+        process_single_file(path, device=device, rest=index < total)
 
+    _clear_stop_flag()
     if os.path.exists(TEMP_DIR):
-        shutil.rmtree(TEMP_DIR)
+        shutil.rmtree(TEMP_DIR, ignore_errors=True)
 
-    print("[JOB FINALIZADO] Toda la cola ha sido procesada.")
+    if cancelled:
+        print("[JOB CANCELADO] No se encolan mas pistas.")
+    else:
+        print("[JOB FINALIZADO] Toda la cola ha sido procesada.")
 
 
 if __name__ == "__main__":
@@ -154,6 +269,6 @@ if __name__ == "__main__":
             print(f"[ERROR] Ruta no valida: {target_path}")
     else:
         print(
-            "Iniciando Motor de Aislamiento de Voces Batch Global (Demucs - Meta AI)..."
+            "Iniciando Motor de Aislamiento de Voces (Demucs, 1 pista, prioridad idle)..."
         )
         process_catalog(DEFAULT_TARGET_DIR)

@@ -17,19 +17,50 @@ import '../../providers/db_provider.dart';
 // ==========================================
 class AiEngineState {
   final bool isRunning;
+  final bool? cancelRequested;
   final String status;
-  AiEngineState({this.isRunning = false, this.status = ''});
+  AiEngineState({
+    this.isRunning = false,
+    this.cancelRequested = false,
+    this.status = '',
+  });
+
+  bool get stopping => cancelRequested == true;
 }
 
 class AiEngineNotifier extends StateNotifier<AiEngineState> {
+  static final File stopFlag = File(
+    r'C:\Users\ASUS\Music\ReGenial_TempAI\.karaoke_ai_stop',
+  );
+
   AiEngineNotifier() : super(AiEngineState());
 
   void start(String path) {
+    try {
+      if (stopFlag.existsSync()) stopFlag.deleteSync();
+    } catch (_) {}
     state = AiEngineState(isRunning: true, status: 'Iniciando Motor IA...');
   }
 
   void updateStatus(String status) {
-    state = AiEngineState(isRunning: true, status: status);
+    state = AiEngineState(
+      isRunning: true,
+      cancelRequested: state.cancelRequested,
+      status: status,
+    );
+  }
+
+  void requestStop() {
+    if (!state.isRunning || state.stopping) return;
+    try {
+      stopFlag.parent.createSync(recursive: true);
+      stopFlag.writeAsStringSync('1');
+    } catch (_) {}
+    state = AiEngineState(
+      isRunning: true,
+      cancelRequested: true,
+      status: 'Cancelando al terminar esta pista…',
+    );
   }
 
   void stop() {
@@ -1256,10 +1287,36 @@ class DspNlpWorkspace extends ConsumerWidget {
                 ? Colors.orangeAccent
                 : const Color(0xFFB026FF),
             isPrimary: false,
-            onTap: (dirState.currentPath.isEmpty || isBusy)
+            onTap: (aiState.isRunning ||
+                    dirState.currentPath.isEmpty ||
+                    isBusy)
                 ? null
                 : () =>
                       _executeKaraokeBatch(context, ref, dirState.currentPath),
+            footer: aiState.isRunning
+                ? OutlinedButton.icon(
+                    onPressed: aiState.stopping
+                        ? null
+                        : () =>
+                              ref.read(aiEngineProvider.notifier).requestStop(),
+                    icon: const Icon(Icons.stop_circle_outlined),
+                    label: Text(
+                      aiState.stopping
+                          ? 'CIERRA ESTA PISTA…'
+                          : 'CANCELAR COLA',
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: aiState.stopping
+                          ? Colors.white38
+                          : Colors.redAccent,
+                      side: BorderSide(
+                        color: aiState.stopping
+                            ? Colors.white24
+                            : Colors.redAccent,
+                      ),
+                    ),
+                  )
+                : null,
           ),
           _buildActionCard(
             title: "INFORME DE AUDITORÍA",
@@ -1372,8 +1429,9 @@ class DspNlpWorkspace extends ConsumerWidget {
     required Color color,
     required bool isPrimary,
     VoidCallback? onTap,
+    Widget? footer,
   }) {
-    final bool isDisabled = onTap == null;
+    final bool isDisabled = onTap == null && footer == null;
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(16),
@@ -1460,6 +1518,7 @@ class DspNlpWorkspace extends ConsumerWidget {
                   color: isDisabled ? Colors.white24 : Colors.white70,
                 ),
               ),
+              if (footer != null) ...[const SizedBox(height: 12), footer],
             ],
           ),
         ),
@@ -1931,6 +1990,18 @@ class KaraokeAIEngine {
             ref
                 ?.read(aiEngineProvider.notifier)
                 .updateStatus('¡Instrumental Listo!: $currentTrack');
+          } else if (text.contains('[COOLDOWN]')) {
+            ref
+                ?.read(aiEngineProvider.notifier)
+                .updateStatus('Enfriando CPU… $currentTrack');
+          } else if (text.contains('truncado')) {
+            ref
+                ?.read(aiEngineProvider.notifier)
+                .updateStatus('Descartado _K truncado: $currentTrack');
+          } else if (text.contains('[CANCEL]')) {
+            ref
+                ?.read(aiEngineProvider.notifier)
+                .updateStatus('Cola cancelada. Última pista cerrada.');
           }
         });
 

@@ -559,6 +559,7 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
   </style>
 </head>
 <body>
+  <div id="catalogView">
   <h2>🎤 Selecciona tu pista</h2>
   
   <div class="input-group">
@@ -576,12 +577,17 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
 
   <button class="btn-primary" id="sendBtn" onclick="sendToQueue()" disabled>ENVIAR A LA COLA</button>
   <button class="btn-secondary" onclick="requestWishlist()">¿No está tu canción? Pídela aquí</button>
+  </div>
 
-  <h2 style="margin-top:40px;">Votar en Vivo</h2>
-  <div class="votes">
-    <button class="vote-btn" onclick="vote('👏')">👏</button>
-    <button class="vote-btn" onclick="vote('🔥')">🔥</button>
-    <button class="vote-btn" onclick="vote('💩')">💩</button>
+  <div id="voteView" style="display:none;">
+    <h2>CALIFICACIÓN</h2>
+    <p id="voteSinger" style="text-align:center;color:#00ffff;font-weight:bold;"></p>
+    <p id="voteTimer" style="text-align:center;color:#39ff14;font-size:42px;margin:10px 0;"></p>
+    <div class="votes">
+      <button class="vote-btn" onclick="vote('👏')">👏</button>
+      <button class="vote-btn" onclick="vote('🔥')">🔥</button>
+      <button class="vote-btn" onclick="vote('💩')">💩</button>
+    </div>
   </div>
 
   <script>
@@ -671,6 +677,25 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
     function vote(type) {
       fetch('/api/vote?type=' + encodeURIComponent(type), { method: 'POST' });
     }
+
+    function applyPhase(state) {
+      const voting = state.phase === 'voting';
+      document.getElementById('catalogView').style.display = voting ? 'none' : 'block';
+      document.getElementById('voteView').style.display = voting ? 'block' : 'none';
+      if (!voting) return;
+      document.getElementById('voteSinger').textContent =
+        (state.singer || 'Cantante') + ' — ' + (state.track || '');
+      document.getElementById('voteTimer').textContent = (state.seconds_left || 0) + 's';
+    }
+
+    function pollStage() {
+      fetch('/api/karaoke/state')
+        .then(r => r.json())
+        .then(applyPhase)
+        .catch(() => {});
+    }
+    pollStage();
+    setInterval(pollStage, 800);
   </script>
 </body>
 </html>
@@ -701,6 +726,15 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
         request.response
           ..statusCode = 200
           ..write("OK")
+          ..close();
+        return;
+      }
+
+      if (request.method == 'GET' && path == '/api/karaoke/state') {
+        request.response
+          ..statusCode = 200
+          ..headers.contentType = ContentType.json
+          ..write(jsonEncode(KaraokeCore().publicState()))
           ..close();
         return;
       }

@@ -57,6 +57,24 @@ add_subdirectory(${FLUTTER_MANAGED_DIR})
 # Application build; see runner/CMakeLists.txt.
 add_subdirectory("runner")
 
+# permission_handler_windows FetchContent baja nuget.exe de dist.nuget.org.
+# Si el DNS falla, CMake aborta. Se usa el binario vendido en windows/tooling.
+set(_DJ_NUGET "${CMAKE_CURRENT_SOURCE_DIR}/tooling/nuget.exe")
+if(EXISTS "${_DJ_NUGET}")
+  get_filename_component(_DJ_TOOLING_DIR "${_DJ_NUGET}" DIRECTORY)
+  # find_program(NUGET nuget) busca en el PATH del proceso: lo exponemos ahí.
+  set(ENV{PATH} "${_DJ_TOOLING_DIR};$ENV{PATH}")
+  list(PREPEND CMAKE_PROGRAM_PATH "${_DJ_TOOLING_DIR}")
+  set(NUGET "${_DJ_NUGET}" CACHE FILEPATH "NuGet CLI local" FORCE)
+endif()
+
+# CppWinRT también viene vendido. Se siembra en el dir de salida del plugin
+# para que `nuget install` no necesite red (la caché global ya lo tiene).
+set(_DJ_CPPWINRT "${CMAKE_CURRENT_SOURCE_DIR}/tooling/cppwinrt/Microsoft.Windows.CppWinRT.2.0.210806.1")
+if(EXISTS "${_DJ_CPPWINRT}")
+  file(COPY "${_DJ_CPPWINRT}"
+       DESTINATION "${CMAKE_BINARY_DIR}/packages")
+endif()
 
 # Generated plugin build rules, which manage building the plugins and adding
 # them to the application.

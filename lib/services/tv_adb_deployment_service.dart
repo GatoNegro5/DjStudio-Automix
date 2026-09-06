@@ -9,31 +9,53 @@ class TvAdbTarget {
   final String name;
   final TvAdbTargetState state;
   final String? pairingEndpoint;
+  final bool installed;
 
   const TvAdbTarget({
     required this.endpoint,
     required this.name,
     required this.state,
     this.pairingEndpoint,
+    this.installed = false,
   });
 
-  String get host => endpoint.split(':').first;
+  String get host {
+    final ip = RegExp(r'(\d{1,3}(?:\.\d{1,3}){3})').firstMatch(endpoint);
+    return ip?.group(1) ?? endpoint.split(':').first;
+  }
 
-  bool get canInstall => state != TvAdbTargetState.pairingRequired;
+  bool get paired => state == TvAdbTargetState.connected;
+
+  bool get canInstall => state == TvAdbTargetState.connected;
 
   TvAdbTarget copyWith({
     String? endpoint,
     String? name,
     TvAdbTargetState? state,
     String? pairingEndpoint,
+    bool? installed,
   }) {
     return TvAdbTarget(
       endpoint: endpoint ?? this.endpoint,
       name: name ?? this.name,
       state: state ?? this.state,
       pairingEndpoint: pairingEndpoint ?? this.pairingEndpoint,
+      installed: installed ?? this.installed,
     );
   }
+}
+
+class TvAdbPairingRequiredException implements Exception {
+  final TvAdbTarget target;
+  final String message;
+
+  const TvAdbPairingRequiredException({
+    required this.target,
+    required this.message,
+  });
+
+  @override
+  String toString() => message;
 }
 
 class TvAdbDeploymentService {
@@ -78,12 +100,22 @@ class TvAdbDeploymentService {
       final serial = match.group(1)!;
       final details = match.group(2) ?? '';
       final model = RegExp(r'\bmodel:(\S+)').firstMatch(details)?.group(1);
-      if (await _isTelevision(serial)) {
-        targets[serial.split(':').first] = TvAdbTarget(
-          endpoint: serial,
-          name: (model ?? 'Google TV').replaceAll('_', ' '),
-          state: TvAdbTargetState.connected,
-        );
+      if (!await _isTelevision(serial)) continue;
+      final host = await _serialLanHost(serial) ?? serial.split(':').first;
+      final installed = await isAppInstalled(serial);
+      final candidate = TvAdbTarget(
+        endpoint: serial,
+        name: (model ?? 'Google TV').replaceAll('_', ' '),
+        state: TvAdbTargetState.connected,
+        installed: installed,
+      );
+      final existing = targets[host];
+      if (existing == null || _preferEndpoint(candidate.endpoint, existing.endpoint)) {
+        targets[host] = existing == null
+            ? candidate
+            : candidate.copyWith(pairingEndpoint: existing.pairingEndpoint);
+      } else {
+        targets[host] = existing.copyWith(installed: installed);
       }
     }
 
@@ -92,14 +124,24 @@ class TvAdbDeploymentService {
       final existing = targets[host];
 
       if (service.isPairing) {
-        targets[host] = existing == null
-            ? TvAdbTarget(
-                endpoint: service.endpoint,
-                name: 'Google TV — requiere código',
-                state: TvAdbTargetState.pairingRequired,
-                pairingEndpoint: service.endpoint,
-              )
-            : existing.copyWith(pairingEndpoint: service.endpoint);
+        if (existing == null) {
+          targets[host] = TvAdbTarget(
+            endpoint: service.endpoint,
+            name: 'Google TV — requiere código',
+            state: TvAdbTargetState.pairingRequired,
+            pairingEndpoint: service.endpoint,
+          );
+        } else if (existing.state != TvAdbTargetState.connected) {
+          targets[host] = existing.copyWith(
+            name: 'Google TV — requiere código',
+            state: TvAdbTargetState.pairingRequired,
+            pairingEndpoint: service.endpoint,
+          );
+        } else {
+          targets[host] = existing.copyWith(
+            pairingEndpoint: service.endpoint,
+          );
+        }
         continue;
       }
 
@@ -110,11 +152,7 @@ class TvAdbDeploymentService {
           state: TvAdbTargetState.discoverable,
         );
       } else if (existing.state == TvAdbTargetState.pairingRequired) {
-        targets[host] = existing.copyWith(
-          endpoint: service.endpoint,
-          name: 'Google TV — disponible',
-          state: TvAdbTargetState.discoverable,
-        );
+        targets[host] = existing.copyWith(endpoint: service.endpoint);
       }
     }
 
@@ -145,6 +183,65 @@ class TvAdbDeploymentService {
       );
     }
     return services;
+  }
+
+  Future<String?> _serialLanHost(String serial) async {
+    final dotted = RegExp(
+      r'(\d{1,3}(?:\.\d{1,3}){3})',
+    ).firstMatch(serial);
+    if (dotted != null) return dotted.group(1);
+    try {
+      final result = await _adb([
+        '-s',
+        serial,
+        'shell',
+        'ip',
+        '-4',
+        'addr',
+        'show',
+        'wlan0',
+      ]);
+      return RegExp(
+        r'inet (\d{1,3}(?:\.\d{1,3}){3})',
+      ).firstMatch('${result.stdout}')?.group(1);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  bool _preferEndpoint(String incoming, String current) {
+    final ipPort = RegExp(r'^\d{1,3}(?:\.\d{1,3}){3}:\d+$');
+    return ipPort.hasMatch(incoming) && !ipPort.hasMatch(current);
+  }
+
+  Future<bool> isAppInstalled(String serial) async {
+    try {
+      final result = await _adb([
+        '-s',
+        serial,
+        'shell',
+        'pm',
+        'path',
+        'com.example.djstudio_tv',
+      ]);
+      return '${result.stdout}'.contains('package:');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> launchApp(String serial) async {
+    await _adb([
+      '-s',
+      serial,
+      'shell',
+      'monkey',
+      '-p',
+      'com.example.djstudio_tv',
+      '-c',
+      'android.intent.category.LEANBACK_LAUNCHER',
+      '1',
+    ]);
   }
 
   Future<bool> _isTelevision(String serial) async {
@@ -225,6 +322,11 @@ class TvAdbDeploymentService {
             : output,
       );
     }
+    final host = endpoint.split(':').first;
+    final connectEndpoint = await _resolveConnectEndpoint(host);
+    if (connectEndpoint != null) {
+      await _tryConnect(connectEndpoint);
+    }
     return output;
   }
 
@@ -235,24 +337,27 @@ class TvAdbDeploymentService {
     var endpoint = target.endpoint;
     if (target.state != TvAdbTargetState.connected) {
       onProgress('Conectando con $endpoint…');
-      if (!await _tryConnect(endpoint)) {
+      var connected = await _tryConnect(endpoint);
+      if (!connected) {
         final refreshed = await _resolveConnectEndpoint(target.host);
-        if (refreshed == null || refreshed == endpoint) {
-          throw StateError(
-            'ADB no pudo conectar con $endpoint.\n'
-            'Esta TV exige emparejarse antes: en la TV abre Depuración '
-            'inalámbrica → Emparejar dispositivo y pulsa la llave 🔑 de esta '
-            'lista con el IP:PUERTO y el código de 6 dígitos que aparecen en '
-            'pantalla. Ese puerto NO es el mismo que el de conexión.',
-          );
+        if (refreshed != null && refreshed != endpoint) {
+          onProgress('Puerto renovado, reintentando en $refreshed…');
+          connected = await _tryConnect(refreshed);
+          if (connected) endpoint = refreshed;
         }
-        onProgress('Puerto renovado, reintentando en $refreshed…');
-        if (!await _tryConnect(refreshed)) {
-          throw StateError(
-            'ADB no pudo conectar con $refreshed. Empareja la TV de nuevo.',
-          );
-        }
-        endpoint = refreshed;
+      }
+      if (!connected) {
+        final pairing = await resolvePairingEndpoint(target.host);
+        throw TvAdbPairingRequiredException(
+          target: target.copyWith(
+            pairingEndpoint: pairing ?? target.pairingEndpoint,
+            state: TvAdbTargetState.pairingRequired,
+            name: 'Google TV — requiere código',
+          ),
+          message:
+              'Esta TV exige emparejarse antes de instalar. '
+              'Abre Emparejar dispositivo en la TV e ingresa el código.',
+        );
       }
     }
 
@@ -266,67 +371,67 @@ class TvAdbDeploymentService {
       onProgress('Aviso: ADB no confirmó Leanback; continuando…');
     }
 
-    final project = _resolveTvProject();
-    final apk = File(
-      '${project.path}${Platform.pathSeparator}build${Platform.pathSeparator}'
-      'app${Platform.pathSeparator}outputs${Platform.pathSeparator}'
-      'flutter-apk${Platform.pathSeparator}app-release.apk',
-    );
-
-    if (_requiresBuild(project, apk)) {
-      onProgress('Compilando DJ Studio Karaoke TV…');
-      final build = await Process.start(
-        Platform.isWindows ? 'flutter.bat' : 'flutter',
-        ['build', 'apk', '--release'],
-        workingDirectory: project.path,
-        runInShell: true,
-      );
-      final stdoutSub = build.stdout
-          .transform(utf8.decoder)
-          .transform(const LineSplitter())
-          .listen(onProgress);
-      final stderrSub = build.stderr
-          .transform(utf8.decoder)
-          .transform(const LineSplitter())
-          .listen(onProgress);
-      final buildExit = await build.exitCode;
-      await stdoutSub.cancel();
-      await stderrSub.cancel();
-      if (buildExit != 0 || !apk.existsSync()) {
-        throw StateError('Falló la compilación del APK para Google TV.');
-      }
+    final alreadyInstalled =
+        target.installed || await isAppInstalled(endpoint);
+    if (alreadyInstalled) {
+      onProgress('APK ya instalado. Abriendo…');
     } else {
-      onProgress('APK release vigente; omitiendo recompilación.');
-    }
+      final project = _resolveTvProject();
+      final apk = File(
+        '${project.path}${Platform.pathSeparator}build${Platform.pathSeparator}'
+        'app${Platform.pathSeparator}outputs${Platform.pathSeparator}'
+        'flutter-apk${Platform.pathSeparator}app-release.apk',
+      );
 
-    onProgress('Instalando APK en ${target.name}…');
-    final install = await _adb([
-      '-s',
-      endpoint,
-      'install',
-      '-r',
-      '-d',
-      apk.path,
-    ]);
-    final installOutput = '${install.stdout}\n${install.stderr}'.trim();
-    if (install.exitCode != 0 ||
-        !installOutput.toLowerCase().contains('success')) {
-      throw StateError(installOutput);
+      if (_requiresBuild(project, apk)) {
+        onProgress('Compilando DJ Studio Karaoke TV…');
+        final build = await Process.start(
+          Platform.isWindows ? 'flutter.bat' : 'flutter',
+          ['build', 'apk', '--release'],
+          workingDirectory: project.path,
+          runInShell: true,
+        );
+        final stdoutSub = build.stdout
+            .transform(utf8.decoder)
+            .transform(const LineSplitter())
+            .listen(onProgress);
+        final stderrSub = build.stderr
+            .transform(utf8.decoder)
+            .transform(const LineSplitter())
+            .listen(onProgress);
+        final buildExit = await build.exitCode;
+        await stdoutSub.cancel();
+        await stderrSub.cancel();
+        if (buildExit != 0 || !apk.existsSync()) {
+          throw StateError('Falló la compilación del APK para Google TV.');
+        }
+      } else {
+        onProgress('APK release vigente; omitiendo recompilación.');
+      }
+
+      onProgress('Instalando APK en ${target.name}…');
+      final install = await _adb([
+        '-s',
+        endpoint,
+        'install',
+        '-r',
+        '-d',
+        apk.path,
+      ]);
+      final installOutput = '${install.stdout}\n${install.stderr}'.trim();
+      if (install.exitCode != 0 ||
+          !installOutput.toLowerCase().contains('success')) {
+        throw StateError(installOutput);
+      }
     }
 
     onProgress('Abriendo DJ Studio Karaoke en la TV…');
-    await _adb([
-      '-s',
-      endpoint,
-      'shell',
-      'monkey',
-      '-p',
-      'com.example.djstudio_tv',
-      '-c',
-      'android.intent.category.LEANBACK_LAUNCHER',
-      '1',
-    ]);
-    onProgress('Instalación terminada. Revisa la pantalla de la TV.');
+    await launchApp(endpoint);
+    onProgress(
+      alreadyInstalled
+          ? 'TV lista. No se reinstaló el APK.'
+          : 'Instalación terminada. Revisa la pantalla de la TV.',
+    );
   }
 
   Future<bool> _tryConnect(String endpoint) async {
@@ -341,6 +446,13 @@ class TvAdbDeploymentService {
   Future<String?> _resolveConnectEndpoint(String host) async {
     for (final service in await _readMdnsServices()) {
       if (!service.isPairing && service.host == host) return service.endpoint;
+    }
+    return null;
+  }
+
+  Future<String?> resolvePairingEndpoint(String host) async {
+    for (final service in await _readMdnsServices()) {
+      if (service.isPairing && service.host == host) return service.endpoint;
     }
     return null;
   }

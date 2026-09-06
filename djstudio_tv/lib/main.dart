@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:dio/dio.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -45,43 +46,102 @@ class BootScreen extends StatefulWidget {
 class _BootScreenState extends State<BootScreen> {
   final TextEditingController _ipController = TextEditingController();
   bool _isLoading = true;
+  bool _showForm = false;
+  String _status = 'Buscando la laptop…';
 
   @override
   void initState() {
     super.initState();
-    _loadSavedIp();
+    unawaited(_autoJoin());
   }
 
-  Future<void> _loadSavedIp() async {
+  Future<bool> _probe(String ip) async {
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(milliseconds: 450);
+    try {
+      final request = await client.getUrl(
+        Uri.parse('http://$ip:55056/api/whoami'),
+      );
+      final response = await request.close().timeout(
+        const Duration(milliseconds: 450),
+      );
+      final body = await response.transform(utf8.decoder).join();
+      return response.statusCode == 200 && body.contains('djstudio-karaoke');
+    } catch (_) {
+      return false;
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  Future<String?> _scanLan() async {
+    try {
+      final interfaces = await NetworkInterface.list(
+        type: InternetAddressType.IPv4,
+        includeLoopback: false,
+      );
+      if (interfaces.isEmpty) return null;
+      final self = interfaces.first.addresses.first.address;
+      final parts = self.split('.');
+      if (parts.length != 4) return null;
+      final prefix = '${parts[0]}.${parts[1]}.${parts[2]}';
+      for (var start = 1; start <= 254; start += 40) {
+        if (!mounted) return null;
+        final batch = <Future<String?>>[];
+        for (var host = start; host < start + 40 && host <= 254; host++) {
+          final ip = '$prefix.$host';
+          if (ip == self) continue;
+          batch.add(_probe(ip).then((ok) => ok ? ip : null));
+        }
+        final hits = (await Future.wait(batch)).whereType<String>();
+        if (hits.isNotEmpty) return hits.first;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  Future<void> _enter(String ip) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('server_ip', ip);
+    if (!mounted) return;
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(builder: (_) => TeleprompterScreen(serverIp: ip)),
+    );
+  }
+
+  Future<void> _autoJoin() async {
     final prefs = await SharedPreferences.getInstance();
     final savedIp = prefs.getString('server_ip') ?? '';
     if (savedIp.isNotEmpty) {
       _ipController.text = savedIp;
+      if (await _probe(savedIp)) {
+        await _enter(savedIp);
+        return;
+      }
     }
-    setState(() => _isLoading = false);
+    if (mounted) setState(() => _status = 'Explorando WiFi…');
+    final found = await _scanLan();
+    if (found != null) {
+      await _enter(found);
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      _isLoading = false;
+      _showForm = true;
+      _status = 'No hallé la laptop. Escribe la IP del orquestador.';
+    });
   }
 
-  void _connect() async {
+  void _connect() {
     final ip = _ipController.text.trim();
     if (ip.isEmpty) return;
-
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('server_ip', ip);
-
-    if (mounted) {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (_) => TeleprompterScreen(serverIp: ip)),
-      );
-    }
+    unawaited(_enter(ip));
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_isLoading) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
-    }
-
     return Scaffold(
       body: Center(
         child: Container(
@@ -106,48 +166,54 @@ class _BootScreenState extends State<BootScreen> {
                 ),
               ),
               const SizedBox(height: 10),
-              const Text(
-                "Ingresa la IP que muestra el Orquestador en Windows",
+              Text(
+                _status,
                 textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.white54),
+                style: const TextStyle(color: Colors.white54),
               ),
-              const SizedBox(height: 30),
-              TextField(
-                controller: _ipController,
-                style: const TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
-                ),
-                textAlign: TextAlign.center,
-                decoration: InputDecoration(
-                  prefixText: "ws:// ",
-                  suffixText: ":55056",
-                  prefixStyle: const TextStyle(color: Colors.white38),
-                  suffixStyle: const TextStyle(color: Colors.white38),
-                  filled: true,
-                  fillColor: Colors.black,
-                  enabledBorder: const OutlineInputBorder(
-                    borderSide: BorderSide(color: Colors.white24),
+              if (_isLoading) ...[
+                const SizedBox(height: 30),
+                const CircularProgressIndicator(color: Color(0xFF39FF14)),
+              ],
+              if (_showForm) ...[
+                const SizedBox(height: 30),
+                TextField(
+                  controller: _ipController,
+                  style: const TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
                   ),
-                  focusedBorder: const OutlineInputBorder(
-                    borderSide: BorderSide(color: Color(0xFF39FF14)),
+                  textAlign: TextAlign.center,
+                  decoration: InputDecoration(
+                    prefixText: "ws:// ",
+                    suffixText: ":55056",
+                    prefixStyle: const TextStyle(color: Colors.white38),
+                    suffixStyle: const TextStyle(color: Colors.white38),
+                    filled: true,
+                    fillColor: Colors.black,
+                    enabledBorder: const OutlineInputBorder(
+                      borderSide: BorderSide(color: Colors.white24),
+                    ),
+                    focusedBorder: const OutlineInputBorder(
+                      borderSide: BorderSide(color: Color(0xFF39FF14)),
+                    ),
                   ),
                 ),
-              ),
-              const SizedBox(height: 30),
-              ElevatedButton(
-                autofocus: true,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF39FF14),
-                  foregroundColor: Colors.black,
-                  minimumSize: const Size(double.infinity, 60),
+                const SizedBox(height: 30),
+                ElevatedButton(
+                  autofocus: true,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF39FF14),
+                    foregroundColor: Colors.black,
+                    minimumSize: const Size(double.infinity, 60),
+                  ),
+                  onPressed: _connect,
+                  child: const Text(
+                    "CONECTAR",
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                  ),
                 ),
-                onPressed: _connect,
-                child: const Text(
-                  "CONECTAR",
-                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-                ),
-              ),
+              ],
             ],
           ),
         ),
@@ -167,36 +233,72 @@ class TeleprompterScreen extends StatefulWidget {
   State<TeleprompterScreen> createState() => _TeleprompterScreenState();
 }
 
+class _StandbyCartridge {
+  final String mp3Path;
+  final String mp3Url;
+  final String trackName;
+  final String singer;
+  final String rawLrc;
+
+  const _StandbyCartridge({
+    required this.mp3Path,
+    required this.mp3Url,
+    required this.trackName,
+    required this.singer,
+    required this.rawLrc,
+  });
+}
+
 class _TeleprompterScreenState extends State<TeleprompterScreen> {
   WebSocketChannel? _channel;
   final ScrollController _scrollController = ScrollController();
   final Player _player = Player();
   final Dio _dio = Dio();
   StreamSubscription? _positionSub;
+  StreamSubscription? _completedSub;
 
   String _status = "Conectando...";
   bool _isConnected = false;
   bool _isDownloading = false;
+  bool _paused = false;
+  bool _sessionClosed = false;
   double _downloadProgress = 0.0;
 
   String _currentTrackName = "";
   String _currentSinger = "";
   Map<Duration, String> _lyricsMs = {};
+  List<Duration> _lyricKeys = const [];
+  Map<String, dynamic> _scoreboard = {};
 
   Duration _currentPosition = Duration.zero;
   int _activeIndex = 0;
   int _countdown = 0;
+  int _lastTickMs = 0;
+  double _lastProgressShown = -1;
 
   String? _localMp3Path;
+  _StandbyCartridge? _standby;
+  List<Map<String, String>> _queue = const [];
+  Map<String, int> _votes = const {'👏': 0, '🔥': 0, '💩': 0};
+  String _qrUrl = '';
+  bool _session = false;
 
   @override
   void initState() {
     super.initState();
     _connectWebSocket();
     _setupAudioListener();
+    _completedSub = _player.stream.completed.listen((done) {
+      if (done) _send({'type': 'TV_TRACK_ENDED'});
+    });
+  }
+
+  void _send(Map<String, dynamic> payload) {
+    _channel?.sink.add(jsonEncode(payload));
   }
 
   void _connectWebSocket() {
+    if (_sessionClosed) return;
     final uri = Uri.parse('ws://${widget.serverIp}:55056');
     try {
       _channel = WebSocketChannel.connect(uri);
@@ -209,10 +311,23 @@ class _TeleprompterScreenState extends State<TeleprompterScreen> {
         (message) {
           try {
             final data = jsonDecode(message);
-            if (data['type'] == 'EDGE_EXECUTE') {
-              _downloadAndPlay(data);
-            } else if (data['type'] == 'EDGE_STOP') {
-              _stopAndClear();
+            switch (data['type']) {
+              case 'EDGE_PRELOAD':
+                unawaited(_downloadStandby(data));
+              case 'EDGE_EXECUTE':
+                unawaited(_execute(data));
+              case 'EDGE_STOP':
+                unawaited(_stopAndClear());
+              case 'EDGE_PAUSE':
+                unawaited(_pause(fromHost: true));
+              case 'EDGE_RESUME':
+                unawaited(_resume(fromHost: true));
+              case 'SCOREBOARD':
+                _showScoreboard(data);
+              case 'SESSION_END':
+                unawaited(_leaveSession());
+              case 'STAGE_STATE':
+                _applyStageState(data);
             }
           } catch (e) {
             debugPrint("Parse Error: $e");
@@ -227,14 +342,14 @@ class _TeleprompterScreenState extends State<TeleprompterScreen> {
   }
 
   void _handleDisconnect() {
-    if (!mounted) return;
+    if (!mounted || _sessionClosed) return;
     setState(() {
       _isConnected = false;
       _status = "Conexión perdida. Reintentando en 5s...";
     });
-    _stopAndClear();
+    unawaited(_stopAndClear());
     Future.delayed(const Duration(seconds: 5), () {
-      if (mounted) _connectWebSocket();
+      if (mounted && !_sessionClosed) _connectWebSocket();
     });
   }
 
@@ -249,17 +364,172 @@ class _TeleprompterScreenState extends State<TeleprompterScreen> {
     }
   }
 
-  void _stopAndClear() async {
-    await _garbageCollect();
+  Future<void> _stopAndClear() async {
+    await _player.stop();
     if (mounted) {
       setState(() {
         _lyricsMs.clear();
+        _lyricKeys = const [];
         _currentTrackName = "";
         _currentSinger = "";
         _status = "Esperando pista desde la PC...";
         _countdown = 0;
+        _paused = false;
+        _scoreboard = {};
       });
     }
+  }
+
+  Future<void> _pause({bool fromHost = false}) async {
+    await _player.pause();
+    if (mounted) setState(() => _paused = true);
+    if (!fromHost) _send({'type': 'TV_PAUSE'});
+  }
+
+  Future<void> _resume({bool fromHost = false}) async {
+    await _player.play();
+    if (mounted) setState(() => _paused = false);
+    if (!fromHost) _send({'type': 'TV_RESUME'});
+  }
+
+  Future<void> _leaveSession() async {
+    _sessionClosed = true;
+    await _garbageCollect();
+    await _clearStandby();
+    await _player.stop();
+    await _channel?.sink.close();
+    if (!mounted) return;
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(builder: (_) => const BootScreen()),
+    );
+  }
+
+  void _applyStageState(Map<String, dynamic> data) {
+    final rawQueue = data['queue'];
+    final queue = <Map<String, String>>[];
+    if (rawQueue is List) {
+      for (final item in rawQueue) {
+        if (item is Map) {
+          queue.add({
+            'user': '${item['user'] ?? ''}',
+            'song': '${item['song'] ?? ''}',
+          });
+        }
+      }
+    }
+    final rawVotes = data['votes'];
+    final votes = <String, int>{
+      '👏': 0,
+      '🔥': 0,
+      '💩': 0,
+    };
+    if (rawVotes is Map) {
+      votes['👏'] = int.tryParse('${rawVotes['👏']}') ?? 0;
+      votes['🔥'] = int.tryParse('${rawVotes['🔥']}') ?? 0;
+      votes['💩'] = int.tryParse('${rawVotes['💩']}') ?? 0;
+    }
+    final current = data['current'] is Map
+        ? Map<String, dynamic>.from(data['current'] as Map)
+        : <String, dynamic>{};
+    final paused = data['paused'] == true;
+    if (mounted) {
+      setState(() {
+        _queue = queue;
+        _votes = votes;
+        _qrUrl = '${data['qr_url'] ?? ''}';
+        _session = data['session'] == true;
+        if (_scoreboard.isNotEmpty) {
+          _scoreboard = Map<String, dynamic>.from(_scoreboard)
+            ..['votes'] = votes;
+        }
+        if ('${current['user'] ?? ''}'.isNotEmpty) {
+          _currentSinger = '${current['user']}';
+          if (_currentTrackName.isEmpty) {
+            _currentTrackName = '${current['song'] ?? ''}';
+          }
+        }
+      });
+    }
+    if (paused != _paused && _lyricsMs.isNotEmpty) {
+      if (paused) {
+        unawaited(_pause(fromHost: true));
+      } else {
+        unawaited(_resume(fromHost: true));
+      }
+    }
+  }
+
+  void _showScoreboard(Map<String, dynamic> data) {
+    unawaited(_player.stop());
+    if (!mounted) return;
+    setState(() {
+      _lyricsMs.clear();
+      _lyricKeys = const [];
+      _scoreboard = data;
+      _paused = false;
+      _countdown = 0;
+      _status = "Calificación";
+    });
+  }
+
+  Future<void> _clearStandby() async {
+    final path = _standby?.mp3Path;
+    _standby = null;
+    if (path == null) return;
+    try {
+      final file = File(path);
+      if (file.existsSync()) file.deleteSync();
+    } catch (_) {}
+  }
+
+  Future<void> _downloadStandby(Map<String, dynamic> data) async {
+    try {
+      await _clearStandby();
+      final dir = await getTemporaryDirectory();
+      final path =
+          '${dir.path}/edge_standby_${DateTime.now().millisecondsSinceEpoch}.mp3';
+      await _dio.download(data['mp3_url'], path);
+      final lrcResponse = await _dio.get(data['lrc_url']);
+      _standby = _StandbyCartridge(
+        mp3Path: path,
+        mp3Url: '${data['mp3_url']}',
+        trackName: '${data['track_name']}',
+        singer: '${data['singer']}',
+        rawLrc: lrcResponse.data.toString(),
+      );
+    } catch (e) {
+      debugPrint("🔴 PRELOAD: $e");
+    }
+  }
+
+  Future<void> _execute(Map<String, dynamic> data) async {
+    final standby = _standby;
+    if (standby != null &&
+        (standby.trackName == data['track_name'] ||
+            standby.mp3Url == data['mp3_url'])) {
+      await _player.stop();
+      if (_localMp3Path != null && _localMp3Path != standby.mp3Path) {
+        try {
+          final stale = File(_localMp3Path!);
+          if (stale.existsSync()) stale.deleteSync();
+        } catch (_) {}
+      }
+      _localMp3Path = standby.mp3Path;
+      _standby = null;
+      _parseLrcPayload(standby.trackName, standby.singer, standby.rawLrc);
+      if (mounted) {
+        setState(() {
+          _isDownloading = false;
+          _scoreboard = {};
+          _paused = false;
+        });
+      }
+      await _player.open(Media(_localMp3Path!));
+      await _player.play();
+      return;
+    }
+    await _downloadAndPlay(data);
   }
 
   Future<void> _downloadAndPlay(Map<String, dynamic> data) async {
@@ -267,6 +537,9 @@ class _TeleprompterScreenState extends State<TeleprompterScreen> {
       _isDownloading = true;
       _downloadProgress = 0.0;
       _status = "Descargando pista al TV...";
+      _scoreboard = {};
+      _paused = false;
+      _lastProgressShown = -1;
     });
 
     await _garbageCollect();
@@ -281,9 +554,11 @@ class _TeleprompterScreenState extends State<TeleprompterScreen> {
         data['mp3_url'],
         _localMp3Path!,
         onReceiveProgress: (count, total) {
-          if (total != -1 && mounted) {
-            setState(() => _downloadProgress = count / total);
-          }
+          if (total == -1 || !mounted) return;
+          final progress = count / total;
+          if ((progress - _lastProgressShown).abs() < 0.08) return;
+          _lastProgressShown = progress;
+          setState(() => _downloadProgress = progress);
         },
       );
 
@@ -338,8 +613,10 @@ class _TeleprompterScreenState extends State<TeleprompterScreen> {
         _currentTrackName = trackName;
         _currentSinger = singer;
         _lyricsMs = newLyrics;
+        _lyricKeys = newLyrics.keys.toList();
         _activeIndex = 0;
         _countdown = 0;
+        _lastTickMs = 0;
       });
     }
 
@@ -351,10 +628,16 @@ class _TeleprompterScreenState extends State<TeleprompterScreen> {
   // 🧠 CORE: Sincronización Matemática Cero Latencia (Local Audio Engine)
   void _setupAudioListener() {
     _positionSub = _player.stream.position.listen((pos) {
-      if (!mounted || _lyricsMs.isEmpty) return;
+      if (!mounted || _lyricsMs.isEmpty || _paused || _scoreboard.isNotEmpty) {
+        return;
+      }
+      final posMs = pos.inMilliseconds;
+      if ((posMs - _lastTickMs).abs() < 220) return;
+      _lastTickMs = posMs;
       _currentPosition = pos;
 
-      final keys = _lyricsMs.keys.toList();
+      final keys = _lyricKeys;
+      if (keys.isEmpty) return;
       int nextIndex = keys.indexWhere((k) => k > _currentPosition);
 
       // 1. Motor de Cuenta Regresiva
@@ -377,18 +660,17 @@ class _TeleprompterScreenState extends State<TeleprompterScreen> {
         }
       }
 
-      if (newCountdown != _countdown) {
-        setState(() => _countdown = newCountdown);
-      }
-
-      // 2. Cálculo Estricto de Viewport (Cero Jitter)
       int newIndex = nextIndex == -1 ? keys.length - 1 : nextIndex - 1;
       if (newIndex < 0) newIndex = 0;
+      if (newIndex == _activeIndex && newCountdown == _countdown) return;
 
-      if (newIndex != _activeIndex) {
-        setState(() => _activeIndex = newIndex);
+      final scroll = newIndex != _activeIndex;
+      setState(() {
+        _countdown = newCountdown;
+        _activeIndex = newIndex;
+      });
 
-        if (_scrollController.hasClients) {
+      if (scroll && _scrollController.hasClients) {
           const itemHeight = 120.0;
           double targetOffset = 0.0;
 
@@ -411,7 +693,6 @@ class _TeleprompterScreenState extends State<TeleprompterScreen> {
             duration: const Duration(milliseconds: 300),
             curve: Curves.easeOut,
           );
-        }
       }
     });
   }
@@ -419,6 +700,7 @@ class _TeleprompterScreenState extends State<TeleprompterScreen> {
   @override
   void dispose() {
     _positionSub?.cancel();
+    _completedSub?.cancel();
     _player.dispose();
     _channel?.sink.close();
     _scrollController.dispose();
@@ -427,151 +709,334 @@ class _TeleprompterScreenState extends State<TeleprompterScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (!_isConnected || (_lyricsMs.isEmpty && !_isDownloading)) {
-      return Scaffold(
-        body: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                _isConnected ? Icons.mic_external_on : Icons.wifi_off,
-                size: 100,
-                color: _isConnected
-                    ? const Color(0xFF39FF14)
-                    : Colors.redAccent,
-              ),
-              const SizedBox(height: 30),
-              Text(
-                _status,
-                style: const TextStyle(fontSize: 24, color: Colors.white70),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
-
-    if (_isDownloading) {
-      return Scaffold(
-        body: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const CircularProgressIndicator(color: Color(0xFF39FF14)),
-              const SizedBox(height: 30),
-              Text(
-                "Preparando pista... ${(_downloadProgress * 100).toStringAsFixed(0)}%",
-                style: const TextStyle(fontSize: 24, color: Color(0xFF39FF14)),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
-
     return Scaffold(
-      body: Stack(
-        alignment: Alignment.center,
+      backgroundColor: const Color(0xFF0A0A0A),
+      body: Row(
         children: [
-          Container(color: const Color(0xFF030303)),
+          Expanded(flex: 7, child: _buildStage()),
+          const VerticalDivider(width: 1, color: Colors.white10),
+          SizedBox(width: 360, child: _buildSidebar()),
+        ],
+      ),
+    );
+  }
 
-          ListView.builder(
-            controller: _scrollController,
-            physics: const NeverScrollableScrollPhysics(),
-            padding: EdgeInsets.symmetric(
-              vertical: MediaQuery.of(context).size.height / 2.5,
+  Widget _buildStage() {
+    if (_scoreboard.isNotEmpty) {
+      return Center(child: _buildTvScoreboard());
+    }
+    if (_isDownloading) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const CircularProgressIndicator(color: Color(0xFF39FF14)),
+            const SizedBox(height: 24),
+            Text(
+              'Preparando pista... ${(_downloadProgress * 100).toStringAsFixed(0)}%',
+              style: const TextStyle(color: Color(0xFF39FF14), fontSize: 22),
             ),
-            itemCount: _lyricsMs.length,
-            itemBuilder: (context, index) {
-              final entry = _lyricsMs.entries.elementAt(index);
-              final isActive = index == _activeIndex;
-              final isPassed = index < _activeIndex;
-
-              return Container(
-                height: 120,
-                alignment: Alignment.center,
-                padding: const EdgeInsets.symmetric(horizontal: 40),
-                child: AnimatedDefaultTextStyle(
-                  duration: const Duration(milliseconds: 200),
+          ],
+        ),
+      );
+    }
+    if (_lyricsMs.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              _isConnected ? Icons.mic_external_on : Icons.wifi_off,
+              size: 88,
+              color: _isConnected ? const Color(0xFF39FF14) : Colors.redAccent,
+            ),
+            const SizedBox(height: 20),
+            Text(
+              _status,
+              style: const TextStyle(color: Colors.white54, fontSize: 22),
+            ),
+          ],
+        ),
+      );
+    }
+    return Stack(
+      alignment: Alignment.center,
+      children: [
+        ListView.builder(
+          controller: _scrollController,
+          physics: const NeverScrollableScrollPhysics(),
+          padding: EdgeInsets.symmetric(
+            vertical: MediaQuery.of(context).size.height / 2.8,
+          ),
+          itemCount: _lyricsMs.length,
+          itemBuilder: (context, index) {
+            final entry = _lyricsMs.entries.elementAt(index);
+            final isActive = index == _activeIndex;
+            return SizedBox(
+              height: 110,
+              child: Center(
+                child: Text(
+                  entry.value,
+                  textAlign: TextAlign.center,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    fontFamily: 'Consolas',
                     color: isActive
                         ? const Color(0xFF39FF14)
-                        : (isPassed ? Colors.white24 : Colors.white60),
-                    fontSize: isActive ? 65 : 45,
+                        : (index < _activeIndex
+                              ? Colors.white24
+                              : Colors.white60),
+                    fontSize: isActive ? 58 : 40,
                     fontWeight: isActive ? FontWeight.w900 : FontWeight.normal,
-                    shadows: isActive
-                        ? [
-                            const Shadow(
-                              color: Color(0xFF39FF14),
-                              blurRadius: 20,
-                            ),
-                          ]
-                        : [],
-                  ),
-                  child: Text(
-                    entry.value,
-                    textAlign: TextAlign.center,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              );
-            },
-          ),
-
-          if (_countdown > 0)
-            AnimatedOpacity(
-              duration: const Duration(milliseconds: 150),
-              opacity: _countdown > 0 ? 1.0 : 0.0,
-              child: Container(
-                padding: const EdgeInsets.all(80),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF030303).withValues(alpha: 0.9),
-                  shape: BoxShape.circle,
-                  border: Border.all(color: const Color(0xFF39FF14), width: 8),
-                  boxShadow: [
-                    BoxShadow(
-                      color: const Color(0xFF39FF14).withValues(alpha: 0.4),
-                      blurRadius: 80,
-                    ),
-                  ],
-                ),
-                child: Text(
-                  _countdown.toString(),
-                  style: const TextStyle(
-                    fontSize: 220,
-                    fontWeight: FontWeight.w900,
-                    color: Color(0xFF39FF14),
-                    shadows: [Shadow(color: Color(0xFF39FF14), blurRadius: 30)],
                   ),
                 ),
               ),
+            );
+          },
+        ),
+        if (_countdown > 0)
+          Text(
+            '$_countdown',
+            style: const TextStyle(
+              fontSize: 180,
+              fontWeight: FontWeight.w900,
+              color: Color(0xFF39FF14),
             ),
+          ),
+        Positioned(
+          bottom: 24,
+          left: 24,
+          right: 24,
+          child: Text(
+            _paused
+                ? 'PAUSA — $_currentSinger'
+                : '🎤 $_currentSinger — ${_currentTrackName.replaceAll(RegExp(r'\.mp3$|\.webm$|_K\.mp3$'), '')}',
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              color: Color(0xFF00FFFF),
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
 
-          Positioned(
-            bottom: 20,
-            left: 20,
-            right: 20,
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
+  Widget _buildSidebar() {
+    return ColoredBox(
+      color: const Color(0xFF101010),
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+            child: Column(
               children: [
-                const Icon(Icons.mic, color: Color(0xFF00FFFF), size: 24),
-                const SizedBox(width: 15),
-                Text(
-                  "$_currentSinger - ${_currentTrackName.replaceAll(RegExp(r'\.mp3$|\.webm$|_K\.mp3$'), '')}",
-                  style: const TextStyle(
-                    color: Color(0xFF00FFFF),
-                    fontSize: 20,
+                const Text(
+                  'ESCANEA PARA CANTAR',
+                  style: TextStyle(
+                    color: Color(0xFF39FF14),
                     fontWeight: FontWeight.bold,
+                    letterSpacing: 1,
                   ),
-                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 10),
+                if (_qrUrl.isNotEmpty)
+                  Container(
+                    color: Colors.white,
+                    padding: const EdgeInsets.all(8),
+                    child: QrImageView(data: _qrUrl, size: 196),
+                  )
+                else
+                  const Text(
+                    'Esperando QR del orquestador…',
+                    style: TextStyle(color: Colors.white38),
+                  ),
+                if (_qrUrl.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    _qrUrl,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: Color(0xFF00FFFF),
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          const Divider(color: Colors.white10),
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 10),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                _scoreChip('👏', _votes['👏'] ?? 0, const Color(0xFF00FFFF)),
+                _scoreChip('🔥', _votes['🔥'] ?? 0, const Color(0xFFFF3366)),
+                _scoreChip('💩', _votes['💩'] ?? 0, const Color(0xFFFFAA00)),
+              ],
+            ),
+          ),
+          const Divider(color: Colors.white10),
+          const Padding(
+            padding: EdgeInsets.all(10),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'SIGUIENTES EN LA COLA',
+                style: TextStyle(
+                  color: Color(0xFF39FF14),
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ),
+          Expanded(
+            child: _queue.isEmpty
+                ? const Center(
+                    child: Text(
+                      'Cola vacía',
+                      style: TextStyle(color: Colors.white38),
+                    ),
+                  )
+                : ListView.builder(
+                    itemCount: _queue.length,
+                    itemBuilder: (context, index) {
+                      final item = _queue[index];
+                      return ListTile(
+                        dense: true,
+                        title: Text(
+                          item['user'] ?? '',
+                          style: const TextStyle(color: Colors.white),
+                        ),
+                        subtitle: Text(
+                          item['song'] ?? '',
+                          style: const TextStyle(color: Colors.white54),
+                        ),
+                        trailing: IconButton(
+                          tooltip: 'Borrar',
+                          onPressed: () =>
+                              _send({'type': 'TV_REMOVE', 'index': index}),
+                          icon: const Icon(
+                            Icons.delete_outline,
+                            color: Color(0xFFFF3366),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                ElevatedButton.icon(
+                  autofocus: true,
+                  onPressed: _lyricsMs.isEmpty
+                      ? null
+                      : () => _paused ? _resume() : _pause(),
+                  icon: Icon(_paused ? Icons.play_arrow : Icons.pause),
+                  label: Text(_paused ? 'REANUDAR' : 'PAUSA'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF1A1A1A),
+                    foregroundColor: const Color(0xFF00FFFF),
+                    minimumSize: const Size(0, 48),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                ElevatedButton.icon(
+                  onPressed: _session
+                      ? () => _send({'type': 'TV_SKIP'})
+                      : null,
+                  icon: const Icon(Icons.skip_next),
+                  label: const Text('SIGUIENTE'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF39FF14),
+                    foregroundColor: Colors.black,
+                    minimumSize: const Size(0, 48),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                ElevatedButton.icon(
+                  onPressed: () {
+                    _send({'type': 'TV_SESSION_END'});
+                    unawaited(_leaveSession());
+                  },
+                  icon: const Icon(Icons.power_settings_new),
+                  label: const Text('FINALIZAR'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFFF3366),
+                    foregroundColor: Colors.white,
+                    minimumSize: const Size(0, 48),
+                  ),
                 ),
               ],
             ),
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildTvScoreboard() {
+    final votes = Map<String, dynamic>.from(_scoreboard['votes'] ?? {});
+    final nextSinger = '${_scoreboard['next_singer'] ?? ''}';
+    final nextTrack = '${_scoreboard['next_track'] ?? ''}';
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          '${_scoreboard['singer']} — ${_scoreboard['track_name']}',
+          style: const TextStyle(
+            color: Color(0xFF00FFFF),
+            fontSize: 36,
+            fontWeight: FontWeight.bold,
+          ),
+          textAlign: TextAlign.center,
+        ),
+        const SizedBox(height: 16),
+        const Text(
+          'CALIFICACIÓN',
+          style: TextStyle(color: Colors.white54, letterSpacing: 4, fontSize: 18),
+        ),
+        const SizedBox(height: 28),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: [
+            _scoreChip('👏', votes['👏'] ?? 0, const Color(0xFF00FFFF)),
+            _scoreChip('🔥', votes['🔥'] ?? 0, const Color(0xFFFF3366)),
+            _scoreChip('💩', votes['💩'] ?? 0, const Color(0xFFFFAA00)),
+          ],
+        ),
+        const SizedBox(height: 36),
+        Text(
+          nextSinger.isEmpty
+              ? 'Cola vacía. Esperando la siguiente pista…'
+              : 'Siguiente: $nextSinger — $nextTrack',
+          style: const TextStyle(color: Color(0xFF39FF14), fontSize: 22),
+          textAlign: TextAlign.center,
+        ),
+      ],
+    );
+  }
+
+  Widget _scoreChip(String emoji, Object count, Color color) {
+    return Column(
+      children: [
+        Text(emoji, style: const TextStyle(fontSize: 48)),
+        const SizedBox(height: 8),
+        Text(
+          '$count',
+          style: TextStyle(
+            color: color,
+            fontSize: 36,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+      ],
     );
   }
 }

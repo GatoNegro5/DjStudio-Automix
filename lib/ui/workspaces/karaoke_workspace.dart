@@ -5,8 +5,6 @@ import 'package:qr_flutter/qr_flutter.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../services/tv_sync_server.dart';
 import '../../services/tv_adb_deployment_service.dart';
-// 🛠️ NUEVO
-import 'package:media_kit/media_kit.dart';
 
 // ----------------------------------------------------------------------
 // 1. SINGLETON (Puente de Memoria RAM entre el Servidor REST y la UI)
@@ -26,6 +24,39 @@ class KaraokeCore {
   });
   final ValueNotifier<Map<String, String>> currentSingerNotifier =
       ValueNotifier({});
+  final ValueNotifier<bool> sessionActive = ValueNotifier(false);
+  final ValueNotifier<Map<String, dynamic>> scoreboardNotifier = ValueNotifier(
+    {},
+  );
+  final ValueNotifier<bool> pausedNotifier = ValueNotifier(false);
+  DateTime? voteDeadline;
+
+  Map<String, dynamic> publicState() {
+    final current = currentSingerNotifier.value;
+    final board = scoreboardNotifier.value;
+    final now = DateTime.now();
+    final voting = voteDeadline != null && now.isBefore(voteDeadline!);
+    final phase = voting
+        ? 'voting'
+        : (sessionActive.value && current.isNotEmpty ? 'playing' : 'idle');
+    final singer = voting ? '${board['user'] ?? ''}' : current['user'] ?? '';
+    final song = voting ? '${board['song'] ?? ''}' : current['song'] ?? '';
+    final votes = voting
+        ? Map<String, int>.from(board['votes'] as Map? ?? {})
+        : Map<String, int>.from(votesNotifier.value);
+    final left = voting ? voteDeadline!.difference(now).inSeconds.clamp(0, 10) : 0;
+    return {
+      'phase': phase,
+      'singer': singer,
+      'track': song
+          .replaceAll('\\', '/')
+          .split('/')
+          .last
+          .replaceAll(RegExp(r'(_K)?\.mp3$', caseSensitive: false), ''),
+      'votes': votes,
+      'seconds_left': left,
+    };
+  }
 
   void addToQueue(String user, String songPath) {
     final currentQueue = List<Map<String, dynamic>>.from(queueNotifier.value);
@@ -38,11 +69,37 @@ class KaraokeCore {
       final currentVotes = Map<String, int>.from(votesNotifier.value);
       currentVotes[type] = currentVotes[type]! + 1;
       votesNotifier.value = currentVotes;
+      if (voteDeadline != null && scoreboardNotifier.value.isNotEmpty) {
+        final board = Map<String, dynamic>.from(scoreboardNotifier.value);
+        board['votes'] = currentVotes;
+        scoreboardNotifier.value = board;
+      }
     }
+  }
+
+  Map<String, dynamic>? peekNext() {
+    if (queueNotifier.value.isEmpty) return null;
+    return Map<String, dynamic>.from(queueNotifier.value.first);
+  }
+
+  void removeAt(int index) {
+    final currentQueue = List<Map<String, dynamic>>.from(queueNotifier.value);
+    if (index < 0 || index >= currentQueue.length) return;
+    currentQueue.removeAt(index);
+    queueNotifier.value = currentQueue;
+  }
+
+  void startSession() {
+    sessionActive.value = true;
+    pausedNotifier.value = false;
+    voteDeadline = null;
+    popNextSong();
   }
 
   void popNextSong() {
     final currentQueue = List<Map<String, dynamic>>.from(queueNotifier.value);
+    voteDeadline = null;
+    scoreboardNotifier.value = {};
     if (currentQueue.isNotEmpty) {
       final next = currentQueue.removeAt(0);
       currentSingerNotifier.value = {
@@ -54,6 +111,28 @@ class KaraokeCore {
     } else {
       currentSingerNotifier.value = {};
     }
+  }
+
+  Map<String, dynamic> freezeScoreboard() {
+    final current = currentSingerNotifier.value;
+    final board = <String, dynamic>{
+      'user': current['user'] ?? '',
+      'song': current['song'] ?? '',
+      'votes': Map<String, int>.from(votesNotifier.value),
+    };
+    scoreboardNotifier.value = board;
+    voteDeadline = DateTime.now().add(const Duration(seconds: 8));
+    return board;
+  }
+
+  void endSession() {
+    sessionActive.value = false;
+    pausedNotifier.value = false;
+    voteDeadline = null;
+    queueNotifier.value = [];
+    currentSingerNotifier.value = {};
+    votesNotifier.value = {'🔥': 0, '💩': 0, '👏': 0};
+    scoreboardNotifier.value = {};
   }
 }
 
@@ -71,17 +150,21 @@ class _KaraokeWorkspaceState extends ConsumerState<KaraokeWorkspace> {
   final ScrollController _lrcScrollController = ScrollController();
   final TvAdbDeploymentService _tvDeploymentService = TvAdbDeploymentService();
   Map<Duration, String> _currentLyrics = {};
-  Duration _currentAudioPosition = Duration.zero;
-  StreamSubscription? _audioPositionSub;
-  StreamSubscription? _audioCompletedSub;
-
-  // 🛡️ MOTOR AISLADO: Jamás toca el player_provider
-  final Player _player = Player();
   int _countdown = 0;
 
   String _tvSyncUrl = "Escaneando red...";
   String _hostIp = '127.0.0.1';
-  int _lastTvSyncMs = 0;
+  Timer? _scoreboardTimer;
+  Timer? _lyricClock;
+  Timer? _preloadTimer;
+  bool _advancing = false;
+  bool _showLaptopStage = false;
+  int _lastUiPosMs = 0;
+  int _activeLyricIndex = 0;
+  List<Duration> _lyricKeys = const [];
+  DateTime? _lyricOrigin;
+  Duration _lyricEnd = Duration.zero;
+  Duration _frozenPos = Duration.zero;
 
   @override
   void initState() {
@@ -92,38 +175,11 @@ class _KaraokeWorkspaceState extends ConsumerState<KaraokeWorkspace> {
     unawaited(_ensureTvFirewallRule());
     _fetchTvSyncUrl();
 
-    _audioPositionSub = _player.stream.position.listen((Duration position) {
-      if (mounted) {
-        setState(() => _currentAudioPosition = position);
-        _syncLyricsScroll();
-        _updateCountdown();
-
-        final posMs = position.inMilliseconds;
-        if ((posMs - _lastTvSyncMs).abs() > 500) {
-          _lastTvSyncMs = posMs;
-          try {
-            ref.read(tvSyncProvider).broadcastSyncPing(posMs, true);
-          } catch (_) {}
-        }
-      }
-    });
-
-    // 🛡️ STOP ABSOLUTO AL TERMINAR
-    _audioCompletedSub = _player.stream.completed.listen((completed) {
-      if (completed && mounted) {
-        _player.stop();
-        setState(() {
-          _currentLyrics = {};
-          _countdown = 0;
-        });
-        try {
-          ref.read(tvSyncProvider).broadcastSyncPing(0, false);
-          ref.read(tvSyncProvider).broadcastEdgeStop();
-        } catch (_) {}
-      }
-    });
-
     KaraokeCore().currentSingerNotifier.addListener(_onSingerChanged);
+    KaraokeCore().queueNotifier.addListener(_onQueueChanged);
+    KaraokeCore().votesNotifier.addListener(_pushStageState);
+    ref.read(tvSyncProvider).onTvMessage = _onTvMessage;
+    ref.read(tvSyncProvider).onTvJoined = _pushStageState;
   }
 
   /// Abre el puerto del nodo TV en Windows Defender. La regla de LAN Sync solo
@@ -169,7 +225,161 @@ class _KaraokeWorkspaceState extends ConsumerState<KaraokeWorkspace> {
         _hostIp = hostIp;
         _tvSyncUrl = 'ws://$hostIp:55056';
       });
+      _pushStageState();
     }
+  }
+
+  void _onPlaybackTick(Duration position) {
+    if (!mounted || _currentLyrics.isEmpty) return;
+    final posMs = position.inMilliseconds;
+    if ((posMs - _lastUiPosMs).abs() < 200) return;
+    _lastUiPosMs = posMs;
+
+    final keys = _lyricKeys;
+    if (keys.isEmpty) return;
+    final nextIdx = keys.indexWhere((k) => k > position);
+    var newIndex = nextIdx == -1 ? keys.length - 1 : nextIdx - 1;
+    if (newIndex < 0) newIndex = 0;
+
+    var newCountdown = 0;
+    if (nextIdx != -1) {
+      final nextTime = keys[nextIdx];
+      final diff = nextTime - position;
+      var isLargeGap = nextIdx == 0;
+      if (!isLargeGap && nextIdx > 0) {
+        final prevTime = keys[nextIdx - 1];
+        if ((nextTime - prevTime).inSeconds > 5 &&
+            (position - prevTime).inSeconds > 1) {
+          isLargeGap = true;
+        }
+      }
+      if (isLargeGap && diff.inSeconds <= 4 && diff.inSeconds > 0) {
+        newCountdown = diff.inSeconds;
+      }
+    }
+
+    if (newIndex == _activeLyricIndex && newCountdown == _countdown) return;
+    final scroll = newIndex != _activeLyricIndex;
+    setState(() {
+      _activeLyricIndex = newIndex;
+      _countdown = newCountdown;
+    });
+    if (scroll) _syncLyricsScroll();
+  }
+
+  void _stopLyricClock() {
+    _lyricClock?.cancel();
+    _lyricClock = null;
+    _lyricOrigin = null;
+  }
+
+  void _startLyricClock(Duration trackEnd) {
+    if (!_showLaptopStage) {
+      _stopLyricClock();
+      return;
+    }
+    _stopLyricClock();
+    _lyricEnd = trackEnd;
+    _lyricOrigin = DateTime.now().subtract(_frozenPos);
+    _lyricClock = Timer.periodic(const Duration(milliseconds: 200), (_) {
+      if (KaraokeCore().pausedNotifier.value) return;
+      final origin = _lyricOrigin;
+      if (origin == null) return;
+      final pos = DateTime.now().difference(origin);
+      if (pos >= _lyricEnd) {
+        _stopLyricClock();
+        return;
+      }
+      _onPlaybackTick(pos);
+    });
+  }
+
+  String get _qrUrl => 'http://$_hostIp:55055/karaoke';
+
+  void _pushStageState() {
+    try {
+      final current = KaraokeCore().currentSingerNotifier.value;
+      ref
+          .read(tvSyncProvider)
+          .broadcastStageState(
+            queue: KaraokeCore().queueNotifier.value
+                .map(
+                  (item) => {
+                    'user': '${item['user'] ?? ''}',
+                    'song': _displayName('${item['song']}'),
+                  },
+                )
+                .toList(),
+            current: {
+              'user': current['user'] ?? '',
+              'song': current.isEmpty ? '' : _displayName('${current['song']}'),
+            },
+            votes: Map<String, int>.from(KaraokeCore().votesNotifier.value),
+            sessionActive: KaraokeCore().sessionActive.value,
+            paused: KaraokeCore().pausedNotifier.value,
+            qrUrl: _qrUrl,
+          );
+    } catch (_) {}
+  }
+
+  void _setPaused(bool paused) {
+    KaraokeCore().pausedNotifier.value = paused;
+    if (paused) {
+      if (_lyricOrigin != null) {
+        _frozenPos = DateTime.now().difference(_lyricOrigin!);
+      }
+      _lyricClock?.cancel();
+      try {
+        ref.read(tvSyncProvider).broadcastEdgePause();
+      } catch (_) {}
+    } else {
+      try {
+        ref.read(tvSyncProvider).broadcastEdgeResume();
+      } catch (_) {}
+      if (_showLaptopStage && _lyricKeys.isNotEmpty) {
+        _startLyricClock(_lyricEnd);
+      }
+    }
+    _pushStageState();
+  }
+
+  String _resolveKaraokeAudio(String originalPath) {
+    final karaokePath = originalPath.replaceAll(
+      RegExp(r'\.mp3$', caseSensitive: false),
+      '_K.mp3',
+    );
+    final original = File(originalPath);
+    final instrumental = File(karaokePath);
+    if (!instrumental.existsSync()) return originalPath;
+    final karaokeBytes = instrumental.lengthSync();
+    if (karaokeBytes < 256 * 1024) return originalPath;
+    if (original.existsSync()) {
+      final originalBytes = original.lengthSync();
+      if (originalBytes > 0 && karaokeBytes < (originalBytes * 0.45).round()) {
+        return originalPath;
+      }
+    }
+    return karaokePath;
+  }
+
+  String _displayName(String path) {
+    return path
+        .replaceAll('\\', '/')
+        .split('/')
+        .last
+        .replaceAll(RegExp(r'(_K)?\.mp3$', caseSensitive: false), '');
+  }
+
+  Map<String, String> _edgeUrls(String audioPath, String originalPath) {
+    final lrcPath = originalPath.replaceAll(
+      RegExp(r'\.mp3$', caseSensitive: false),
+      '.lrc',
+    );
+    return {
+      'mp3': 'http://$_hostIp:55056/karaoke/audio?p=${Uri.encodeQueryComponent(audioPath)}',
+      'lrc': 'http://$_hostIp:55056/karaoke/lrc?p=${Uri.encodeQueryComponent(lrcPath)}',
+      'track': originalPath.replaceAll('\\', '/').split('/').last,
+    };
   }
 
   void _dispatchEdgeExecute({
@@ -178,19 +388,13 @@ class _KaraokeWorkspaceState extends ConsumerState<KaraokeWorkspace> {
     required String singer,
   }) {
     try {
-      final lrcPath = originalPath.replaceAll(
-        RegExp(r'\.mp3$', caseSensitive: false),
-        '.lrc',
-      );
-      final trackName = originalPath.replaceAll('\\', '/').split('/').last;
-      final encodedAudio = Uri.encodeQueryComponent(audioPath);
-      final encodedLrc = Uri.encodeQueryComponent(lrcPath);
+      final urls = _edgeUrls(audioPath, originalPath);
       ref
           .read(tvSyncProvider)
           .broadcastEdgeExecute(
-            mp3Url: 'http://$_hostIp:55056/karaoke/audio?p=$encodedAudio',
-            lrcUrl: 'http://$_hostIp:55056/karaoke/lrc?p=$encodedLrc',
-            trackName: trackName,
+            mp3Url: urls['mp3']!,
+            lrcUrl: urls['lrc']!,
+            trackName: urls['track']!,
             singer: singer,
           );
     } catch (e) {
@@ -198,13 +402,170 @@ class _KaraokeWorkspaceState extends ConsumerState<KaraokeWorkspace> {
     }
   }
 
+  void _preloadNext() {
+    _preloadTimer?.cancel();
+    final next = KaraokeCore().peekNext();
+    if (next == null) return;
+    _preloadTimer = Timer(const Duration(seconds: 15), () {
+      if (!mounted || !KaraokeCore().sessionActive.value) return;
+      final queued = KaraokeCore().peekNext();
+      if (queued == null) return;
+      final originalPath = '${queued['song']}';
+      final urls = _edgeUrls(
+        _resolveKaraokeAudio(originalPath),
+        originalPath,
+      );
+      try {
+        ref
+            .read(tvSyncProvider)
+            .broadcastEdgePreload(
+              mp3Url: urls['mp3']!,
+              lrcUrl: urls['lrc']!,
+              trackName: urls['track']!,
+              singer: '${queued['user'] ?? ''}',
+            );
+      } catch (e) {
+        debugPrint('🔴 [KARAOKE TV] EDGE_PRELOAD: $e');
+      }
+    });
+  }
+
+  void _onQueueChanged() {
+    _pushStageState();
+    if (!mounted || !KaraokeCore().sessionActive.value || _advancing) return;
+    if (KaraokeCore().currentSingerNotifier.value.isEmpty) {
+      if (KaraokeCore().peekNext() != null) KaraokeCore().popNextSong();
+      return;
+    }
+    _preloadNext();
+  }
+
+  void _onTvMessage(Map<String, dynamic> message) {
+    switch (message['type']) {
+      case 'TV_TRACK_ENDED':
+        unawaited(_onTrackFinished());
+      case 'TV_SESSION_END':
+        unawaited(_endSession());
+      case 'TV_PAUSE':
+        KaraokeCore().pausedNotifier.value = true;
+        if (_lyricOrigin != null) {
+          _frozenPos = DateTime.now().difference(_lyricOrigin!);
+        }
+        _lyricClock?.cancel();
+        _pushStageState();
+      case 'TV_RESUME':
+        KaraokeCore().pausedNotifier.value = false;
+        if (_showLaptopStage && _lyricKeys.isNotEmpty) {
+          _startLyricClock(_lyricEnd);
+        }
+        _pushStageState();
+      case 'TV_SKIP':
+        unawaited(_skipTrack());
+      case 'TV_REMOVE':
+        final index = int.tryParse('${message['index']}') ?? -1;
+        KaraokeCore().removeAt(index);
+    }
+  }
+
+  Future<void> _skipTrack() async {
+    if (!mounted || !KaraokeCore().sessionActive.value) return;
+    if (_advancing) {
+      _scoreboardTimer?.cancel();
+      _advancing = false;
+      if (KaraokeCore().peekNext() != null) {
+        KaraokeCore().popNextSong();
+        return;
+      }
+      KaraokeCore().currentSingerNotifier.value = {};
+      KaraokeCore().scoreboardNotifier.value = {};
+      try {
+        ref.read(tvSyncProvider).broadcastEdgeStop();
+      } catch (_) {}
+      _pushStageState();
+      return;
+    }
+    await _onTrackFinished();
+  }
+
+  Future<void> _onTrackFinished() async {
+    if (!mounted || _advancing) return;
+    if (KaraokeCore().currentSingerNotifier.value.isEmpty) return;
+    if (!KaraokeCore().sessionActive.value) return;
+
+    _advancing = true;
+    _stopLyricClock();
+    _preloadTimer?.cancel();
+    _frozenPos = Duration.zero;
+    final board = KaraokeCore().freezeScoreboard();
+    final next = KaraokeCore().peekNext();
+    try {
+      ref
+          .read(tvSyncProvider)
+          .broadcastScoreboard(
+            singer: '${board['user']}',
+            trackName: _displayName('${board['song']}'),
+            votes: Map<String, int>.from(board['votes'] as Map),
+            nextSinger: next == null ? null : '${next['user']}',
+            nextTrack: next == null ? null : _displayName('${next['song']}'),
+          );
+    } catch (_) {}
+
+    if (mounted) {
+      setState(() {
+        _currentLyrics = {};
+        _lyricKeys = const [];
+        _countdown = 0;
+      });
+    }
+
+    _scoreboardTimer?.cancel();
+    _scoreboardTimer = Timer(const Duration(seconds: 8), () {
+      _advancing = false;
+      if (!mounted || !KaraokeCore().sessionActive.value) return;
+      if (KaraokeCore().peekNext() != null) {
+        KaraokeCore().popNextSong();
+        return;
+      }
+      KaraokeCore().currentSingerNotifier.value = {};
+      KaraokeCore().scoreboardNotifier.value = {};
+      try {
+        ref.read(tvSyncProvider).broadcastEdgeStop();
+      } catch (_) {}
+      _pushStageState();
+    });
+  }
+
+  Future<void> _endSession() async {
+    _scoreboardTimer?.cancel();
+    _preloadTimer?.cancel();
+    _stopLyricClock();
+    _frozenPos = Duration.zero;
+    _advancing = false;
+    KaraokeCore().endSession();
+    try {
+      ref.read(tvSyncProvider).broadcastSessionEnd();
+    } catch (_) {}
+    if (!mounted) return;
+    setState(() {
+      _currentLyrics = {};
+      _lyricKeys = const [];
+      _countdown = 0;
+    });
+  }
+
   @override
   void dispose() {
+    _scoreboardTimer?.cancel();
+    _lyricClock?.cancel();
+    _preloadTimer?.cancel();
     KaraokeCore().currentSingerNotifier.removeListener(_onSingerChanged);
-    _audioPositionSub?.cancel();
-    _audioCompletedSub?.cancel();
+    KaraokeCore().queueNotifier.removeListener(_onQueueChanged);
+    KaraokeCore().votesNotifier.removeListener(_pushStageState);
+    try {
+      ref.read(tvSyncProvider).onTvMessage = null;
+      ref.read(tvSyncProvider).onTvJoined = null;
+    } catch (_) {}
     _lrcScrollController.dispose();
-    _player.dispose();
     super.dispose();
   }
 
@@ -214,32 +575,36 @@ class _KaraokeWorkspaceState extends ConsumerState<KaraokeWorkspace> {
       final originalPath = songData['song']!;
       _loadLrc(originalPath);
 
-      final karaokePath = originalPath.replaceAll(
-        RegExp(r'\.mp3$', caseSensitive: false),
-        '_K.mp3',
-      );
-      final fileK = File(karaokePath);
-      final finalAudioPath = fileK.existsSync() ? karaokePath : originalPath;
-
-      _player.open(Media(finalAudioPath));
-      _player.play();
+      final finalAudioPath = _resolveKaraokeAudio(originalPath);
       _dispatchEdgeExecute(
         audioPath: finalAudioPath,
         originalPath: originalPath,
         singer: songData['user'] ?? '',
       );
+
+      _frozenPos = Duration.zero;
+      KaraokeCore().pausedNotifier.value = false;
+      final lastLyric = _lyricKeys.isEmpty ? Duration.zero : _lyricKeys.last;
+      if (_showLaptopStage) {
+        _startLyricClock(lastLyric + const Duration(seconds: 6));
+      } else {
+        _stopLyricClock();
+      }
+      _preloadNext();
+      _pushStageState();
     } else {
       try {
         ref.read(tvSyncProvider).broadcastEdgeStop();
       } catch (_) {}
-      _player.stop();
+      _stopLyricClock();
+      _preloadTimer?.cancel();
+      _frozenPos = Duration.zero;
       setState(() {
         _currentLyrics = {};
+        _lyricKeys = const [];
         _countdown = 0;
       });
-      try {
-        ref.read(tvSyncProvider).broadcastSyncPing(0, false);
-      } catch (_) {}
+      _pushStageState();
     }
   }
 
@@ -271,39 +636,44 @@ class _KaraokeWorkspaceState extends ConsumerState<KaraokeWorkspace> {
           }
         }
       }
-      setState(() => _currentLyrics = lyrics);
+      setState(() {
+        _currentLyrics = lyrics;
+        _lyricKeys = lyrics.keys.toList();
+        _activeLyricIndex = 0;
+        _lastUiPosMs = 0;
+      });
 
       final trackName = mp3Path.replaceAll('\\', '/').split('/').last;
       try {
         ref.read(tvSyncProvider).broadcastLrcTrack(trackName, rawLrcContent);
       } catch (_) {}
     } else {
-      setState(
-        () => _currentLyrics = {
+      setState(() {
+        _currentLyrics = {
           Duration.zero: "No hay letra (.lrc) disponible para esta pista.",
-        },
-      );
+        };
+        _lyricKeys = const [Duration.zero];
+        _activeLyricIndex = 0;
+        _lastUiPosMs = 0;
+      });
     }
   }
 
   void _syncLyricsScroll() {
     if (_currentLyrics.isEmpty || !_lrcScrollController.hasClients) return;
-    final keys = _currentLyrics.keys.toList();
-    int nextIdx = keys.indexWhere((k) => k > _currentAudioPosition);
-    int activeIndex = nextIdx == -1 ? keys.length - 1 : nextIdx - 1;
-    if (activeIndex < 0) activeIndex = 0;
-
     const itemHeight = 80.0;
     double targetOffset = 0.0;
     try {
       final viewportHeight = _lrcScrollController.position.viewportDimension;
       targetOffset =
-          (activeIndex * itemHeight) - (viewportHeight / 2) + (itemHeight / 2);
+          (_activeLyricIndex * itemHeight) -
+          (viewportHeight / 2) +
+          (itemHeight / 2);
       if (targetOffset < 0) targetOffset = 0;
       final maxScroll = _lrcScrollController.position.maxScrollExtent;
       if (targetOffset > maxScroll) targetOffset = maxScroll;
     } catch (_) {
-      targetOffset = activeIndex * itemHeight;
+      targetOffset = _activeLyricIndex * itemHeight;
     }
 
     _lrcScrollController.animateTo(
@@ -311,39 +681,6 @@ class _KaraokeWorkspaceState extends ConsumerState<KaraokeWorkspace> {
       duration: const Duration(milliseconds: 300),
       curve: Curves.easeOut,
     );
-  }
-
-  void _updateCountdown() {
-    if (_currentLyrics.isEmpty) {
-      if (_countdown != 0) setState(() => _countdown = 0);
-      return;
-    }
-    final keys = _currentLyrics.keys.toList();
-    final nextIndex = keys.indexWhere((k) => k > _currentAudioPosition);
-
-    if (nextIndex != -1) {
-      final nextTime = keys[nextIndex];
-      final diff = nextTime - _currentAudioPosition;
-
-      bool isLargeGap = (nextIndex == 0);
-      if (!isLargeGap && nextIndex > 0) {
-        final prevTime = keys[nextIndex - 1];
-        if ((nextTime - prevTime).inSeconds > 5 &&
-            (_currentAudioPosition - prevTime).inSeconds > 1) {
-          isLargeGap = true;
-        }
-      }
-
-      if (isLargeGap && diff.inSeconds <= 4 && diff.inSeconds > 0) {
-        if (_countdown != diff.inSeconds) {
-          setState(() => _countdown = diff.inSeconds);
-        }
-      } else {
-        if (_countdown != 0) setState(() => _countdown = 0);
-      }
-    } else {
-      if (_countdown != 0) setState(() => _countdown = 0);
-    }
   }
 
   Future<void> _showQrModal(BuildContext context) async {
@@ -440,164 +777,10 @@ class _KaraokeWorkspaceState extends ConsumerState<KaraokeWorkspace> {
       backgroundColor: const Color(0xFF0A0A0A),
       body: Row(
         children: [
-          Expanded(
-            flex: 7,
-            child: Container(
-              padding: const EdgeInsets.all(40),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  ValueListenableBuilder<Map<String, String>>(
-                    valueListenable: KaraokeCore().currentSingerNotifier,
-                    builder: (context, currentSinger, _) {
-                      if (currentSinger.isEmpty) return const SizedBox.shrink();
-                      final songName =
-                          currentSinger['song']
-                              ?.replaceAll('\\', '/')
-                              .split('/')
-                              .last
-                              .replaceAll(
-                                RegExp(r'\.mp3$', caseSensitive: false),
-                                '',
-                              ) ??
-                          '';
-                      return Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 20,
-                          vertical: 10,
-                        ),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF00FFFF).withAlpha(25),
-                          border: Border.all(color: const Color(0xFF00FFFF)),
-                          borderRadius: BorderRadius.circular(30),
-                        ),
-                        child: Text(
-                          "🎤 Cantando: ${currentSinger['user']} - $songName",
-                          style: const TextStyle(
-                            color: Color(0xFF00FFFF),
-                            fontSize: 24,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                  const SizedBox(height: 50),
-                  Expanded(
-                    child: _currentLyrics.isEmpty
-                        ? const Center(
-                            child: Text(
-                              "Esperando pista...",
-                              style: TextStyle(
-                                color: Colors.white38,
-                                fontSize: 30,
-                              ),
-                            ),
-                          )
-                        : Stack(
-                            alignment: Alignment.center,
-                            children: [
-                              ListView.builder(
-                                controller: _lrcScrollController,
-                                physics: const NeverScrollableScrollPhysics(),
-                                itemCount: _currentLyrics.length,
-                                itemBuilder: (context, index) {
-                                  final entry = _currentLyrics.entries
-                                      .elementAt(index);
-                                  final keys = _currentLyrics.keys.toList();
-                                  int nextIdx = keys.indexWhere(
-                                    (k) => k > _currentAudioPosition,
-                                  );
-                                  int activeIdx = nextIdx == -1
-                                      ? keys.length - 1
-                                      : nextIdx - 1;
-                                  if (activeIdx < 0) activeIdx = 0;
-
-                                  final isActive = index == activeIdx;
-                                  final isPassed = index < activeIdx;
-
-                                  return Container(
-                                    height: 80.0,
-                                    alignment: Alignment.center,
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 20,
-                                    ),
-                                    child: Text(
-                                      entry.value,
-                                      style: TextStyle(
-                                        color: isActive
-                                            ? const Color(0xFF39FF14)
-                                            : (isPassed
-                                                  ? Colors.white38
-                                                  : Colors.white70),
-                                        fontSize: isActive ? 34 : 26,
-                                        fontWeight: isActive
-                                            ? FontWeight.w900
-                                            : FontWeight.normal,
-                                        shadows: isActive
-                                            ? [
-                                                const Shadow(
-                                                  color: Color(0xFF39FF14),
-                                                  blurRadius: 15,
-                                                ),
-                                              ]
-                                            : [],
-                                      ),
-                                      textAlign: TextAlign.center,
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  );
-                                },
-                              ),
-                              if (_countdown > 0)
-                                AnimatedOpacity(
-                                  duration: const Duration(milliseconds: 150),
-                                  opacity: _countdown > 0 ? 1.0 : 0.0,
-                                  child: Container(
-                                    padding: const EdgeInsets.all(40),
-                                    decoration: BoxDecoration(
-                                      color: const Color(
-                                        0xFF0A0A0A,
-                                      ).withValues(alpha: 0.9),
-                                      shape: BoxShape.circle,
-                                      border: Border.all(
-                                        color: const Color(0xFF39FF14),
-                                        width: 5,
-                                      ),
-                                      boxShadow: [
-                                        BoxShadow(
-                                          color: const Color(
-                                            0xFF39FF14,
-                                          ).withValues(alpha: 0.4),
-                                          blurRadius: 50,
-                                        ),
-                                      ],
-                                    ),
-                                    child: Text(
-                                      _countdown.toString(),
-                                      style: const TextStyle(
-                                        fontSize: 140,
-                                        fontWeight: FontWeight.w900,
-                                        color: Color(0xFF39FF14),
-                                        shadows: [
-                                          Shadow(
-                                            color: Color(0xFF39FF14),
-                                            blurRadius: 20,
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                            ],
-                          ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          const VerticalDivider(width: 1, color: Colors.white10),
+          if (_showLaptopStage) ...[
+            Expanded(flex: 5, child: _buildLaptopStage()),
+            const VerticalDivider(width: 1, color: Colors.white10),
+          ],
           Expanded(
             flex: 3,
             child: Container(
@@ -631,7 +814,43 @@ class _KaraokeWorkspaceState extends ConsumerState<KaraokeWorkspace> {
                               ),
                               tooltip: 'Buscar e instalar en Google TV',
                             ),
+                            IconButton(
+                              onPressed: () {
+                                setState(
+                                  () => _showLaptopStage = !_showLaptopStage,
+                                );
+                                if (_showLaptopStage &&
+                                    _lyricKeys.isNotEmpty &&
+                                    !KaraokeCore().pausedNotifier.value) {
+                                  _startLyricClock(_lyricEnd);
+                                } else {
+                                  _stopLyricClock();
+                                }
+                              },
+                              icon: Icon(
+                                _showLaptopStage
+                                    ? Icons.tv
+                                    : Icons.monitor_outlined,
+                                color: _showLaptopStage
+                                    ? const Color(0xFF00FFFF)
+                                    : Colors.white38,
+                              ),
+                              tooltip: _showLaptopStage
+                                  ? 'Ocultar letra en laptop'
+                                  : 'Ver escenario en laptop',
+                            ),
                           ],
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          _showLaptopStage
+                              ? 'Escenario opcional en laptop. El audio solo sale en la TV.'
+                              : 'Mesa de control. Audio, letra y QR viven en la TV.',
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            color: Colors.white38,
+                            fontSize: 11,
+                          ),
                         ),
                         const SizedBox(height: 8),
                         Text(
@@ -754,9 +973,25 @@ class _KaraokeWorkspaceState extends ConsumerState<KaraokeWorkspace> {
                                 songName,
                                 style: const TextStyle(color: Colors.white70),
                               ),
-                              trailing: Text(
-                                "#${index + 1}",
-                                style: const TextStyle(color: Colors.white38),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    "#${index + 1}",
+                                    style: const TextStyle(
+                                      color: Colors.white38,
+                                    ),
+                                  ),
+                                  IconButton(
+                                    tooltip: 'Quitar de la cola',
+                                    onPressed: () =>
+                                        KaraokeCore().removeAt(index),
+                                    icon: const Icon(
+                                      Icons.delete_outline,
+                                      color: Color(0xFFFF3366),
+                                    ),
+                                  ),
+                                ],
                               ),
                             );
                           },
@@ -768,25 +1003,230 @@ class _KaraokeWorkspaceState extends ConsumerState<KaraokeWorkspace> {
                     padding: const EdgeInsets.all(20),
                     color: Colors.black,
                     width: double.infinity,
-                    child: ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF00FFFF),
-                        foregroundColor: Colors.black,
-                        padding: const EdgeInsets.symmetric(vertical: 20),
-                      ),
-                      onPressed: () => KaraokeCore().popNextSong(),
-                      child: const Text(
-                        "LLAMAR AL SIGUIENTE ⏭️",
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
+                    child: ValueListenableBuilder<bool>(
+                      valueListenable: KaraokeCore().sessionActive,
+                      builder: (context, session, _) {
+                        return ValueListenableBuilder<Map<String, String>>(
+                          valueListenable: KaraokeCore().currentSingerNotifier,
+                          builder: (context, current, _) {
+                            if (!session) {
+                              return ElevatedButton(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color(0xFF00FFFF),
+                                  foregroundColor: Colors.black,
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 20,
+                                  ),
+                                ),
+                                onPressed: () => KaraokeCore().startSession(),
+                                child: const Text(
+                                  "INICIAR KARAOKE ⏭️",
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              );
+                            }
+                            return Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                if (current.isNotEmpty)
+                                  ValueListenableBuilder<bool>(
+                                    valueListenable:
+                                        KaraokeCore().pausedNotifier,
+                                    builder: (context, paused, _) {
+                                      return OutlinedButton.icon(
+                                        onPressed: () => _setPaused(!paused),
+                                        icon: Icon(
+                                          paused
+                                              ? Icons.play_arrow
+                                              : Icons.pause,
+                                        ),
+                                        label: Text(
+                                          paused ? 'REANUDAR TV' : 'PAUSA TV',
+                                        ),
+                                        style: OutlinedButton.styleFrom(
+                                          foregroundColor: const Color(
+                                            0xFF00FFFF,
+                                          ),
+                                          side: const BorderSide(
+                                            color: Color(0xFF00FFFF),
+                                          ),
+                                          padding: const EdgeInsets.symmetric(
+                                            vertical: 14,
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                if (current.isNotEmpty)
+                                  const SizedBox(height: 8),
+                                if (current.isNotEmpty)
+                                  OutlinedButton(
+                                    onPressed: () =>
+                                        unawaited(_skipTrack()),
+                                    style: OutlinedButton.styleFrom(
+                                      foregroundColor: const Color(0xFF39FF14),
+                                      side: const BorderSide(
+                                        color: Color(0xFF39FF14),
+                                      ),
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 14,
+                                      ),
+                                    ),
+                                    child: const Text(
+                                      "SIGUIENTE PISTA",
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ),
+                                if (current.isNotEmpty)
+                                  const SizedBox(height: 8),
+                                ElevatedButton(
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: const Color(0xFFFF3366),
+                                    foregroundColor: Colors.white,
+                                    padding: const EdgeInsets.symmetric(
+                                      vertical: 18,
+                                    ),
+                                  ),
+                                  onPressed: () => unawaited(_endSession()),
+                                  child: const Text(
+                                    "FINALIZAR KARAOKE",
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            );
+                          },
+                        );
+                      },
                     ),
                   ),
                 ],
               ),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLaptopStage() {
+    return Container(
+      padding: const EdgeInsets.all(28),
+      child: Column(
+        children: [
+          ValueListenableBuilder<Map<String, String>>(
+            valueListenable: KaraokeCore().currentSingerNotifier,
+            builder: (context, currentSinger, _) {
+              if (currentSinger.isEmpty) {
+                return const Text(
+                  'ESCENARIO EN TV',
+                  style: TextStyle(color: Colors.white38, letterSpacing: 2),
+                );
+              }
+              return Text(
+                'MONITOR: ${currentSinger['user']} — ${_displayName('${currentSinger['song']}')}',
+                style: const TextStyle(
+                  color: Color(0xFF00FFFF),
+                  fontWeight: FontWeight.bold,
+                ),
+              );
+            },
+          ),
+          const SizedBox(height: 16),
+          Expanded(
+            child: _currentLyrics.isEmpty
+                ? ValueListenableBuilder<Map<String, dynamic>>(
+                    valueListenable: KaraokeCore().scoreboardNotifier,
+                    builder: (context, board, _) {
+                      if (board.isEmpty) {
+                        return const Center(
+                          child: Text(
+                            'La letra vive en la TV.',
+                            style: TextStyle(
+                              color: Colors.white38,
+                              fontSize: 22,
+                            ),
+                          ),
+                        );
+                      }
+                      return _buildScoreboard(board);
+                    },
+                  )
+                : ListView.builder(
+                    controller: _lrcScrollController,
+                    physics: const NeverScrollableScrollPhysics(),
+                    itemCount: _currentLyrics.length,
+                    itemBuilder: (context, index) {
+                      final entry = _currentLyrics.entries.elementAt(index);
+                      final isActive = index == _activeLyricIndex;
+                      return SizedBox(
+                        height: 72,
+                        child: Center(
+                          child: Text(
+                            entry.value,
+                            textAlign: TextAlign.center,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: isActive
+                                  ? const Color(0xFF39FF14)
+                                  : Colors.white54,
+                              fontSize: isActive ? 28 : 20,
+                              fontWeight: isActive
+                                  ? FontWeight.w900
+                                  : FontWeight.normal,
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildScoreboard(Map<String, dynamic> board) {
+    final votes = Map<String, int>.from(board['votes'] as Map? ?? {});
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            '${board['user']} — ${_displayName('${board['song']}')}',
+            style: const TextStyle(
+              color: Color(0xFF00FFFF),
+              fontSize: 28,
+              fontWeight: FontWeight.bold,
+            ),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 12),
+          const Text(
+            'CALIFICACIÓN',
+            style: TextStyle(color: Colors.white54, letterSpacing: 3),
+          ),
+          const SizedBox(height: 24),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              _buildStatBadge('👏', votes['👏'] ?? 0, const Color(0xFF00FFFF)),
+              _buildStatBadge('🔥', votes['🔥'] ?? 0, const Color(0xFFFF3366)),
+              _buildStatBadge('💩', votes['💩'] ?? 0, const Color(0xFFFFAA00)),
+            ],
+          ),
+          const SizedBox(height: 28),
+          const Text(
+            'Siguiente pista en 8 s',
+            style: TextStyle(color: Color(0xFF39FF14), fontSize: 16),
           ),
         ],
       ),
@@ -854,10 +1294,10 @@ class _TvDeploymentDialogState extends State<TvDeploymentDialog> {
     }
   }
 
-  Future<void> _pair(TvAdbTarget target) async {
-    final endpointController = TextEditingController(
-      text: target.pairingEndpoint ?? '${target.host}:',
-    );
+  Future<bool> _pair(TvAdbTarget target, {bool manageBusy = true}) async {
+    final discovered = await widget.service.resolvePairingEndpoint(target.host);
+    final pairingEndpoint = discovered ?? target.pairingEndpoint ?? target.host;
+    final endpointController = TextEditingController(text: pairingEndpoint);
     final codeController = TextEditingController();
 
     final confirmed = await showDialog<bool>(
@@ -925,35 +1365,55 @@ class _TvDeploymentDialogState extends State<TvDeploymentDialog> {
       ),
     );
 
-    final endpoint = endpointController.text.trim();
+    var endpoint = endpointController.text.trim();
     final code = codeController.text.trim();
     endpointController.dispose();
     codeController.dispose();
 
-    if (confirmed != true || code.isEmpty) return;
+    if (confirmed != true || code.isEmpty) return false;
+    if (RegExp(r'^\d{1,3}(?:\.\d{1,3}){3}:?$').hasMatch(endpoint)) {
+      final resolved = discovered ?? target.pairingEndpoint;
+      if (resolved != null && resolved.contains(':')) {
+        endpoint = resolved;
+      }
+    }
     if (!RegExp(r'^\d{1,3}(?:\.\d{1,3}){3}:\d+$').hasMatch(endpoint)) {
-      setState(() => _status = 'IP:puerto de emparejamiento inválido.');
-      return;
+      setState(
+        () => _status =
+            'Falta el puerto de emparejamiento. En la TV, bajo el código, '
+            'copia “Dirección IP y puerto” completo (ej. 192.168.1.9:34339).',
+      );
+      return false;
     }
 
-    setState(() {
-      _busy = true;
-      _status = 'Emparejando $endpoint…';
-    });
+    if (manageBusy) {
+      setState(() {
+        _busy = true;
+        _status = 'Emparejando $endpoint…';
+      });
+    } else {
+      setState(() => _status = 'Emparejando $endpoint…');
+    }
     try {
       await widget.service.pair(endpoint: endpoint, code: code);
-      if (!mounted) return;
-      setState(() {
-        _busy = false;
-        _status = 'TV emparejada. Actualizando radar…';
-      });
-      await _scan();
+      if (!mounted) return false;
+      if (manageBusy) {
+        setState(() {
+          _busy = false;
+          _status = 'TV emparejada. Actualizando radar…';
+        });
+        await _scan();
+      } else {
+        setState(() => _status = 'TV emparejada. Continuando instalación…');
+      }
+      return true;
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted) return false;
       setState(() {
-        _busy = false;
+        if (manageBusy) _busy = false;
         _status = 'Emparejamiento fallido: $e';
       });
+      return false;
     }
   }
 
@@ -1012,11 +1472,64 @@ class _TvDeploymentDialogState extends State<TvDeploymentDialog> {
           if (mounted) setState(() => _status = message);
         },
       );
+    } on TvAdbPairingRequiredException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _status = e.message;
+      });
+      final paired = await _pair(e.target, manageBusy: false);
+      if (!paired || !mounted) return;
+      await _install(
+        e.target.copyWith(state: TvAdbTargetState.discoverable),
+      );
     } catch (e) {
       if (mounted) setState(() => _status = 'Instalación fallida: $e');
     } finally {
       if (mounted) setState(() => _busy = false);
+      if (mounted) await _scan();
     }
+  }
+
+  Widget _actionLamp({
+    required String label,
+    required bool needsAction,
+    required VoidCallback? onPressed,
+  }) {
+    final color = needsAction ? const Color(0xFFFFAA00) : Colors.white24;
+    return InkWell(
+      onTap: needsAction ? onPressed : null,
+      child: SizedBox(
+        width: 118,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 18,
+              height: 18,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: needsAction ? color : Colors.transparent,
+                border: Border.all(color: color, width: 2),
+                boxShadow: needsAction
+                    ? [BoxShadow(color: color.withValues(alpha: 0.7), blurRadius: 10)]
+                    : const [],
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              label,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: color,
+                fontSize: 10,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -1086,9 +1599,10 @@ class _TvDeploymentDialogState extends State<TvDeploymentDialog> {
                   'TV: Ajustes → Sistema → Información → pulsa “Compilación” '
                   '7 veces → Opciones de desarrollador → Depuración '
                   'inalámbrica → Emparejar dispositivo.\n'
-                  'La primera vez pulsa 🔑 en la TV listada y escribe el '
-                  'IP:PUERTO y el código de la pantalla; recién después usa '
-                  'INSTALAR Y ABRIR.',
+                  'Lámpara ENCENDIDA = falta acción. Apagada = ya está hecho.\n'
+                  'Emparejado: enciende si aún no hay IP+clave. '
+                  'Instalado: enciende si la APK no está en la TV. '
+                  'No se vuelve a emparejar ni a reinstalar si ya está listo.',
                   style: TextStyle(color: Colors.white70, height: 1.4),
                 ),
               ),
@@ -1135,26 +1649,36 @@ class _TvDeploymentDialogState extends State<TvDeploymentDialog> {
                             trailing: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                IconButton(
-                                  onPressed: _busy ? null : () => _pair(target),
-                                  tooltip: 'Emparejar con código de la TV',
-                                  icon: const Icon(
-                                    Icons.key,
-                                    size: 20,
-                                    color: Color(0xFFFFAA00),
-                                  ),
+                                _actionLamp(
+                                  label: 'Conectado/Emparejado',
+                                  needsAction: !target.paired,
+                                  onPressed: _busy
+                                      ? null
+                                      : () => _pair(target),
                                 ),
-                                const SizedBox(width: 4),
-                                ElevatedButton.icon(
-                                  onPressed: _busy || needsPairing
+                                const SizedBox(width: 16),
+                                _actionLamp(
+                                  label: 'Instalado',
+                                  needsAction: !target.installed,
+                                  onPressed: _busy
                                       ? null
                                       : () => _install(target),
-                                  icon: const Icon(
-                                    Icons.install_mobile,
-                                    size: 17,
-                                  ),
-                                  label: const Text('INSTALAR Y ABRIR'),
                                 ),
+                                if (target.installed) ...[
+                                  const SizedBox(width: 10),
+                                  TextButton(
+                                    onPressed: _busy
+                                        ? null
+                                        : () => _install(target),
+                                    child: const Text(
+                                      'ABRIR',
+                                      style: TextStyle(
+                                        color: Color(0xFF00FFFF),
+                                        fontSize: 11,
+                                      ),
+                                    ),
+                                  ),
+                                ],
                               ],
                             ),
                           );

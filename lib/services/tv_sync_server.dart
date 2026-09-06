@@ -7,6 +7,11 @@ class TvSyncServer {
   HttpServer? _server;
   final List<WebSocket> _clients = [];
   final int port = 55056;
+  void Function(Map<String, dynamic> message)? onTvMessage;
+  void Function()? onTvJoined;
+
+  bool get hasTvClient =>
+      _clients.any((client) => client.readyState == WebSocket.open);
 
   Future<void> start() async {
     try {
@@ -21,9 +26,17 @@ class TvSyncServer {
             debugPrint(
               "🟢 [TV SYNC] TV Conectada. Clientes activos: ${_clients.length}",
             );
+            onTvJoined?.call();
 
             ws.listen(
-              (data) {},
+              (data) {
+                try {
+                  final decoded = jsonDecode('$data');
+                  if (decoded is Map<String, dynamic>) {
+                    onTvMessage?.call(decoded);
+                  }
+                } catch (_) {}
+              },
               onDone: () {
                 _clients.remove(ws);
                 debugPrint("🔴 [TV SYNC] TV Desconectada.");
@@ -87,8 +100,71 @@ class TvSyncServer {
     });
   }
 
+  void broadcastEdgePreload({
+    required String mp3Url,
+    required String lrcUrl,
+    required String trackName,
+    required String singer,
+  }) {
+    broadcastPayload({
+      'type': 'EDGE_PRELOAD',
+      'mp3_url': mp3Url,
+      'lrc_url': lrcUrl,
+      'track_name': trackName,
+      'singer': singer,
+    });
+  }
+
+  void broadcastScoreboard({
+    required String singer,
+    required String trackName,
+    required Map<String, int> votes,
+    String? nextSinger,
+    String? nextTrack,
+  }) {
+    broadcastPayload({
+      'type': 'SCOREBOARD',
+      'singer': singer,
+      'track_name': trackName,
+      'votes': votes,
+      'next_singer': nextSinger,
+      'next_track': nextTrack,
+    });
+  }
+
+  void broadcastEdgePause() {
+    broadcastPayload({'type': 'EDGE_PAUSE'});
+  }
+
+  void broadcastEdgeResume() {
+    broadcastPayload({'type': 'EDGE_RESUME'});
+  }
+
   void broadcastEdgeStop() {
     broadcastPayload({'type': 'EDGE_STOP'});
+  }
+
+  void broadcastSessionEnd() {
+    broadcastPayload({'type': 'SESSION_END'});
+  }
+
+  void broadcastStageState({
+    required List<Map<String, String>> queue,
+    required Map<String, String> current,
+    required Map<String, int> votes,
+    required bool sessionActive,
+    required bool paused,
+    required String qrUrl,
+  }) {
+    broadcastPayload({
+      'type': 'STAGE_STATE',
+      'queue': queue,
+      'current': current,
+      'votes': votes,
+      'session': sessionActive,
+      'paused': paused,
+      'qr_url': qrUrl,
+    });
   }
 
   Future<void> _serveKaraokeFile(HttpRequest request) async {
@@ -97,6 +173,15 @@ class TvSyncServer {
         request.response
           ..statusCode = HttpStatus.methodNotAllowed
           ..close();
+        return;
+      }
+
+      if (request.uri.path == '/api/whoami' || request.uri.path == '/whoami') {
+        request.response
+          ..statusCode = HttpStatus.ok
+          ..headers.contentType = ContentType.json
+          ..write(jsonEncode({'role': 'djstudio-karaoke', 'service': 'tv-sync'}));
+        await request.response.close();
         return;
       }
 
