@@ -80,10 +80,6 @@ class AudioEqualizerService {
 
     final String halFilter = MixStrategyFactory.getStrategy().hifiFilter;
 
-    // 🎛️ INYECCIÓN DSP: Normalizador Dinámico de Nivel de Estudio (Auto-Gain)
-    // f=150 (ventana rápida), g=11 (ganancia máxima), p=0.9 (protección de transitorios/kicks)
-    const String autoGainFilter = "dynaudnorm=f=150:g=11:p=0.9";
-
     final List<String> eqFilters = [];
 
     if (enabled) {
@@ -100,8 +96,7 @@ class AudioEqualizerService {
       }
     }
 
-    // 🛡️ ENSAMBLAJE DEL PIPELINE: HAL -> Auto-Gain -> Ecualizador
-    currentBaseFilter = '$halFilter,$autoGainFilter';
+    currentBaseFilter = halFilter;
     if (eqFilters.isNotEmpty) {
       currentBaseFilter += ',${eqFilters.join(',')}';
     }

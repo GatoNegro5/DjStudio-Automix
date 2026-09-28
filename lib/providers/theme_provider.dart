@@ -2,23 +2,21 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 class DjStudioTheme {
-  // Entorno Profesional (Estilo Rekordbox / Serato Pro)
-  // Contraste extremo para ambientes de poca luz (Cero fatiga visual)
-  static const Color bgDark = Color(0xFF0A0C10); // Negro OLED Profundo
+  // Traktor / Native Instruments (cabina “lab”)
+  static const Color bgDark = Color(0xFF0E1014); // Carbón NI
   static const Color bgPanel = Color(
-    0xFF161920,
-  ); // Gris Acero (Elevación de Paneles)
+    0xFF1A1E26,
+  ); // Panel elevado
 
-  // Colores de Deck y Acentos (Neón vibrante para romper lo monocromático)
   static const Color deckA = Color(
-    0xFF00E5FF,
-  ); // Azul Eléctrico (Estándar Deck 1)
+    0xFF2E9BFF,
+  ); // Deck A azul Traktor
   static const Color deckB = Color(
-    0xFFFF3D00,
-  ); // Naranja Neón (Estándar Deck 2)
+    0xFFF05A22,
+  ); // Naranja Native Instruments
   static const Color cyanAccent = Color(
-    0xFF2979FF,
-  ); // Azul Rey (Botones y Hovers)
+    0xFFF05A22,
+  ); // Acento de marca / hover
 
   // Estados Críticos del Sistema
   static const Color syncActive = Color(
@@ -82,3 +80,66 @@ class DjStudioTheme {
 }
 
 final themeProvider = Provider<ThemeData>((ref) => DjStudioTheme.darkTheme);
+
+final mobileNavOpenProvider = StateProvider<bool>((ref) => false);
+
+class DjStudioMobileModeBar extends StatelessWidget {
+  final String title;
+  final Color accent;
+  final bool open;
+  final VoidCallback onTap;
+  final bool expand;
+
+  const DjStudioMobileModeBar({
+    super.key,
+    required this.title,
+    required this.accent,
+    required this.open,
+    required this.onTap,
+    this.expand = true,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: DjStudioTheme.bgDark,
+      child: InkWell(
+        onTap: onTap,
+        child: SizedBox(
+          height: 36,
+          width: expand ? double.infinity : null,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            child: Row(
+              mainAxisSize: expand ? MainAxisSize.max : MainAxisSize.min,
+              children: [
+                Icon(
+                  open ? Icons.close : Icons.menu,
+                  size: 18,
+                  color: accent,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  title,
+                  style: TextStyle(
+                    color: accent,
+                    fontFamily: 'Consolas',
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.8,
+                  ),
+                ),
+                const SizedBox(width: 4),
+                Icon(
+                  open ? Icons.expand_less : Icons.expand_more,
+                  size: 16,
+                  color: DjStudioTheme.textMuted,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}

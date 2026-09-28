@@ -148,6 +148,20 @@ class DspWorker {
       final absolutePath = file.path;
       final modified = file.lastModifiedSync().millisecondsSinceEpoch;
 
+      bool isLiveActive = ref.read(hardwareGovernorProvider).isLiveDjActive;
+      while (isLiveActive) {
+        pipe.updateProgress(
+          currentIndex,
+          totalFiles,
+          "⏸️ SISTEMA EN PAUSA",
+          "Protegiendo cabina...",
+        );
+        await Future.delayed(const Duration(seconds: 3));
+        isLiveActive = ref.read(hardwareGovernorProvider).isLiveDjActive;
+        if (ref.read(pipelineProvider).isAborted) break;
+      }
+      if (ref.read(pipelineProvider).isAborted) break;
+
       if (!timestamps.containsKey(absolutePath) ||
           timestamps[absolutePath] != modified) {
         final double fileSizeMb = file.lengthSync() / (1024 * 1024);

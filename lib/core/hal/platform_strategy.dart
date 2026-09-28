@@ -9,7 +9,7 @@ abstract class PlatformMixStrategy {
 class WindowsMixStrategy implements PlatformMixStrategy {
   @override
   String get hifiFilter =>
-      'loudnorm=I=-14:TP=-1.5:LRA=11,aresample=resampler=soxr:precision=28,crystalizer=i=2.0,bass=g=3:f=60,extrastereo=m=1.15';
+      'bass=g=3:f=60,extrastereo=m=1.15,alimiter=limit=0.95:level=disabled';
 
   @override
   String getSessionPath() {
@@ -27,7 +27,7 @@ class WindowsMixStrategy implements PlatformMixStrategy {
 class MacOsMixStrategy implements PlatformMixStrategy {
   @override
   String get hifiFilter =>
-      'loudnorm=I=-14:TP=-1.5:LRA=11,aresample=resampler=soxr:precision=28,crystalizer=i=2.0,bass=g=3:f=60,extrastereo=m=1.15';
+      'bass=g=3:f=60,extrastereo=m=1.15,alimiter=limit=0.95:level=disabled';
 
   @override
   String getSessionPath() {
@@ -42,7 +42,8 @@ class MacOsMixStrategy implements PlatformMixStrategy {
 
 class AndroidMixStrategy implements PlatformMixStrategy {
   @override
-  String get hifiFilter => 'loudnorm=I=-14:TP=-1.5:LRA=11,bass=g=3:f=60';
+  String get hifiFilter =>
+      'bass=g=3:f=60,alimiter=limit=0.95:level=disabled';
 
   @override
   String getSessionPath() {

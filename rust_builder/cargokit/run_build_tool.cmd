@@ -82,10 +82,13 @@ if not exist "%PRECOMPILED%" (
 )
 
 "%DART%" "%PRECOMPILED%" %*
+set EXITCODE=!ERRORLEVEL!
 
 REM 253 means invalid snapshot version.
-If %ERRORLEVEL% equ 253 (
+If !EXITCODE! equ 253 (
     "%DART%" pub get --no-precompile
     "%DART%" compile kernel bin/build_tool_runner.dart
     "%DART%" "%PRECOMPILED%" %*
+    set EXITCODE=!ERRORLEVEL!
 )
+exit /b !EXITCODE!

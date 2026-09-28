@@ -8,8 +8,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_selector/file_selector.dart';
 
 import '../core/hal/platform_strategy.dart';
-import 'db_provider.dart';
 import 'equalizer_provider.dart';
+import 'mix_formula.dart';
 
 enum LiveDjMixStrategy { sequential, random }
 
@@ -87,10 +87,15 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
   StreamSubscription? _completedSub;
 
   bool _isCrossfading = false;
+  bool _parking = false;
   bool _isStandbyArmed = false;
   bool _isPrepModeBypass = false;
   int _lastSavedPositionMs = 0;
   int _lastUiPosMs = -1;
+  int _sessionPositionMs = 0;
+  bool _sessionWasPlaying = false;
+  bool _freezePersist = false;
+  bool _sessionHydrated = false;
 
   late final PlatformMixStrategy _liveStrategy;
 
@@ -101,8 +106,11 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
 
     _liveStrategy = MixStrategyFactory.getStrategy();
 
-    (_playerA.platform as dynamic)?.setProperty('af', _liveStrategy.hifiFilter);
-    (_playerB.platform as dynamic)?.setProperty('af', _liveStrategy.hifiFilter);
+    for (final Player deck in deckPlayers) {
+      final dynamic platform = deck.platform;
+      platform?.setProperty('vid', 'no');
+      platform?.setProperty('af', _liveStrategy.hifiFilter);
+    }
 
     _attachListeners(_playerA);
     _initPersistence();
@@ -150,17 +158,11 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
   }
 
   Future<int> _calculateSmartCueIn(String path, Player player) async {
-    final meta = await ref.read(dbServiceProvider).getTrackMetadata(path);
-
-    if (meta != null &&
-        meta.isManualCue &&
-        meta.cueInMs != null &&
-        meta.cueInMs! > 0) {
-      return meta.cueInMs!;
-    }
-
     if (_isMixTrack(player.state.duration.inMilliseconds)) return 0;
     final int durMs = player.state.duration.inMilliseconds;
+    if (ref.read(mixFormulaProvider) == MixFormula.stealthGap) {
+      return stealthCueInMs(durMs, const []);
+    }
     if (durMs > 30000) return 10000;
     return 0;
   }
@@ -195,18 +197,61 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
       safeMixOutMs = durationMs - 4000;
     }
 
+    if (ref.read(mixFormulaProvider) == MixFormula.stealthGap) {
+      return stealthMixOutMs(
+        durationMs: durationMs,
+        lyricMs: const [],
+        bpm: _extractBpm(path),
+      );
+    }
+    if (ref.read(mixFormulaProvider) == MixFormula.phraseGrid) {
+      return snapPhraseGridMixOut(
+        durationMs: durationMs,
+        dnaMixOutMs: safeMixOutMs,
+        bpm: _extractBpm(path),
+      );
+    }
     return safeMixOutMs;
+  }
+
+  Future<void> persistSession() => _saveSnapshot();
+
+  int? _readSavedUiRoute() {
+    try {
+      final session = _liveStrategy.getSessionPath();
+      final file = File(
+        '${File(session).parent.path}${Platform.pathSeparator}_ui_route.json',
+      );
+      if (!file.existsSync()) return null;
+      final data = jsonDecode(file.readAsStringSync());
+      final route = data['route'];
+      if (route is int && route >= 0 && route < 7) return route;
+    } catch (_) {}
+    return null;
+  }
+
+  String _sessionFilePath() {
+    final shared = _liveStrategy.getSessionPath();
+    return '${File(shared).parent.path}${Platform.pathSeparator}_livedj_session.json';
+  }
+
+  File _resolveSessionFile() {
+    return File(_sessionFilePath());
   }
 
   Future<void> _saveSnapshot() async {
     try {
-      final file = File(_liveStrategy.getSessionPath());
+      final file = File(_sessionFilePath());
+      final pos = _freezePersist
+          ? _sessionPositionMs
+          : state.position.inMilliseconds;
       final data = {
         'queue': state.queue.map((f) => f.path).toList(),
         'currentTrackPath': state.currentTrackPath,
-        'positionMs': state.position.inMilliseconds,
+        'positionMs': pos,
         'mixMode': state.currentMixMode.index,
         'mixStrategy': state.mixStrategy.index,
+        'wasPlaying': _freezePersist ? _sessionWasPlaying : state.isPlaying,
       };
       await file.writeAsString(jsonEncode(data));
       debugPrint("✅ [TRACKER] Snapshot guardado en disco correctamente.");
@@ -222,28 +267,127 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
       "🛠️ [TRACKER] shuffleQueue() INICIADO. Elementos en cola: ${state.queue.length}",
     );
     try {
-      if (state.queue.length <= 1) {
-        debugPrint("⚠️ [TRACKER] Cola muy pequeña. Forzando solo UI.");
-        state = state.copyWith(mixStrategy: LiveDjMixStrategy.random);
-        _saveSnapshot();
-        return;
-      }
-
-      final list = List<File>.from(state.queue);
-      list.shuffle(Random(DateTime.now().millisecondsSinceEpoch));
-
-      state = state.copyWith(
-        queue: list,
-        mixStrategy: LiveDjMixStrategy.random,
-      );
-
-      debugPrint(
-        "🔀 [TRACKER] Array barajado y Estado Mutado a RANDOM. Mandando señal a la UI...",
-      );
-      _saveSnapshot();
+      _applyLiveShuffleBank(advance: true);
     } catch (e, stack) {
       debugPrint("🔴 [TRACKER ERROR FATAL] El Shuffle explotó: $e\n$stack");
     }
+  }
+
+  String _liveShuffleBanksPath() {
+    final session = File(_sessionFilePath());
+    return '${session.parent.path}${Platform.pathSeparator}_livedj_shuffle_banks.json';
+  }
+
+  String _liveShuffleListKey(List<String> paths) {
+    final sorted = List<String>.from(paths)..sort();
+    return jsonEncode(sorted);
+  }
+
+  Map<String, dynamic> _readLiveShuffleBankFile() {
+    try {
+      final file = File(_liveShuffleBanksPath());
+      if (!file.existsSync()) return <String, dynamic>{};
+      final data = jsonDecode(file.readAsStringSync());
+      if (data is Map<String, dynamic>) return data;
+      if (data is Map) return Map<String, dynamic>.from(data);
+    } catch (_) {}
+    return <String, dynamic>{};
+  }
+
+  void _writeLiveShuffleBankFile(Map<String, dynamic> data) {
+    try {
+      File(_liveShuffleBanksPath()).writeAsStringSync(jsonEncode(data));
+    } catch (_) {}
+  }
+
+  List<List<String>> _buildTenLiveShuffleBanks(List<String> paths) {
+    final banks = <List<String>>[];
+    final seen = <String>{};
+    var salt = 1;
+    while (banks.length < 10 && salt < 400) {
+      final copy = List<String>.from(paths);
+      copy.shuffle(Random(salt * 9973 + paths.length * 13));
+      final sig = copy.join('\n');
+      if (seen.add(sig)) banks.add(copy);
+      salt++;
+    }
+    while (banks.length < 10) {
+      banks.add(List<String>.from(paths));
+    }
+    return banks;
+  }
+
+  void _applyLiveShuffleBank({required bool advance}) {
+    if (state.queue.length <= 1) {
+      debugPrint("⚠️ [TRACKER] Cola muy pequeña. Forzando solo UI.");
+      state = state.copyWith(mixStrategy: LiveDjMixStrategy.random);
+      _saveSnapshot();
+      return;
+    }
+
+    final paths = state.queue.map((f) => f.path).toList();
+    final key = _liveShuffleListKey(paths);
+    final all = _readLiveShuffleBankFile();
+    final int spin = (all['spin'] as int?) ?? 0;
+    final lists = Map<String, dynamic>.from(
+      (all['lists'] as Map?) ?? <String, dynamic>{},
+    );
+    Map<String, dynamic> entry = <String, dynamic>{};
+    final raw = lists[key];
+    if (raw is Map) entry = Map<String, dynamic>.from(raw);
+
+    List<List<String>> banks = <List<String>>[];
+    final rawBanks = entry['banks'];
+    if (rawBanks is List) {
+      for (final row in rawBanks) {
+        if (row is List) {
+          banks.add(row.map((e) => e.toString()).toList());
+        }
+      }
+    }
+    final bool sameSet = banks.length == 10 &&
+        banks.every((row) {
+          if (row.length != paths.length) return false;
+          final a = List<String>.from(row)..sort();
+          final b = List<String>.from(paths)..sort();
+          return listEquals(a, b);
+        });
+    if (!sameSet) {
+      banks = _buildTenLiveShuffleBanks(paths);
+      final int previous = (entry['cursor'] as int?) ?? -1;
+      final int carried = previous >= 0 ? previous : (spin % 10) - 1;
+      if (previous < 0) all['spin'] = (spin + 1) % 10;
+      entry = <String, dynamic>{'cursor': carried, 'banks': banks};
+    }
+
+    final int last = (entry['cursor'] as int?) ?? -1;
+    final int use = advance
+        ? (last + 1) % 10
+        : (last < 0 ? 0 : last % 10);
+    final List<String> order = List<String>.from(banks[use]);
+    final known = paths.toSet();
+    final queued = <File>[
+      for (final path in order)
+        if (known.contains(path)) File(path),
+    ];
+    for (final path in paths) {
+      if (!queued.any((f) => f.path == path)) queued.add(File(path));
+    }
+
+    entry['cursor'] = use;
+    entry['banks'] = banks;
+    lists[key] = entry;
+    all['lists'] = lists;
+    _writeLiveShuffleBankFile(all);
+
+    state = state.copyWith(
+      queue: queued,
+      mixStrategy: LiveDjMixStrategy.random,
+    );
+    _saveSnapshot();
+    debugPrint(
+      "🔀 [TRACKER] Shuffle banco ${use + 1}/10. ${queued.length} pistas.",
+    );
   }
 
   void toggleMixStrategy() {
@@ -267,7 +411,7 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
 
   Future<void> _initPersistence() async {
     try {
-      final file = File(_liveStrategy.getSessionPath());
+      final file = _resolveSessionFile();
       if (!file.existsSync()) return;
 
       final content = await file.readAsString();
@@ -278,11 +422,21 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
           .map((p) => File(p))
           .where((f) => f.existsSync())
           .toList();
-      final currentTrackPath = data['currentTrackPath'] as String?;
+      String? currentTrackPath = data['currentTrackPath'] as String?;
+      if (currentTrackPath != null && !File(currentTrackPath).existsSync()) {
+        currentTrackPath = null;
+      }
+      if (currentTrackPath == null && queueFiles.isNotEmpty) {
+        currentTrackPath = queueFiles.first.path;
+      }
       final positionMs = data['positionMs'] as int?;
 
       final mixModeIdx = data['mixMode'] as int? ?? 0;
       final mixStrategyIdx = data['mixStrategy'] as int? ?? 0;
+
+      if (state.queue.isNotEmpty || state.currentTrackPath != null) {
+        return;
+      }
 
       state = state.copyWith(
         queue: queueFiles,
@@ -291,7 +445,8 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
         mixStrategy: LiveDjMixStrategy.values[mixStrategyIdx],
       );
 
-      if (currentTrackPath != null) {
+      _freezePersist = false;
+      if (currentTrackPath != null && _readSavedUiRoute() == 5) {
         await _activePlayer.open(Media(currentTrackPath), play: false);
         try {
           await _activePlayer.stream.duration
@@ -300,15 +455,27 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
         } catch (_) {}
         if (positionMs != null && positionMs > 0) {
           await _activePlayer.seek(Duration(milliseconds: positionMs));
+          _sessionPositionMs = positionMs;
+        }
+        final wasPlaying = data['wasPlaying'] as bool? ?? false;
+        if (wasPlaying) {
+          await _activePlayer.play();
         }
       }
-    } catch (_) {}
+      if (state.mixStrategy == LiveDjMixStrategy.random) {
+        _applyLiveShuffleBank(advance: false);
+      }
+    } catch (_) {
+    } finally {
+      _sessionHydrated = true;
+    }
   }
 
   void addTrack(File file) {
     if (!state.queue.any((f) => f.path == file.path)) {
       state = state.copyWith(queue: [...state.queue, file]);
       _saveSnapshot();
+      _applyLiveShuffleBank(advance: true);
     }
   }
 
@@ -320,6 +487,7 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
     if (newFiles.isNotEmpty) {
       state = state.copyWith(queue: [...state.queue, ...newFiles]);
       _saveSnapshot();
+      _applyLiveShuffleBank(advance: true);
     }
   }
 
@@ -372,6 +540,7 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
         if (newFiles.isNotEmpty) {
           state = state.copyWith(queue: [...state.queue, ...newFiles]);
           _saveSnapshot();
+          _applyLiveShuffleBank(advance: true);
         }
       }
     } catch (e) {
@@ -410,6 +579,11 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
         state = state.copyWith(position: pos);
       }
 
+      if (!_freezePersist) {
+        _sessionPositionMs = posMs;
+        _sessionWasPlaying = state.isPlaying;
+      }
+
       if ((posMs - _lastSavedPositionMs).abs() > 15000) {
         _lastSavedPositionMs = posMs;
         _saveSnapshot();
@@ -425,7 +599,10 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
             triggerMs > 10000) {
           _isStandbyArmed = true;
           await _standbyPlayer.setVolume(0.0);
-          await _standbyPlayer.open(Media(state.queue.first.path), play: false);
+          await _standbyPlayer.open(
+            Media(state.queue[_nextQueueIndex()].path),
+            play: false,
+          );
         }
 
         if (posMs >= triggerMs) {
@@ -460,25 +637,54 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
     });
 
     _playingSub = player.stream.playing.listen((playing) {
+      if (_parking) return;
+      if (playing == state.isPlaying) return;
       state = state.copyWith(isPlaying: playing);
     });
 
     _completedSub = player.stream.completed.listen((completed) {
-      if (completed) {
-        _isPrepModeBypass = false;
-        _isCrossfading = false;
+      if (!completed || !_sessionHydrated) return;
+      _isPrepModeBypass = false;
+      _isCrossfading = false;
+      if (state.queue.isNotEmpty) {
         forceNext();
+      } else {
+        unawaited(_stopWhenNoNext());
       }
     });
   }
 
   Future<void> togglePlayPause() async {
     if (state.queue.isEmpty && state.currentTrackPath == null) return;
+
+    _isPrepModeBypass = false;
+    _freezePersist = false;
+
     if (state.currentTrackPath == null && state.queue.isNotEmpty) {
       await forceNext();
       return;
     }
-    _isPrepModeBypass = false;
+
+    final path = state.currentTrackPath;
+    final deckEmpty = _activePlayer.state.duration.inMilliseconds <= 0;
+    if (path != null && deckEmpty) {
+      if (!File(path).existsSync()) {
+        if (state.queue.isNotEmpty) {
+          await forceNext();
+        }
+        return;
+      }
+      try {
+        await _activePlayer.open(Media(path), play: true);
+        _attachListeners(_activePlayer);
+      } catch (e) {
+        debugPrint("🔴 [LIVEDJ OPEN]: $e");
+        if (state.queue.isNotEmpty) await forceNext();
+      }
+      _saveSnapshot();
+      return;
+    }
+
     await _activePlayer.playOrPause();
     if (!state.isPlaying) _saveSnapshot();
   }
@@ -490,8 +696,44 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
   }
 
   Future<void> forceNext() async {
-    if (_isCrossfading || state.queue.isEmpty) return;
+    if (_isCrossfading) return;
+    if (state.queue.isEmpty) {
+      await _stopWhenNoNext();
+      return;
+    }
     await _triggerCrossfade(forceJit: true, isManualSkip: true);
+  }
+
+  Future<void> _stopWhenNoNext() async {
+    _isCrossfading = false;
+    try {
+      await _playerA.pause();
+    } catch (_) {}
+    try {
+      await _playerB.pause();
+    } catch (_) {}
+    try {
+      await _playerA.stop();
+    } catch (_) {}
+    try {
+      await _playerB.stop();
+    } catch (_) {}
+    state = state.copyWith(isPlaying: false);
+    _saveSnapshot();
+  }
+
+  int _nextQueueIndex() {
+    if (state.queue.isEmpty) return -1;
+    if (ref.read(mixFormulaProvider) != MixFormula.stealthGap ||
+        state.currentTrackPath == null) {
+      return 0;
+    }
+    final int picked = pickStealthNextIndex(
+      remaining: state.queue.map((f) => f.path).toList(),
+      currentPath: state.currentTrackPath,
+      bpmOf: _extractBpm,
+    );
+    return picked < 0 ? 0 : picked;
   }
 
   Future<void> _triggerCrossfade({
@@ -501,7 +743,13 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
     if (_isCrossfading || state.queue.isEmpty) return;
     _isCrossfading = true;
 
-    final String nextTrack = state.queue.first.path;
+    final int nextIdx = _nextQueueIndex();
+    if (nextIdx < 0 || nextIdx >= state.queue.length) {
+      _isCrossfading = false;
+      await _stopWhenNoNext();
+      return;
+    }
+    final String nextTrack = state.queue[nextIdx].path;
     final Player fadingPlayer = _activePlayer;
     final Player incomingPlayer = _standbyPlayer;
 
@@ -509,10 +757,16 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
       try {
         await incomingPlayer.setVolume(0.0);
         await incomingPlayer.open(Media(nextTrack), play: false);
-      } catch (_) {}
+        try {
+          await incomingPlayer.stream.duration
+              .firstWhere((d) => d.inMilliseconds > 0)
+              .timeout(const Duration(seconds: 3));
+        } catch (_) {}
+      } catch (e) {
+        debugPrint("🔴 [LIVEDJ OPEN]: $e");
+      }
     }
 
-    // 🚀 EXTRACCIÓN SÍNCRONA DIRECTA (SIN TIMEOUT)
     Duration trackDur = Duration.zero;
     try {
       trackDur = incomingPlayer.state.duration;
@@ -556,7 +810,7 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
     _attachListeners(_activePlayer);
 
     List<File> newQueue = List.from(state.queue);
-    if (newQueue.isNotEmpty) newQueue.removeAt(0);
+    newQueue.removeAt(nextIdx);
 
     state = state.copyWith(
       queue: newQueue,
@@ -614,7 +868,15 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
       final fadeStopwatch = Stopwatch()..start();
       final fadeOutDurationMs = isManualSkip
           ? (manualMixDurationMs ?? 12000)
-          : (mixProfile == LiveDjMixMode.longBypass ? 4000 : 18000);
+          : (mixProfile == LiveDjMixMode.longBypass
+                ? 4000
+                : (ref.read(mixFormulaProvider) == MixFormula.phraseGrid ||
+                          ref.read(mixFormulaProvider) == MixFormula.stealthGap
+                      ? phraseFadeMs(
+                          incomingBpm: _extractBpm(state.currentTrackPath),
+                          incomingDurationMs: state.duration.inMilliseconds,
+                        )
+                      : 18000));
 
       while (fadeStopwatch.elapsedMilliseconds < fadeOutDurationMs) {
         final progress = (fadeStopwatch.elapsedMilliseconds / fadeOutDurationMs)
@@ -678,14 +940,36 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
     }
   }
 
-  Future<void> parkIdleDecks() async {
-    if (state.isPlaying || _isCrossfading) return;
+  Future<void> parkIdleDecks({bool force = false}) async {
+    if (_parking) return;
+    if (!force && (state.isPlaying || _isCrossfading)) return;
+    _parking = true;
     try {
-      await _playerA.stop();
-    } catch (_) {}
-    try {
-      await _playerB.stop();
-    } catch (_) {}
+      if (force) _isCrossfading = false;
+      _sessionWasPlaying = state.isPlaying;
+      if (state.position.inMilliseconds > 0) {
+        _sessionPositionMs = state.position.inMilliseconds;
+      }
+      _freezePersist = true;
+      if (state.currentTrackPath != null || state.queue.isNotEmpty) {
+        await _saveSnapshot();
+      }
+      try {
+        await _playerA.pause();
+      } catch (_) {}
+      try {
+        await _playerB.pause();
+      } catch (_) {}
+      try {
+        await _playerA.stop();
+      } catch (_) {}
+      try {
+        await _playerB.stop();
+      } catch (_) {}
+      if (state.isPlaying) state = state.copyWith(isPlaying: false);
+    } finally {
+      _parking = false;
+    }
   }
 }
 

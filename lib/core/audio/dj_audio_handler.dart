@@ -22,6 +22,8 @@ class DjAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   void Function()? onNext;
   void Function()? onPrevious;
   void Function(Duration)? onSeek;
+  /// Solo recents/cerrar tarea. Home/minimizar no dispara esto.
+  Future<void> Function()? onAppDismissed;
 
   DjAudioHandler() {
     playbackState.add(
@@ -41,7 +43,9 @@ class DjAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   Future<void> play() async => onPlayPause?.call();
 
   @override
-  Future<void> pause() async => onPlayPause?.call();
+  Future<void> pause() async {
+    // Home/minimizar dispara MediaSession.pause. El DJ no se detiene.
+  }
 
   @override
   Future<void> skipToNext() async => onNext?.call();
@@ -51,6 +55,27 @@ class DjAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
 
   @override
   Future<void> seek(Duration position) async => onSeek?.call(position);
+
+  @override
+  Future<void> stop() async {
+    playbackState.add(
+      playbackState.value.copyWith(
+        playing: false,
+        processingState: AudioProcessingState.idle,
+      ),
+    );
+    await super.stop();
+  }
+
+  @override
+  Future<void> onTaskRemoved() async {
+    final hook = onAppDismissed;
+    if (hook != null) {
+      await hook();
+      return;
+    }
+    await stop();
+  }
 
   void updateOsMetadata({required String title, required Duration duration}) {
     mediaItem.add(

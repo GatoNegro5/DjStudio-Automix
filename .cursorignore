@@ -1,0 +1,61 @@
+# NO listar aqui lib/ ni recuadros UI. .cursorignore NO bloquea diffs.
+# Ley: c:\Python\djstudio_player\CONTEXTO.md (LOG + OK de Gabriel).
+
+# ============================================================
+# Optimización de costos — excluir del indexado (reduce tokens)
+# ============================================================
+
+# Tooling portable descargado (Node.js + clasp) — solo lectura, nunca indexar
+tooling/
+
+# Build artifacts / caches (ruido masivo, no aporta contexto)
+rust/target/
+windows/tooling/
+windows/flutter/ephemeral/
+build/
+**/build/
+**/.dart_tool/
+.dart_tool/
+
+# Python
+venv/
+**/venv/
+.venv/
+**/.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+
+# Binarios y releases pesados
+djstudio_tv/releases/
+*.apk
+*.zip
+
+# Dependencias
+node_modules/
+**/node_modules/
+.pub-cache/
+
+# Temporales de diagnóstico del agente (raíz del repo)
+node_check.txt
+winget_out.txt
+node_ver.txt
+arch.txt
+dl_result.txt
+unzip_result.txt
+node_verify.txt
+clasp_install.txt
+clasp_verify.txt
+creds_check.txt
+creds_check2.txt
+clasp_login.txt
+discover_run.txt
+drive_discover.txt
+mod_check.txt
+npmroot.txt
+shape_run.txt
+_cleanup.txt
+
+# NO listar aqui lib/ ni recuadros UI. cursorignore NO bloquea diffs.
+# Veto: .cursor/rules/veto-borrado.mdc
+

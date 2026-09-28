@@ -1,8 +1,13 @@
 /// This is copied from Cargokit (which is the official way to use it currently)
 /// Details: https://fzyzcjy.github.io/flutter_rust_bridge/manual/integrate/builtin
+/// Patched for Flutter 3.47 + AGP 9 / Gradle 9:
+/// ExecOperations (no Project.exec), :app lookup, JNI task hooks, no silent skip.
 
+import java.io.ByteArrayOutputStream
 import java.nio.file.Paths
+import javax.inject.Inject
 import org.apache.tools.ant.taskdefs.condition.Os
+import org.gradle.process.ExecOperations
 
 CargoKitPlugin.file = buildscript.sourceFile
 
@@ -14,6 +19,9 @@ class CargoKitExtension {
 }
 
 abstract class CargoKitBuildTask extends DefaultTask {
+
+    @Inject
+    abstract ExecOperations getExecOperations()
 
     @Input
     String buildMode
@@ -59,37 +67,40 @@ abstract class CargoKitBuildTask extends DefaultTask {
 
         def rootProjectDir = project.rootProject.projectDir
 
+        new File(outputDir).mkdirs()
+
         if (!Os.isFamily(Os.FAMILY_WINDOWS)) {
-            def chmodPb = new ProcessBuilder('chmod', '+x', path.toString())
-            chmodPb.inheritIO()
-            def chmodProc = chmodPb.start()
-            chmodProc.waitFor()
-            if (chmodProc.exitValue() != 0) {
-                throw new GradleException("Failed to make script executable")
+            execOperations.exec {
+                commandLine 'chmod', '+x', path.toString()
             }
         }
 
-        def pb = new ProcessBuilder(path.toString(), "build-gradle")
-        def env = pb.environment()
-        
-        if (rootProjectDir != null) env.put("CARGOKIT_ROOT_PROJECT_DIR", rootProjectDir.toString())
-        env.put("CARGOKIT_TOOL_TEMP_DIR", "${buildDir}/build_tool".toString())
-        if (manifestDir != null) env.put("CARGOKIT_MANIFEST_DIR", manifestDir.toString())
-        if (buildMode != null) env.put("CARGOKIT_CONFIGURATION", buildMode.toString())
-        if (buildDir != null) env.put("CARGOKIT_TARGET_TEMP_DIR", buildDir.toString())
-        if (outputDir != null) env.put("CARGOKIT_OUTPUT_DIR", outputDir.toString())
-        if (ndkVersion != null) env.put("CARGOKIT_NDK_VERSION", ndkVersion.toString())
-        if (sdkDirectory != null) env.put("CARGOKIT_SDK_DIR", sdkDirectory.toString())
-        if (compileSdkVersion != null) env.put("CARGOKIT_COMPILE_SDK_VERSION", compileSdkVersion.toString())
-        if (minSdkVersion != null) env.put("CARGOKIT_MIN_SDK_VERSION", minSdkVersion.toString())
-        if (targetPlatforms != null) env.put("CARGOKIT_TARGET_PLATFORMS", targetPlatforms.join(",").toString())
-        if (System.properties['java.home'] != null) env.put("CARGOKIT_JAVA_HOME", System.properties['java.home'].toString())
+        logger.lifecycle("Cargokit: compiling ${project.cargokit.libname} (${buildMode}) for ${targetPlatforms.join(',')}")
 
-        pb.inheritIO()
-        def process = pb.start()
-        process.waitFor()
-        if (process.exitValue() != 0) {
-            throw new GradleException("CargoKit build failed with exit code " + process.exitValue())
+        def hostLinker = CargoKitPlugin.hostLinkerEnvironment(execOperations, new File(buildDir.toString()))
+
+        execOperations.exec {
+            if (Os.isFamily(Os.FAMILY_WINDOWS)) {
+                commandLine 'cmd.exe', '/c', path.toString(), 'build-gradle'
+            } else {
+                executable path
+                args "build-gradle"
+            }
+            environment "CARGOKIT_ROOT_PROJECT_DIR", rootProjectDir.toString()
+            environment "CARGOKIT_TOOL_TEMP_DIR", "${buildDir}/build_tool".toString()
+            environment "CARGOKIT_MANIFEST_DIR", manifestDir.toString()
+            environment "CARGOKIT_CONFIGURATION", buildMode.toString()
+            environment "CARGOKIT_TARGET_TEMP_DIR", buildDir.toString()
+            environment "CARGOKIT_OUTPUT_DIR", outputDir.toString()
+            environment "CARGOKIT_NDK_VERSION", ndkVersion.toString()
+            environment "CARGOKIT_SDK_DIR", sdkDirectory.toString()
+            environment "CARGOKIT_COMPILE_SDK_VERSION", compileSdkVersion.toString()
+            environment "CARGOKIT_MIN_SDK_VERSION", minSdkVersion.toString()
+            environment "CARGOKIT_TARGET_PLATFORMS", targetPlatforms.join(",").toString()
+            if (System.properties['java.home'] != null) {
+                environment "CARGOKIT_JAVA_HOME", System.properties['java.home'].toString()
+            }
+            hostLinker.each { k, v -> environment k, v }
         }
     }
 }
@@ -98,96 +109,179 @@ class CargoKitPlugin implements Plugin<Project> {
 
     static String file;
 
-    private Plugin findFlutterPlugin(Project rootProject) {
-        _findFlutterPlugin(rootProject.childProjects)
-    }
-
-   private Plugin _findFlutterPlugin(Map projects) {
-        for (project in projects) {
-            for (plugin in project.value.getPlugins()) {
-                if (plugin.class.name == "com.flutter.gradle.FlutterPlugin" || plugin.class.name == "FlutterPlugin") {
-                    return plugin;
-                }
+    static Map<String, String> hostLinkerEnvironment(ExecOperations execOperations, File buildDir) {
+        if (!Os.isFamily(Os.FAMILY_WINDOWS)) {
+            return [:]
+        }
+        def vswhere = new File("C:/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe")
+        def linkExe = null
+        if (vswhere.exists()) {
+            def out = new ByteArrayOutputStream()
+            execOperations.exec {
+                commandLine vswhere.absolutePath,
+                    '-all', '-prerelease', '-products', '*',
+                    '-find', '**/Hostx64/x64/link.exe'
+                standardOutput = out
+                ignoreExitValue = true
             }
-            def plugin = _findFlutterPlugin(project.value.childProjects);
-            if (plugin != null) {
-                return plugin;
+            def found = out.toString().trim().readLines().find { it && it.toLowerCase().endsWith('link.exe') }
+            if (found) {
+                linkExe = new File(found.trim())
             }
         }
-        return null;
+        if (linkExe == null || !linkExe.exists()) {
+            [
+                "C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools",
+                "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools",
+                "C:/Program Files/Microsoft Visual Studio/2022/BuildTools/VC/Tools",
+                "C:/Program Files (x86)/Microsoft Visual Studio/2019/BuildTools/VC/Tools",
+            ].each { toolsRoot ->
+                def root = new File(toolsRoot, "MSVC")
+                if (root.exists() && linkExe == null) {
+                    root.listFiles()?.sort { it.name }?.reverseEach { verDir ->
+                        def candidate = new File(verDir, "bin/Hostx64/x64/link.exe")
+                        if (candidate.exists() && linkExe == null) {
+                            linkExe = candidate
+                        }
+                    }
+                }
+            }
+        }
+        if (linkExe == null || !linkExe.exists()) {
+            throw new GradleException(
+                "Cargokit: no hay MSVC link.exe en disco (VS 18 Community no tiene VC\\\\Tools).\n" +
+                "Visual Studio Installer → Modificar → pestaña 'Componentes individuales' → marca\n" +
+                "'MSVC v143/v145 - VS C++ x64/x86 build tools' y 'Windows 10/11 SDK' → Modificar.\n" +
+                "El workload C++ sin ese componente no instala link.exe.")
+        }
+        return [
+            "PATH": "${linkExe.parentFile.absolutePath};${System.getenv('PATH')}",
+        ]
+    }
+
+    private Project findAppProject(Project project) {
+        def app = project.rootProject.findProject(":app")
+        if (app != null) {
+            return app
+        }
+        for (child in project.rootProject.childProjects.values()) {
+            if (child.plugins.hasPlugin("com.android.application") ||
+                child.pluginManager.hasPlugin("com.android.application")) {
+                return child
+            }
+        }
+        return null
+    }
+
+    private List<String> resolvePlatforms(Project hostProject) {
+        return ["android-arm64"]
+    }
+
+    private int readMinSdk(Project appProject) {
+        def cfg = appProject.android.defaultConfig
+        try {
+            return cfg.minSdkVersion.apiLevel as int
+        } catch (Exception ignored) {
+            return cfg.minSdk as int
+        }
+    }
+
+    private int readCompileSdk(Project appProject) {
+        try {
+            def v = appProject.android.compileSdkVersion
+            if (v instanceof String && v.startsWith("android-")) {
+                return v.substring(8) as int
+            }
+            return v as int
+        } catch (Exception ignored) {
+            return appProject.android.compileSdk as int
+        }
+    }
+
+    private boolean isNativeHookTask(String taskName, String buildType) {
+        def bt = buildType.capitalize()
+        return taskName == "merge${bt}NativeLibs" ||
+            taskName == "merge${bt}JniLibFolders" ||
+            taskName == "copy${bt}JniLibsProjectAndLocalJars" ||
+            taskName == "copy${bt}JniLibsProjectOnly" ||
+            taskName == "strip${bt}DebugSymbols" ||
+            taskName == "bundle${bt}Aar"
+    }
+
+    private void hookNativeTasks(Project project, String buildType, def cargoTask) {
+        def bt = buildType.capitalize()
+        [
+            "merge${bt}NativeLibs",
+            "merge${bt}JniLibFolders",
+            "copy${bt}JniLibsProjectAndLocalJars",
+            "copy${bt}JniLibsProjectOnly",
+            "strip${bt}DebugSymbols",
+            "bundle${bt}Aar",
+        ].each { name ->
+            def existing = project.tasks.findByName(name)
+            if (existing != null) {
+                existing.dependsOn cargoTask
+                existing.outputs.upToDateWhen { false }
+            }
+        }
+        project.tasks.matching { isNativeHookTask(it.name, buildType) }.configureEach { newTask ->
+            newTask.dependsOn cargoTask
+            newTask.outputs.upToDateWhen { false }
+        }
     }
 
     @Override
     void apply(Project project) {
-        def plugin = findFlutterPlugin(project.rootProject);
-
         project.extensions.create("cargokit", CargoKitExtension)
 
-        if (plugin == null) {
-            print("Flutter plugin not found, CargoKit plugin will not be applied.")
-            return;
+        def appProject = findAppProject(project)
+        if (appProject == null) {
+            throw new GradleException(
+                "Cargokit: host app project not found. Cannot compile native Rust library.")
         }
 
         def cargoBuildDir = "${project.buildDir}/build"
+        def buildTypes = ["debug", "profile", "release"]
 
-        // Determine if the project is an application or library
-        def isApplication = plugin.project.plugins.hasPlugin('com.android.application')
-        def variants = isApplication ? plugin.project.android.applicationVariants : plugin.project.android.libraryVariants
-
-        variants.all { variant ->
-
-            final buildType = variant.buildType.name
-
-            def cargoOutputDir = "${project.buildDir}/jniLibs/${buildType}";
-            def jniLibs = project.android.sourceSets.maybeCreate(buildType).jniLibs;
+        buildTypes.each { buildType ->
+            def cargoOutputDir = "${project.buildDir}/jniLibs/${buildType}"
+            new File(cargoOutputDir).mkdirs()
+            def jniLibs = project.android.sourceSets.maybeCreate(buildType).jniLibs
             jniLibs.srcDir(new File(cargoOutputDir))
+        }
 
-            def List<String> platforms
-            try {
-                platforms = com.flutter.gradle.FlutterPluginUtils.getTargetPlatforms(project).collect()
-            } catch (Exception ignored) {
-                platforms = plugin.getTargetPlatforms().collect()
+        project.afterEvaluate {
+            if (project.cargokit.libname == null || project.cargokit.manifestDir == null) {
+                throw new GradleException("Cargokit: 'libname' and 'manifestDir' must be set.")
+            }
+            if (appProject.android.ndkVersion == null) {
+                throw new GradleException("Please set 'android.ndkVersion' in 'app/build.gradle'.")
             }
 
-            // Same thing addFlutterDependencies does in flutter.gradle
-            if (buildType == "debug") {
-                platforms.add("android-x86")
-                platforms.add("android-x64")
-            }
+            def platforms = resolvePlatforms(appProject)
 
-            // The task name depends on plugin properties, which are not available
-            // at this point
-            project.getGradle().afterProject {
-                def taskName = "cargokitCargoBuild${project.cargokit.libname.capitalize()}${buildType.capitalize()}";
-
+            buildTypes.each { buildType ->
+                def taskName = "cargokitCargoBuild${project.cargokit.libname.capitalize()}${buildType.capitalize()}"
                 if (project.tasks.findByName(taskName)) {
                     return
                 }
 
-                if (plugin.project.android.ndkVersion == null) {
-                    throw new GradleException("Please set 'android.ndkVersion' in 'app/build.gradle'.")
-                }
+                def cargoOutputDir = "${project.buildDir}/jniLibs/${buildType}"
+                new File(cargoOutputDir).mkdirs()
 
-                def task = project.tasks.create(taskName, CargoKitBuildTask.class) {
-                    buildMode = variant.buildType.name
+                def cargoTask = project.tasks.create(taskName, CargoKitBuildTask.class) {
+                    buildMode = buildType
                     buildDir = cargoBuildDir
                     outputDir = cargoOutputDir
-                    ndkVersion = plugin.project.android.ndkVersion
-                    sdkDirectory = plugin.project.android.sdkDirectory
-                    minSdkVersion = plugin.project.android.defaultConfig.minSdkVersion.apiLevel as int
-                    compileSdkVersion = plugin.project.android.compileSdkVersion.substring(8) as int
+                    ndkVersion = appProject.android.ndkVersion
+                    sdkDirectory = appProject.android.sdkDirectory
+                    minSdkVersion = readMinSdk(appProject)
+                    compileSdkVersion = readCompileSdk(appProject)
                     targetPlatforms = platforms
                     pluginFile = CargoKitPlugin.file
                 }
-                def onTask = { newTask ->
-                    if (newTask.name == "merge${buildType.capitalize()}NativeLibs") {
-                        newTask.dependsOn task
-                        // Fix gradle 7.4.2 not picking up JNI library changes
-                        newTask.outputs.upToDateWhen { false }
-                    }
-                }
-                project.tasks.each onTask
-                project.tasks.whenTaskAdded onTask
+
+                hookNativeTasks(project, buildType, cargoTask)
             }
         }
     }

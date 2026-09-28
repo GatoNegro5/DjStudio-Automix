@@ -34,16 +34,29 @@ class BuildGradle {
         ArtifactProvider(environment: environment, userOptions: userOptions);
     final artifacts = await provider.getArtifacts(targets);
 
+    var copied = 0;
     for (final target in targets) {
-      final libs = artifacts[target]!;
+      final libs = artifacts[target];
+      if (libs == null || libs.isEmpty) {
+        throw Exception(
+            'Cargokit produced no artifacts for $target. '
+            'Expected lib${environment.crateInfo.packageName}.so');
+      }
       final outputDir = path.join(Environment.outputDir, target.android!);
       Directory(outputDir).createSync(recursive: true);
 
       for (final lib in libs) {
         if (lib.type == AritifactType.dylib) {
           File(lib.path).copySync(path.join(outputDir, lib.finalFileName));
+          copied += 1;
+          log.info('Copied ${lib.finalFileName} -> $outputDir');
         }
       }
+    }
+    if (copied == 0) {
+      throw Exception(
+          'Cargokit built Android targets but copied no .so '
+          '(lib${environment.crateInfo.packageName}.so).');
     }
   }
 }

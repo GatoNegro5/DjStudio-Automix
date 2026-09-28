@@ -1,0 +1,17 @@
+{
+  "git.ignoreLimitWarning": true,
+  "dart.flutterSdkPath": "C:\\src\\flutter",
+  "dart.onlyAnalyzeProjectsWithOpenFiles": true,
+  "files.watcherExclude": {
+    "**/tooling/**": true,
+    "**/build/**": true,
+    "**/.dart_tool/**": true,
+    "**/ephemeral/**": true
+  },
+  "search.exclude": {
+    "**/tooling/**": true,
+    "**/build/**": true,
+    "**/.dart_tool/**": true,
+    "**/ephemeral/**": true
+  }
+}

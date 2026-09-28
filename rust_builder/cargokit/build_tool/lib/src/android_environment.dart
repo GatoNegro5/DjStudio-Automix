@@ -134,9 +134,13 @@ class AndroidEnvironment {
     final runRustTool =
         Platform.isWindows ? 'run_build_tool.cmd' : 'run_build_tool.sh';
 
-    final packagePath = (await Isolate.resolvePackageUri(
-            Uri.parse('package:build_tool/buildtool.dart')))!
-        .toFilePath();
+    final packageUri = await Isolate.resolvePackageUri(
+          Uri.parse('package:build_tool/build_tool.dart'));
+    if (packageUri == null) {
+      throw Exception(
+          'Failed to resolve package:build_tool/build_tool.dart for NDK linker wrapper');
+    }
+    final packagePath = packageUri.toFilePath();
     final selfPath = path.canonicalize(path.join(
       packagePath,
       '..',

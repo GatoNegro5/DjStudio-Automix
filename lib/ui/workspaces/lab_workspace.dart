@@ -11,6 +11,8 @@ import '../../providers/metadata_provider.dart';
 import '../../providers/dsp_provider.dart';
 import '../../providers/db_provider.dart';
 import '../../providers/nlp_provider.dart';
+import '../../providers/directory_provider.dart';
+import '../../providers/theme_provider.dart';
 
 class LabWorkspace extends ConsumerStatefulWidget {
   const LabWorkspace({super.key});
@@ -25,6 +27,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
   bool _isLoading = true;
 
   String? _selectedFileForEdit;
+  String? _selectedOriginFolder;
   final TextEditingController _lrcController = TextEditingController();
   final TextEditingController _searchQueryController = TextEditingController();
   final TextEditingController _ytUrlController = TextEditingController();
@@ -999,6 +1002,131 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
     );
   }
 
+  Widget _buildFolderPanel(
+    List<String> folders,
+    String? selectedFolder,
+    Map<String, int> counts,
+    bool isMobile,
+  ) {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF121212),
+        border: Border.all(color: Colors.white10),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        children: [
+          Container(
+            width: double.infinity,
+            padding: EdgeInsets.symmetric(
+              horizontal: 10,
+              vertical: isMobile ? 4 : 8,
+            ),
+            color: DjStudioTheme.bgPanel,
+            child: Row(
+              children: [
+                Icon(
+                  Icons.folder_open,
+                  size: isMobile ? 14 : 16,
+                  color: Colors.orangeAccent,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    "Explorador",
+                    style: TextStyle(
+                      color: Colors.orangeAccent,
+                      fontWeight: FontWeight.bold,
+                      fontSize: isMobile ? 11 : 12,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: folders.isEmpty
+                ? const Center(
+                    child: Text(
+                      "Sin carpetas en cuarentena.",
+                      style: TextStyle(color: Colors.white38, fontSize: 12),
+                      textAlign: TextAlign.center,
+                    ),
+                  )
+                : ListView.builder(
+                    itemCount: folders.length,
+                    itemBuilder: (context, index) {
+                      final name = folders[index];
+                      final active = name == selectedFolder;
+                      return ListTile(
+                        dense: true,
+                        visualDensity: const VisualDensity(vertical: -4),
+                        selected: active,
+                        selectedTileColor: Colors.orangeAccent.withValues(
+                          alpha: 0.12,
+                        ),
+                        leading: Icon(
+                          Icons.folder,
+                          size: 18,
+                          color: active
+                              ? Colors.orangeAccent
+                              : Colors.white38,
+                        ),
+                        title: Text(
+                          name,
+                          style: TextStyle(
+                            color: active
+                                ? Colors.orangeAccent
+                                : Colors.white70,
+                            fontSize: isMobile ? 11 : 12,
+                            fontWeight: active
+                                ? FontWeight.bold
+                                : FontWeight.normal,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        trailing: Text(
+                          '${counts[name] ?? 0}',
+                          style: const TextStyle(
+                            color: Colors.white38,
+                            fontFamily: 'Consolas',
+                            fontSize: 11,
+                          ),
+                        ),
+                        onTap: () {
+                          setState(() {
+                            _selectedOriginFolder = name;
+                            _selectedFileForEdit = null;
+                          });
+                        },
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _originFolderOf(dynamic registryValue) {
+    final originalPath = registryValue is Map
+        ? (registryValue['originalPath']?.toString() ?? '')
+        : registryValue.toString();
+    if (originalPath.isEmpty || originalPath == 'Origen desconocido') {
+      return 'Cuarentena';
+    }
+    final parts = originalPath
+        .replaceAll('\\', '/')
+        .split('/')
+        .where((p) => p.isNotEmpty)
+        .toList();
+    if (parts.length >= 2) return parts[parts.length - 2];
+    return 'Cuarentena';
+  }
+
   Widget _buildLeftPanel(
     List<MapEntry<String, dynamic>> entries,
     bool isMobile,
@@ -1135,7 +1263,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
           _buildDiagnosticCard(Map<String, dynamic>.from(registryValue)),
 
         Container(
-          padding: EdgeInsets.all(isMobile ? 10 : 15),
+          padding: EdgeInsets.all(isMobile ? 6 : 15),
           decoration: BoxDecoration(
             color: const Color(0xFF1A1A1A),
             border: Border.all(
@@ -1157,8 +1285,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
                   fontSize: isMobile ? 11 : 12,
                 ),
               ),
-              const SizedBox(height: 15),
-
+              const SizedBox(height: 6),
               Row(
                 children: [
                   Expanded(
@@ -1187,8 +1314,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
                   ),
                 ],
               ),
-              const SizedBox(height: 10),
-
+              SizedBox(height: isMobile ? 4 : 10),
               Row(
                 children: [
                   Expanded(
@@ -1242,8 +1368,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
                   ),
                 ],
               ),
-              const SizedBox(height: 15),
-
+              SizedBox(height: isMobile ? 4 : 15),
               Wrap(
                 spacing: 5,
                 runSpacing: 5,
@@ -1306,7 +1431,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
 
         Expanded(
           child: Container(
-            padding: EdgeInsets.all(isMobile ? 10 : 20),
+            padding: EdgeInsets.all(isMobile ? 4 : 20),
             decoration: BoxDecoration(
               color: const Color(0xFF121212),
               border: Border(
@@ -1366,11 +1491,17 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.orangeAccent,
                         foregroundColor: Colors.black,
+                        visualDensity: VisualDensity.compact,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        minimumSize: Size(isMobile ? 0 : 64, isMobile ? 28 : 36),
+                        padding: EdgeInsets.symmetric(
+                          horizontal: isMobile ? 8 : 16,
+                        ),
                       ),
                     ),
                   ],
                 ),
-                const SizedBox(height: 15),
+                SizedBox(height: isMobile ? 4 : 15),
                 Expanded(
                   child: TextField(
                     controller: _lrcController,
@@ -1405,12 +1536,32 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
   @override
   Widget build(BuildContext context) {
     final entries = _registry.entries.toList();
+    final currentDir = ref.watch(directoryProvider).currentPath;
+    final currentName = currentDir.isEmpty
+        ? ''
+        : currentDir.replaceAll('\\', '/').split('/').last;
+
+    final counts = <String, int>{};
+    for (final e in entries) {
+      final folder = _originFolderOf(e.value);
+      counts[folder] = (counts[folder] ?? 0) + 1;
+    }
+    final folders = counts.keys.toList()..sort();
+    final selectedFolder = _selectedOriginFolder ??
+        (folders.contains(currentName)
+            ? currentName
+            : (folders.isNotEmpty ? folders.first : null));
+    final filtered = selectedFolder == null
+        ? entries
+        : entries
+            .where((e) => _originFolderOf(e.value) == selectedFolder)
+            .toList();
 
     return LayoutBuilder(
       builder: (context, constraints) {
         final bool isMobile = constraints.maxWidth < 850;
         return Padding(
-          padding: EdgeInsets.all(isMobile ? 15.0 : 30.0),
+          padding: EdgeInsets.all(isMobile ? 4.0 : 30.0),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -1419,14 +1570,14 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
                   Icon(
                     Icons.science,
                     color: Colors.orangeAccent,
-                    size: isMobile ? 24 : 30,
+                    size: isMobile ? 20 : 30,
                   ),
                   const SizedBox(width: 15),
                   Expanded(
                     child: Text(
                       "Laboratorio de Cuarentena (DLQ)",
                       style: TextStyle(
-                        fontSize: isMobile ? 18 : 24,
+                        fontSize: isMobile ? 16 : 24,
                         fontWeight: FontWeight.bold,
                         color: Colors.orangeAccent,
                       ),
@@ -1436,55 +1587,65 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
                   ),
                 ],
               ),
-              const SizedBox(height: 10),
-              Text(
-                "Entorno de aislamiento y manipulación cruda. Extrae, sincroniza o reemplaza audios/letras defectuosas antes de reinyectarlos.",
-                style: TextStyle(
-                  color: Colors.white54,
-                  fontSize: isMobile ? 11 : 13,
+              if (!isMobile) ...[
+                const SizedBox(height: 10),
+                const Text(
+                  "Entorno de aislamiento y manipulación cruda. Extrae, sincroniza o reemplaza audios/letras defectuosas antes de reinyectarlos.",
+                  style: TextStyle(color: Colors.white54, fontSize: 13),
                 ),
-              ),
-              const SizedBox(height: 20),
-
+                const SizedBox(height: 20),
+              ] else
+                const SizedBox(height: 8),
               if (_isLoading)
                 const Center(
                   child: CircularProgressIndicator(color: Colors.orangeAccent),
                 )
-              else if (entries.isEmpty)
-                Container(
-                  padding: const EdgeInsets.all(40),
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    color: Colors.black45,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.white10),
-                  ),
-                  child: const Text(
-                    "✅ Cuarentena limpia. No hay archivos defectuosos.",
-                    style: TextStyle(color: Color(0xFF39FF14), fontSize: 16),
-                    textAlign: TextAlign.center,
-                  ),
-                )
               else
                 Expanded(
-                  child: isMobile
-                      ? (_selectedFileForEdit == null
-                            ? _buildLeftPanel(entries, isMobile)
-                            : _buildRightPanel(isMobile))
-                      : Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Expanded(
-                              flex: 1,
-                              child: _buildLeftPanel(entries, isMobile),
-                            ),
-                            const SizedBox(width: 20),
-                            Expanded(
-                              flex: 2,
-                              child: _buildRightPanel(isMobile),
-                            ),
-                          ],
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Expanded(
+                        flex: 2,
+                        child: _buildFolderPanel(
+                          folders,
+                          selectedFolder,
+                          counts,
+                          isMobile,
                         ),
+                      ),
+                      SizedBox(width: isMobile ? 6 : 12),
+                      Expanded(
+                        flex: 3,
+                        child: entries.isEmpty
+                            ? Container(
+                                alignment: Alignment.center,
+                                decoration: BoxDecoration(
+                                  color: Colors.black45,
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(color: Colors.white10),
+                                ),
+                                child: const Padding(
+                                  padding: EdgeInsets.all(16),
+                                  child: Text(
+                                    "✅ Cuarentena limpia. No hay archivos defectuosos.",
+                                    style: TextStyle(
+                                      color: Color(0xFF39FF14),
+                                      fontSize: 14,
+                                    ),
+                                    textAlign: TextAlign.center,
+                                  ),
+                                ),
+                              )
+                            : _buildLeftPanel(filtered, isMobile),
+                      ),
+                      SizedBox(width: isMobile ? 6 : 12),
+                      Expanded(
+                        flex: 5,
+                        child: _buildRightPanel(isMobile),
+                      ),
+                    ],
+                  ),
                 ),
             ],
           ),

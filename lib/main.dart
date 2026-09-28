@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -11,8 +13,11 @@ import 'package:djstudio_player/src/rust/frb_generated.dart';
 // --- IMPORTACIÓN DE MÓDULOS Y PROVIDERS ---
 import 'providers/automix_provider.dart';
 import 'providers/theme_provider.dart';
+import 'providers/livedj_provider.dart';
+import 'providers/pipeline_provider.dart';
 
 import 'core/audio/dj_audio_handler.dart';
+import 'core/hal/platform_strategy.dart';
 
 // 🛠️ FIX: Rutas actualizadas a la nueva Clean Architecture
 import 'ui/workspaces/automix_workspace.dart';
@@ -28,11 +33,59 @@ import 'ui/workspaces/karaoke_workspace.dart';
 // 0: Dj Workspace, 1: Módulos Auto-Master, 2: Descargas YT, 3: Laboratorio, 4: Transferencia LAN, 5: Radio YT
 // ==========================================
 class RouterNotifier extends Notifier<int> {
+  static const int _routeCount = 7;
+
   @override
-  int build() => 0;
+  int build() {
+    final saved = _readSavedRoute();
+    if (saved != null) return saved;
+    final inferred = _inferRouteFromAudioSession();
+    _writeRoute(inferred);
+    return inferred;
+  }
 
   void setRoute(int newRoute) {
+    if (newRoute < 0 || newRoute >= _routeCount) return;
+    if (state == newRoute) return;
     state = newRoute;
+    _writeRoute(newRoute);
+  }
+
+  void persistRoute() => _writeRoute(state);
+
+  int? _readSavedRoute() {
+    try {
+      final file = File(_routeFilePath());
+      if (!file.existsSync()) return null;
+      final data = jsonDecode(file.readAsStringSync());
+      final route = data['route'];
+      if (route is int && route >= 0 && route < _routeCount) return route;
+    } catch (_) {}
+    return null;
+  }
+
+  int _inferRouteFromAudioSession() {
+    try {
+      final file = File(MixStrategyFactory.getStrategy().getSessionPath());
+      if (!file.existsSync()) return 0;
+      final data = jsonDecode(file.readAsStringSync());
+      if (data is! Map) return 0;
+      final wasPlaying = data['wasPlaying'] == true;
+      final track = data['currentTrackPath'];
+      if (wasPlaying && track is String && track.isNotEmpty) return 5;
+    } catch (_) {}
+    return 0;
+  }
+
+  void _writeRoute(int route) {
+    try {
+      File(_routeFilePath()).writeAsStringSync(jsonEncode({'route': route}));
+    } catch (_) {}
+  }
+
+  String _routeFilePath() {
+    final session = MixStrategyFactory.getStrategy().getSessionPath();
+    return '${File(session).parent.path}${Platform.pathSeparator}_ui_route.json';
   }
 }
 
@@ -113,10 +166,84 @@ class DjStudioApp extends ConsumerWidget {
 
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      theme: appTheme, // Aplicación del Motor de Temas
+      theme: appTheme,
+      builder: (context, child) {
+        return _MobileAudioLifecycle(child: child ?? const SizedBox.shrink());
+      },
       home: const BootloaderScreen(),
     );
   }
+}
+
+class _MobileAudioLifecycle extends ConsumerStatefulWidget {
+  final Widget child;
+
+  const _MobileAudioLifecycle({required this.child});
+
+  @override
+  ConsumerState<_MobileAudioLifecycle> createState() =>
+      _MobileAudioLifecycleState();
+}
+
+class _MobileAudioLifecycleState extends ConsumerState<_MobileAudioLifecycle>
+    with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    globalAudioHandler.onAppDismissed = _silenceEngines;
+  }
+
+  @override
+  void dispose() {
+    if (identical(globalAudioHandler.onAppDismissed, _silenceEngines)) {
+      globalAudioHandler.onAppDismissed = null;
+    }
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  Future<void> _silenceEngines() async {
+    try {
+      ref.read(routerProvider.notifier).persistRoute();
+    } catch (_) {}
+    try {
+      await ref.read(automixProvider.notifier).persistSession();
+    } catch (_) {}
+    try {
+      await ref.read(liveDjProvider.notifier).persistSession();
+    } catch (_) {}
+    try {
+      await ref.read(automixProvider.notifier).parkIdleDecks(force: true);
+    } catch (_) {}
+    try {
+      await ref.read(liveDjProvider.notifier).parkIdleDecks(force: true);
+    } catch (_) {}
+    try {
+      await globalAudioHandler.stop();
+    } catch (_) {}
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!Platform.isAndroid && !Platform.isIOS) return;
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden) {
+      try {
+        ref.read(routerProvider.notifier).persistRoute();
+      } catch (_) {}
+      try {
+        ref.read(automixProvider.notifier).persistSession();
+      } catch (_) {}
+      try {
+        ref.read(liveDjProvider.notifier).persistSession();
+      } catch (_) {}
+      return;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
 }
 
 // ==========================================
@@ -200,317 +327,363 @@ class _BootloaderScreenState extends State<BootloaderScreen> {
 // ==========================================
 // VISTA PRINCIPAL (UI ENRUTADA CON DISEÑO HÁPTICO)
 // ==========================================
-class MainWorkspace extends ConsumerWidget {
+class MainWorkspace extends ConsumerStatefulWidget {
   const MainWorkspace({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final currentRoute = ref.watch(routerProvider);
-    final playerState = ref.watch(automixProvider);
+  ConsumerState<MainWorkspace> createState() => _MainWorkspaceState();
+}
 
-    // 🛠️ SENSOR DE PLATAFORMA: Define qué puede hacer el hardware actual
-    final bool isMobileOS = Platform.isAndroid || Platform.isIOS;
+class _MainWorkspaceState extends ConsumerState<MainWorkspace> {
+  void _openMenu() {
+    ref.read(mobileNavOpenProvider.notifier).state = true;
+  }
 
-    return Scaffold(
-      body: Row(
-        children: [
-          // 1. SIDEBAR IZQUIERDO REDUCIDO Y TEMATIZADO
-          Material(
-            color: DjStudioTheme.bgDark,
-            child: SizedBox(
-              width: 160,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Padding(
-                    padding: EdgeInsets.all(15.0),
-                    child: Text(
-                      "DjStudio",
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                        color: DjStudioTheme.textMain,
-                        letterSpacing: 1.2,
-                      ),
-                    ),
-                  ),
-                  Expanded(
-                    child: SingleChildScrollView(
-                      physics: const BouncingScrollPhysics(),
-                      child: Column(
-                        children: [
-                          // 🎛️ RUTINA 0: AUTOMIX (Universal)
-                          ListTile(
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 15,
-                            ),
-                            leading: Icon(
-                              Icons.album,
-                              size: 20,
-                              color: currentRoute == 0
-                                  ? DjStudioTheme.deckA
-                                  : DjStudioTheme.textHidden,
-                            ),
-                            title: Text(
-                              "Automix",
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: currentRoute == 0
-                                    ? DjStudioTheme.deckA
-                                    : DjStudioTheme.textMuted,
-                                fontWeight: currentRoute == 0
-                                    ? FontWeight.bold
-                                    : FontWeight.normal,
-                              ),
-                            ),
-                            onTap: () =>
-                                ref.read(routerProvider.notifier).setRoute(0),
-                          ),
+  void _closeMenu() {
+    ref.read(mobileNavOpenProvider.notifier).state = false;
+  }
 
-                          // 🪄 RUTINA 1: AUTO-MASTER (Dinámico)
-                          ListTile(
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 15,
-                            ),
-                            leading: Icon(
-                              Icons.settings,
-                              size: 20,
-                              color: currentRoute == 1
-                                  ? DjStudioTheme.deckB
-                                  : DjStudioTheme.textHidden,
-                            ),
-                            title: Text(
-                              isMobileOS
-                                  ? "Preparación"
-                                  : "Auto-Master", // 🛠️ ADAPTACIÓN DE UI
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: currentRoute == 1
-                                    ? DjStudioTheme.deckB
-                                    : DjStudioTheme.textMuted,
-                                fontWeight: currentRoute == 1
-                                    ? FontWeight.bold
-                                    : FontWeight.normal,
-                              ),
-                            ),
-                            onTap: () =>
-                                ref.read(routerProvider.notifier).setRoute(1),
-                          ),
-
-                          // 📥 RUTINA 2: DESCARGAS YT (EXCLUSIVO ESCRITORIO)
-                          if (!isMobileOS)
-                            ListTile(
-                              contentPadding: const EdgeInsets.symmetric(
-                                horizontal: 15,
-                              ),
-                              leading: Icon(
-                                Icons.cloud_download,
-                                size: 20,
-                                color: currentRoute == 2
-                                    ? DjStudioTheme.cyanAccent
-                                    : DjStudioTheme.textHidden,
-                              ),
-                              title: Text(
-                                "Descargas YT",
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: currentRoute == 2
-                                      ? DjStudioTheme.cyanAccent
-                                      : DjStudioTheme.textMuted,
-                                  fontWeight: currentRoute == 2
-                                      ? FontWeight.bold
-                                      : FontWeight.normal,
-                                ),
-                              ),
-                              onTap: () =>
-                                  ref.read(routerProvider.notifier).setRoute(2),
-                            ),
-
-                          // 🧪 RUTINA 3: LABORATORIO DLQ (Universal)
-                          ListTile(
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 15,
-                            ),
-                            leading: Icon(
-                              Icons.science,
-                              size: 20,
-                              color: currentRoute == 3
-                                  ? DjStudioTheme.alertCritical
-                                  : DjStudioTheme.textHidden,
-                            ),
-                            title: Text(
-                              "Laboratorio",
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: currentRoute == 3
-                                    ? DjStudioTheme.alertCritical
-                                    : DjStudioTheme.textMuted,
-                                fontWeight: currentRoute == 3
-                                    ? FontWeight.bold
-                                    : FontWeight.normal,
-                              ),
-                            ),
-                            onTap: () =>
-                                ref.read(routerProvider.notifier).setRoute(3),
-                          ),
-
-                          // 📡 RUTINA 4: LAN SYNC (Universal)
-                          ListTile(
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 15,
-                            ),
-                            leading: Icon(
-                              Icons.wifi_tethering,
-                              size: 20,
-                              color: currentRoute == 4
-                                  ? DjStudioTheme.masterPeak
-                                  : DjStudioTheme.textHidden,
-                            ),
-                            title: Text(
-                              "LAN Sync",
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: currentRoute == 4
-                                    ? DjStudioTheme.masterPeak
-                                    : DjStudioTheme.textMuted,
-                                fontWeight: currentRoute == 4
-                                    ? FontWeight.bold
-                                    : FontWeight.normal,
-                              ),
-                            ),
-                            onTap: () =>
-                                ref.read(routerProvider.notifier).setRoute(4),
-                          ),
-
-                          // 📻 RUTINA 5: LIVE DJ (Universal)
-                          ListTile(
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 15,
-                            ),
-                            leading: Icon(
-                              Icons.radio,
-                              size: 20,
-                              color: currentRoute == 5
-                                  ? DjStudioTheme.syncActive
-                                  : DjStudioTheme.textHidden,
-                            ),
-                            title: Text(
-                              "Live DJ",
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: currentRoute == 5
-                                    ? DjStudioTheme.syncActive
-                                    : DjStudioTheme.textMuted,
-                                fontWeight: currentRoute == 5
-                                    ? FontWeight.bold
-                                    : FontWeight.normal,
-                              ),
-                            ),
-                            onTap: () =>
-                                ref.read(routerProvider.notifier).setRoute(5),
-                          ),
-
-                          // 🎤 RUTINA 6: KARAOKE HOST (Inyección Nueva)
-                          ListTile(
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 15,
-                            ),
-                            leading: Icon(
-                              Icons.mic_external_on,
-                              size: 20,
-                              color: currentRoute == 6
-                                  ? const Color(
-                                      0xFF39FF14,
-                                    ) // Verde Neón Karaoke
-                                  : DjStudioTheme.textHidden,
-                            ),
-                            title: Text(
-                              "Karaoke",
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: currentRoute == 6
-                                    ? const Color(0xFF39FF14)
-                                    : DjStudioTheme.textMuted,
-                                fontWeight: currentRoute == 6
-                                    ? FontWeight.bold
-                                    : FontWeight.normal,
-                              ),
-                            ),
-                            onTap: () =>
-                                ref.read(routerProvider.notifier).setRoute(6),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-
-                  // MOTOR AUDIO MINI-PANEL (Inferior)
-                  if (playerState.currentTrackPath != null)
-                    Container(
-                      padding: const EdgeInsets.all(15),
-                      decoration: const BoxDecoration(
-                        color: DjStudioTheme.bgPanel,
-                        border: Border(top: BorderSide(color: Colors.white10)),
-                      ),
-                      width: double.infinity,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            "MOTOR AUDIO",
-                            style: TextStyle(
-                              color: DjStudioTheme.textHidden,
-                              fontSize: 10,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          const SizedBox(height: 5),
-                          Text(
-                            playerState.currentTrackPath!
-                                .replaceAll('\\', '/')
-                                .split('/')
-                                .last,
-                            style: const TextStyle(
-                              color: DjStudioTheme.syncActive,
-                              fontSize: 11,
-                            ),
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ],
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          ),
-
-          // 2. ÁREA CENTRAL (ENRUTADOR)
-          Expanded(
-            child: Container(
-              decoration: const BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [DjStudioTheme.bgPanel, DjStudioTheme.bgDark],
-                ),
-              ),
-              child: IndexedStack(
-                index: currentRoute,
-                children: const [
-                  AutomixWorkspace(),
-                  DspNlpWorkspace(),
-                  YoutubeSearchAndDownloadWorkspace(),
-                  LabWorkspace(),
-                  LanSyncWorkspace(),
-                  LiveDjWorkspace(),
-                  KaraokeWorkspace(), // 🛠️ INSTANCIA DEL KARAOKE INYECTADA AL ÁRBOL
-                ],
-              ),
-            ),
-          ),
+  Widget _stage(int currentRoute) {
+    return Container(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [DjStudioTheme.bgPanel, DjStudioTheme.bgDark],
+        ),
+      ),
+      child: IndexedStack(
+        index: currentRoute,
+        children: const [
+          AutomixWorkspace(),
+          DspNlpWorkspace(),
+          YoutubeSearchAndDownloadWorkspace(),
+          LabWorkspace(),
+          LanSyncWorkspace(),
+          LiveDjWorkspace(),
+          KaraokeWorkspace(),
         ],
       ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    ref.listen<bool>(automixProvider.select((s) => s.isPlaying), (prev, next) {
+      final gov = ref.read(hardwareGovernorProvider.notifier);
+      if (next) {
+        gov.lockForLivePerformance();
+      } else {
+        gov.releaseLock();
+      }
+    });
+    ref.listen<bool>(liveDjProvider.select((s) => s.isPlaying), (prev, next) {
+      final gov = ref.read(hardwareGovernorProvider.notifier);
+      if (next) {
+        gov.lockForLivePerformance();
+      } else {
+        gov.releaseLock();
+      }
+    });
+    final currentRoute = ref.watch(routerProvider);
+    final bool isMobileOS = Platform.isAndroid || Platform.isIOS;
+    final bool menuOpen = ref.watch(mobileNavOpenProvider);
+    final bool inlineChrome =
+        isMobileOS && (currentRoute == 0 || currentRoute == 5);
+    final nav = _DjStudioNavColumn(
+      currentRoute: currentRoute,
+      isMobileOS: isMobileOS,
+      onAfterSelect: isMobileOS ? _closeMenu : null,
+      compactSheet: isMobileOS,
+    );
+
+    if (!isMobileOS) {
+      return Scaffold(
+        body: Row(
+          children: [
+            Material(
+              color: DjStudioTheme.bgDark,
+              child: SizedBox(width: 160, child: nav),
+            ),
+            Expanded(child: _stage(currentRoute)),
+          ],
+        ),
+      );
+    }
+
+    return Scaffold(
+      backgroundColor: DjStudioTheme.bgDark,
+      body: SafeArea(
+        child: Column(
+          children: [
+            if (!inlineChrome)
+              DjStudioMobileModeBar(
+                title: _moduleTitle(currentRoute, isMobileOS),
+                accent: _moduleAccent(currentRoute),
+                open: menuOpen,
+                onTap: menuOpen ? _closeMenu : _openMenu,
+              ),
+            Expanded(
+              child: Stack(
+                clipBehavior: Clip.hardEdge,
+                children: [
+                  Positioned.fill(
+                    child: Padding(
+                      padding: EdgeInsets.only(
+                        right: MediaQuery.viewPaddingOf(context).right == 0
+                            ? 48
+                            : 0,
+                      ),
+                      child: _stage(currentRoute),
+                    ),
+                  ),
+                  if (menuOpen)
+                    Positioned.fill(
+                      child: GestureDetector(
+                        onTap: _closeMenu,
+                        behavior: HitTestBehavior.opaque,
+                        child: const ColoredBox(color: Color(0x99000000)),
+                      ),
+                    ),
+                  if (menuOpen)
+                    Positioned(
+                      left: 8,
+                      top: inlineChrome ? 40 : 6,
+                      width: 228,
+                      child: Material(
+                        color: DjStudioTheme.bgDark,
+                        elevation: 18,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          side: const BorderSide(color: Color(0xFF2A2E37)),
+                        ),
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            maxHeight: MediaQuery.sizeOf(context).height * 0.72,
+                          ),
+                          child: ListView(
+                            shrinkWrap: true,
+                            padding: EdgeInsets.zero,
+                            children: [nav],
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+String _moduleTitle(int route, bool mobile) {
+  switch (route) {
+    case 0:
+      return "Automix";
+    case 1:
+      return "Masterizar";
+    case 2:
+      return "Descargas YT";
+    case 3:
+      return "Laboratorio";
+    case 4:
+      return "LAN Sync";
+    case 5:
+      return "Live DJ";
+    case 6:
+      return "Karaoke";
+    default:
+      return "DjStudio";
+  }
+}
+
+Color _moduleAccent(int route) {
+  switch (route) {
+    case 0:
+      return DjStudioTheme.deckA;
+    case 1:
+      return DjStudioTheme.deckB;
+    case 2:
+      return DjStudioTheme.cyanAccent;
+    case 3:
+      return DjStudioTheme.alertCritical;
+    case 4:
+      return DjStudioTheme.masterPeak;
+    case 5:
+      return DjStudioTheme.syncActive;
+    case 6:
+      return const Color(0xFF39FF14);
+    default:
+      return DjStudioTheme.textMain;
+  }
+}
+
+class _DjStudioNavColumn extends ConsumerWidget {
+  final int currentRoute;
+  final bool isMobileOS;
+  final VoidCallback? onAfterSelect;
+  final bool compactSheet;
+
+  const _DjStudioNavColumn({
+    required this.currentRoute,
+    required this.isMobileOS,
+    this.onAfterSelect,
+    this.compactSheet = false,
+  });
+
+  void _go(WidgetRef ref, int route) {
+    ref.read(routerProvider.notifier).setRoute(route);
+    onAfterSelect?.call();
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final currentTrackPath = ref.watch(
+      automixProvider.select((s) => s.currentTrackPath),
+    );
+
+    Widget tile({
+      required IconData icon,
+      required String label,
+      required int route,
+      required Color accent,
+    }) {
+      final active = currentRoute == route;
+      const Color menuIdle = Color(0xFF00E676);
+      const Color menuSelected = Color(0xFF43B3AE);
+      final Color ink = active ? menuSelected : menuIdle;
+      return ListTile(
+        dense: true,
+        visualDensity: const VisualDensity(horizontal: -4, vertical: -4),
+        minVerticalPadding: 0,
+        minLeadingWidth: 22,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 10),
+        leading: Icon(icon, size: 18, color: ink),
+        title: Text(
+          label,
+          style: TextStyle(
+            fontSize: 15,
+            height: 1.05,
+            color: ink,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        onTap: () => _go(ref, route),
+      );
+    }
+
+    final tiles = Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        tile(
+          icon: Icons.album,
+          label: "Automix",
+          route: 0,
+          accent: DjStudioTheme.deckA,
+        ),
+        tile(
+          icon: Icons.radio,
+          label: "Live DJ",
+          route: 5,
+          accent: DjStudioTheme.syncActive,
+        ),
+        tile(
+          icon: Icons.cloud_download,
+          label: "Descargas YT",
+          route: 2,
+          accent: DjStudioTheme.cyanAccent,
+        ),
+        tile(
+          icon: Icons.science,
+          label: "Laboratorio",
+          route: 3,
+          accent: DjStudioTheme.alertCritical,
+        ),
+        tile(
+          icon: Icons.settings,
+          label: "Masterizar",
+          route: 1,
+          accent: DjStudioTheme.deckB,
+        ),
+        tile(
+          icon: Icons.wifi_tethering,
+          label: "LAN Sync",
+          route: 4,
+          accent: DjStudioTheme.masterPeak,
+        ),
+        tile(
+          icon: Icons.mic_external_on,
+          label: "Karaoke",
+          route: 6,
+          accent: const Color(0xFF39FF14),
+        ),
+      ],
+    );
+
+    final motor = currentTrackPath == null
+        ? const SizedBox.shrink()
+        : Container(
+            padding: EdgeInsets.all(compactSheet ? 10 : 15),
+            decoration: const BoxDecoration(
+              color: DjStudioTheme.bgPanel,
+              border: Border(top: BorderSide(color: Colors.white10)),
+            ),
+            width: double.infinity,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  "MOTOR AUDIO",
+                  style: TextStyle(
+                    color: DjStudioTheme.textHidden,
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  currentTrackPath.replaceAll('\\', '/').split('/').last,
+                  style: const TextStyle(
+                    color: DjStudioTheme.syncActive,
+                    fontSize: 11,
+                  ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          );
+
+    return Column(
+      mainAxisSize: compactSheet ? MainAxisSize.min : MainAxisSize.max,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.fromLTRB(12, 10, 12, 4),
+          child: Text(
+            "DjStudio",
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+              color: DjStudioTheme.textMain,
+              letterSpacing: 1.2,
+            ),
+          ),
+        ),
+        if (compactSheet)
+          tiles
+        else
+          Expanded(
+            child: SingleChildScrollView(
+              physics: const BouncingScrollPhysics(),
+              child: tiles,
+            ),
+          ),
+        motor,
+      ],
     );
   }
 }

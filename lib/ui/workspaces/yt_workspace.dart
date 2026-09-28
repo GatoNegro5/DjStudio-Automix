@@ -810,7 +810,10 @@ class _YoutubeSearchAndDownloadWorkspaceState
         final bool isMobileLandscape = constraints.maxHeight < 500;
 
         final Widget configBar = Container(
-          padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 12),
+          padding: EdgeInsets.symmetric(
+            horizontal: isMobileLandscape ? 8 : 15,
+            vertical: isMobileLandscape ? 4 : 12,
+          ),
           decoration: BoxDecoration(
             color: const Color(0xFF1A1A1A),
             border: Border.all(
@@ -915,6 +918,7 @@ class _YoutubeSearchAndDownloadWorkspaceState
                 enabled: !_isProcessing,
                 style: const TextStyle(color: Colors.white),
                 decoration: InputDecoration(
+                  isDense: isMobileLandscape,
                   hintText:
                       "Nombre de canción o https://www.youtube.com/watch?v=...",
                   hintStyle: const TextStyle(color: Colors.white38),
@@ -941,7 +945,7 @@ class _YoutubeSearchAndDownloadWorkspaceState
 
         final Widget statusBar = Container(
           width: double.infinity,
-          padding: const EdgeInsets.all(15),
+          padding: EdgeInsets.all(isMobileLandscape ? 6 : 15),
           decoration: BoxDecoration(
             color: Colors.black,
             border: Border.all(color: const Color(0xFF333333)),
@@ -1043,34 +1047,37 @@ class _YoutubeSearchAndDownloadWorkspaceState
         );
 
         if (isMobileLandscape) {
-          return SingleChildScrollView(
-            physics: const BouncingScrollPhysics(),
-            padding: const EdgeInsets.all(15.0),
+          return Padding(
+            padding: const EdgeInsets.fromLTRB(8, 4, 8, 4),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
                   "Buscador Global & Extracción",
                   style: TextStyle(
-                    fontSize: 20,
+                    fontSize: 16,
                     fontWeight: FontWeight.bold,
                     color: Color(0xFF00FFFF),
                   ),
                 ),
-                const SizedBox(height: 10),
+                const SizedBox(height: 2),
                 const Text(
                   "Busca pistas en la red o pega una URL para inyectarla directamente al disco duro en formato MP3 (320kbps).",
-                  style: TextStyle(color: Colors.white54, fontSize: 12),
+                  style: TextStyle(color: Colors.white54, fontSize: 11),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
-                const SizedBox(height: 20),
+                const SizedBox(height: 4),
                 configBar,
-                const SizedBox(height: 15),
+                const SizedBox(height: 6),
                 searchBar,
-                const SizedBox(height: 15),
+                const SizedBox(height: 6),
                 statusBar,
-                const SizedBox(height: 15),
+                const SizedBox(height: 6),
                 if (_results.isNotEmpty)
-                  SizedBox(height: 250, child: resultsList),
+                  Expanded(child: resultsList)
+                else
+                  const Spacer(),
               ],
             ),
           );
