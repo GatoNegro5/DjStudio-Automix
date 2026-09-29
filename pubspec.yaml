@@ -46,6 +46,8 @@ dependencies:
   isar: ^3.1.0
   isar_flutter_libs: ^3.1.0  
   permission_handler: 13.0.0
+  speech_to_text: ^7.3.0
+  flutter_tts: ^4.2.5
   rust_lib_djstudio_player:
     path: rust_builder
   flutter_rust_bridge: 2.12.0
@@ -53,6 +55,8 @@ dependencies:
   mime: ^2.0.0
   audio_service: ^0.18.19
 dev_dependencies:
+  flutter_test:
+    sdk: flutter
   isar_generator: ^3.1.0
   build_runner: ^2.4.0
   

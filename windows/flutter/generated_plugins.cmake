@@ -4,9 +4,11 @@
 
 list(APPEND FLUTTER_PLUGIN_LIST
   file_selector_windows
+  flutter_tts
   isar_flutter_libs
   media_kit_libs_windows_audio
   permission_handler_windows
+  speech_to_text_windows
 )
 
 list(APPEND FLUTTER_FFI_PLUGIN_LIST
