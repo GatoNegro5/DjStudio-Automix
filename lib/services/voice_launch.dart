@@ -31,6 +31,8 @@ class VoiceLaunch {
   bool _listenArmed = false;
   bool _heardListening = false;
   String _heard = '';
+  bool _audible = false;
+  bool _reportedTtsFailure = false;
 
   void cancel() {
     _alive = false;
@@ -38,6 +40,10 @@ class VoiceLaunch {
     final speech = _speech;
     if (speech != null && speech.isListening) {
       speech.stop();
+    }
+    final tts = _tts;
+    if (tts != null) {
+      tts.stop();
     }
   }
 
@@ -48,10 +54,23 @@ class VoiceLaunch {
       await _flow();
     } catch (e, stack) {
       debugPrint('🔴 [VOICE] $e\n$stack');
+      if (_alive && !_audible) {
+        await _reportTtsFailure();
+      }
     }
   }
 
   Future<void> _flow() async {
+    // El aviso no espera al reconocedor. En Android `initialize` lanza
+    // o no vuelve si no hay servicio, y ese espera dejaba el arranque mudo.
+    final foldersFuture = listLibraryFolders(musicLibraryRoot());
+    final greeted = await _say('¿Qué pongo?');
+    if (!_alive) return;
+    if (!greeted) {
+      await _reportTtsFailure();
+      return;
+    }
+
     if (!await _micGranted()) {
       await _say('Sin el micrófono no puedo oír qué pongo.');
       return;
@@ -60,27 +79,29 @@ class VoiceLaunch {
 
     final speech = SpeechToText();
     _speech = speech;
-    final ready = await speech.initialize(
-      onError: _onSpeechError,
-      onStatus: _onSpeechStatus,
-      options: [SpeechToText.androidNoBluetooth],
-    );
+    final ready = await _recognizerReady(speech);
     if (!_alive) return;
     if (!ready) {
       await _say('No pude activar el reconocimiento de voz.');
       return;
     }
 
-    final localeId = await _spanishLocale(speech);
-    final folders = await listLibraryFolders(musicLibraryRoot());
+    final localeId = await _spanishLocale(speech)
+        .timeout(const Duration(seconds: 4), onTimeout: () => null);
+    final folders = await foldersFuture;
     if (!_alive) return;
 
-    await _say('¿Qué pongo?');
-    if (!_alive) return;
     await Future<void>.delayed(const Duration(milliseconds: 350));
     if (!_alive) return;
 
-    final heard = await _listenOnce(speech, localeId, folders);
+    final String heard;
+    try {
+      heard = await _listenOnce(speech, localeId, folders);
+    } catch (e) {
+      debugPrint('🔴 [VOICE] listen $e');
+      await _say('No pude activar el reconocimiento de voz.');
+      return;
+    }
     if (!_alive) return;
 
     final decision = decideSpokenFolder(folders, heard);
@@ -107,15 +128,123 @@ class VoiceLaunch {
     }
   }
 
-  Future<void> _say(String text) async {
-    if (!_alive) return;
+  Future<void> _reportTtsFailure() async {
+    if (_reportedTtsFailure || !_alive) return;
+    _reportedTtsFailure = true;
+    await _say('No pude usar la voz.');
+  }
+
+  /// `true` solo si el motor aceptó la frase y arrancó o terminó.
+  /// Un `speak` que devuelve 0, lanza, o no vuelve no se traga.
+  Future<bool> _say(String text) async {
+    if (!_alive) return false;
     final tts = _tts ??= FlutterTts();
     try {
-      await tts.awaitSpeakCompletion(true);
-      await _applySpanishTts(tts);
-      await tts.speak(text);
+      if (await _speakOnce(tts, text)) {
+        _audible = true;
+        return true;
+      }
     } catch (e) {
       debugPrint('🔴 [VOICE] tts $e');
+    }
+    if (!_alive) return false;
+    _silenceTtsHandlers(tts);
+    try {
+      await tts.stop().timeout(const Duration(seconds: 2));
+    } catch (e) {
+      debugPrint('🔴 [VOICE] tts stop $e');
+    }
+    if (!_alive) return false;
+    try {
+      final spoken = await _speakOnce(tts, text);
+      if (spoken) _audible = true;
+      return spoken;
+    } catch (e) {
+      debugPrint('🔴 [VOICE] tts $e');
+      return false;
+    }
+  }
+
+  Future<void> _prepareTts(FlutterTts tts) async {
+    // Sin `awaitSpeakCompletion`: si la utterance falla, el plugin no
+    // completa el future y el arranque se quedaba mudo.
+    await tts.awaitSpeakCompletion(false);
+    await tts.setVolume(1.0);
+    if (Platform.isAndroid) {
+      // Guía de navegación, sin pedir audio focus (`focus` queda en false).
+      // Así la frase se oye y un fallo de voz no pausa la sesión reanudada.
+      try {
+        await tts.setAudioAttributesForNavigation();
+      } catch (e) {
+        debugPrint('🔴 [VOICE] tts attributes $e');
+      }
+    }
+    await _applySpanishTts(tts);
+  }
+
+  void _silenceTtsHandlers(FlutterTts tts) {
+    tts.setStartHandler(() {});
+    tts.setCompletionHandler(() {});
+    tts.setErrorHandler((_) {});
+    tts.setCancelHandler(() {});
+  }
+
+  Future<bool> _speakOnce(FlutterTts tts, String text) async {
+    final done = Completer<bool>();
+    var started = false;
+    void finish(bool ok) {
+      if (!done.isCompleted) done.complete(ok);
+    }
+
+    tts.setStartHandler(() {
+      started = true;
+    });
+    tts.setCompletionHandler(() => finish(true));
+    tts.setErrorHandler((message) {
+      debugPrint('🔴 [VOICE] tts $message');
+      finish(false);
+    });
+    tts.setCancelHandler(() => finish(false));
+
+    try {
+      await _prepareTts(tts).timeout(const Duration(seconds: 8));
+    } on TimeoutException {
+      debugPrint('🔴 [VOICE] tts prep timeout');
+    } catch (e) {
+      debugPrint('🔴 [VOICE] tts prep $e');
+    }
+    if (!_alive) return false;
+
+    final dynamic result;
+    try {
+      result = await tts.speak(text).timeout(const Duration(seconds: 8));
+    } on TimeoutException {
+      debugPrint('🔴 [VOICE] tts speak timeout');
+      return started;
+    }
+    if (result != 1 && result != true) {
+      debugPrint('🔴 [VOICE] tts speak rejected ($result)');
+      return false;
+    }
+    try {
+      return await done.future.timeout(const Duration(seconds: 8));
+    } on TimeoutException {
+      return started;
+    }
+  }
+
+  Future<bool> _recognizerReady(SpeechToText speech) async {
+    try {
+      return await speech
+          .initialize(
+            onError: _onSpeechError,
+            onStatus: _onSpeechStatus,
+            options: [SpeechToText.androidNoBluetooth],
+          )
+          .timeout(const Duration(seconds: 8), onTimeout: () => false);
+    } catch (e) {
+      debugPrint('🔴 [VOICE] init $e');
+      return false;
     }
   }
 
