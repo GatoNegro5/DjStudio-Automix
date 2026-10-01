@@ -185,7 +185,10 @@ jobs:
           flutter create --platforms=ios --org com.djstudio .
           cp "$RUNNER_TEMP/DjIphone-Info.plist" ios/Runner/Info.plist
           perl -pi -e 's/PRODUCT_BUNDLE_IDENTIFIER = com\.djstudio\.djstudioPlayer;/PRODUCT_BUNDLE_IDENTIFIER = com.djstudio.djiphone;/g' ios/Runner.xcodeproj/project.pbxproj
+          perl -pi -e 's/IPHONEOS_DEPLOYMENT_TARGET = 13\.0;/IPHONEOS_DEPLOYMENT_TARGET = 15.0;/g' ios/Runner.xcodeproj/project.pbxproj
           cd ios
+          perl -pi -e "s/^# (platform :ios, '[0-9.]+')/\$1/" Podfile
+          grep -q "^platform :ios," Podfile || printf "\nplatform :ios, '15.0'\n" >> Podfile
           pod repo update
           pod install
           cd ..
