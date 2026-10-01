@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:djstudio_player/src/rust/api/core_dsp.dart' as rust_dsp;
 
+import '../../djiphone/iphone_library.dart';
 import '../../providers/directory_provider.dart';
 import '../../providers/pipeline_provider.dart';
 import '../../providers/metadata_provider.dart';
@@ -992,7 +993,9 @@ class DspNlpWorkspace extends ConsumerWidget {
     if (currentPath.isNotEmpty) {
       baseDir = Directory(currentPath).parent;
     } else {
-      if (Platform.isWindows) {
+      if (Platform.isIOS) {
+        baseDir = Directory(IphoneLibrary.musicRoot);
+      } else if (Platform.isWindows) {
         baseDir = Directory('${Platform.environment['USERPROFILE']}\\Music');
       } else if (Platform.isMacOS || Platform.isLinux) {
         baseDir = Directory('${Platform.environment['HOME']}/Music');

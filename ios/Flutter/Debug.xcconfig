@@ -1,0 +1,2 @@
+FLUTTER_TARGET=lib/djiphone/main.dart
+#include "Generated.xcconfig"

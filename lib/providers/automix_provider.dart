@@ -11,6 +11,7 @@ import 'package:flutter/foundation.dart';
 import 'package:djstudio_player/src/rust/api/core_dsp.dart' as rust_dsp;
 
 import '../core/hal/platform_strategy.dart';
+import '../djiphone/iphone_library.dart';
 import '../core/audio/dj_audio_handler.dart';
 
 import 'db_provider.dart';
@@ -2118,6 +2119,11 @@ class PlayedTracksNotifier extends Notifier<Set<String>> {
   }
 
   String _getSessionFilePath() {
+    if (Platform.isIOS) {
+      final dir = Directory(IphoneLibrary.playlistsDir);
+      if (!dir.existsSync()) dir.createSync(recursive: true);
+      return '${dir.path}${Platform.pathSeparator}_played_tracks_session.json';
+    }
     String baseDir;
     if (Platform.isWindows) {
       final userProfile = Platform.environment['USERPROFILE'];
@@ -2179,6 +2185,11 @@ class AutomixQueueNotifier extends Notifier<List<File>> {
   }
 
   String _getSessionFilePath() {
+    if (Platform.isIOS) {
+      final dir = Directory(IphoneLibrary.playlistsDir);
+      if (!dir.existsSync()) dir.createSync(recursive: true);
+      return '${dir.path}${Platform.pathSeparator}_automix_session.json';
+    }
     String baseDir;
     if (Platform.isWindows) {
       final userProfile = Platform.environment['USERPROFILE'];

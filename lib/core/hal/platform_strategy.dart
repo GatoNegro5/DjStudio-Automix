@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import '../../djiphone/iphone_library.dart';
+
 abstract class PlatformMixStrategy {
   String get hifiFilter;
   String getSessionPath();
@@ -58,9 +60,26 @@ class AndroidMixStrategy implements PlatformMixStrategy {
 
 class MixStrategyFactory {
   static PlatformMixStrategy getStrategy() {
+    if (Platform.isIOS) return IphoneMixStrategy();
     if (Platform.isWindows) return WindowsMixStrategy();
     if (Platform.isMacOS) return MacOsMixStrategy();
     if (Platform.isAndroid || Platform.isIOS) return AndroidMixStrategy();
     return WindowsMixStrategy();
   }
+}
+
+class IphoneMixStrategy implements PlatformMixStrategy {
+  @override
+  String get hifiFilter =>
+      'bass=g=3:f=60,alimiter=limit=0.95:level=disabled';
+
+  @override
+  String getSessionPath() {
+    final dir = Directory(IphoneLibrary.playlistsDir);
+    if (!dir.existsSync()) dir.createSync(recursive: true);
+    return '${dir.path}/_player_session.json';
+  }
+
+  @override
+  bool get supportsHighFidelityMastering => false;
 }

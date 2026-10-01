@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../djiphone/iphone_library.dart';
 import '../../providers/directory_provider.dart';
 import '../../providers/automix_provider.dart';
 import '../../providers/pipeline_provider.dart';
@@ -99,6 +100,11 @@ class _LibraryTreePanelState extends ConsumerState<LibraryTreePanel> {
   }
 
   void _initializeRoot() {
+    if (Platform.isIOS) {
+      _rootPath = IphoneLibrary.musicRoot;
+      _loadSubDirs();
+      return;
+    }
     if (Platform.isWindows) {
       final userProfile = Platform.environment['USERPROFILE'];
       _rootPath = userProfile != null ? '$userProfile\\Music' : 'C:\\Music';
@@ -455,6 +461,7 @@ class AutomixPanel extends ConsumerWidget {
   const AutomixPanel({super.key});
 
   String _getPlaylistsDir() {
+    if (Platform.isIOS) return IphoneLibrary.playlistsDir;
     if (Platform.isWindows) {
       final userProfile = Platform.environment['USERPROFILE'];
       return userProfile != null
@@ -2002,7 +2009,9 @@ class _LyricsSyncPanelState extends ConsumerState<LyricsSyncPanel> {
       await automixNotifier.mixOutForQuarantine(trackPath);
 
     String baseMusicPath;
-    if (Platform.isWindows) {
+    if (Platform.isIOS) {
+      baseMusicPath = IphoneLibrary.musicRoot;
+    } else if (Platform.isWindows) {
       final userProfile = Platform.environment['USERPROFILE'];
       baseMusicPath = userProfile != null ? '$userProfile\\Music' : 'C:\\Music';
     } else if (Platform.isMacOS || Platform.isLinux) {

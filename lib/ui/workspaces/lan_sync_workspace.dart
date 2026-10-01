@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:async';
 import 'dart:convert';
+import '../../djiphone/iphone_library.dart';
 import 'karaoke_workspace.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -90,6 +91,7 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
   }
 
   String _getBaseMusicPath() {
+    if (Platform.isIOS) return IphoneLibrary.musicRoot;
     return Platform.isWindows
         ? '${Platform.environment['USERPROFILE']}\\Music'
         : (Platform.isAndroid

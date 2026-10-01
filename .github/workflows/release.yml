@@ -138,3 +138,76 @@ jobs:
             artifacts/DjStudio-MacOS.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  djiphone:
+    name: Build DjIphone IPA
+    needs: release
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Cache Rust Dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: djstudio-rust-ios-ipa
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
+      - name: Install Flutter Rust Bridge Codegen Fast
+        run: cargo binstall flutter_rust_bridge_codegen@2.12.0 --no-confirm
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install Dependencies
+        run: flutter pub get
+
+      - name: Generate FFI Bindings
+        run: flutter_rust_bridge_codegen generate
+
+      # CocoaPods dispara el script de Cargokit (librería Rust). El proyecto
+      # Swift Package Manager no lo hace. Solo en este job.
+      - name: Regenerate iOS project with CocoaPods
+        run: |
+          cp ios/Runner/Info.plist "$RUNNER_TEMP/DjIphone-Info.plist"
+          flutter config --no-enable-swift-package-manager
+          flutter create --platforms=ios --org com.djstudio .
+          cp "$RUNNER_TEMP/DjIphone-Info.plist" ios/Runner/Info.plist
+          perl -pi -e 's/PRODUCT_BUNDLE_IDENTIFIER = com\.djstudio\.djstudioPlayer;/PRODUCT_BUNDLE_IDENTIFIER = com.djstudio.djiphone;/g' ios/Runner.xcodeproj/project.pbxproj
+          cd ios
+          pod repo update
+          pod install
+          cd ..
+
+      - name: Build unsigned iOS app
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          flutter build ios --release --no-codesign -t lib/djiphone/main.dart
+
+      - name: Pack DjIphone.ipa
+        run: |
+          APP=$(find build/ios/iphoneos -maxdepth 1 -name '*.app' -print -quit)
+          test -n "$APP"
+          rm -rf Payload
+          mkdir Payload
+          cp -R "$APP" Payload/
+          zip -qr DjIphone.ipa Payload
+          rm -rf Payload
+
+      - name: Publish DjIphone.ipa
+        uses: softprops/action-gh-release@v2
+        with:
+          files: DjIphone.ipa
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
