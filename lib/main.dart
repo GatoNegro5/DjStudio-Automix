@@ -27,6 +27,7 @@ import 'ui/workspaces/lab_workspace.dart';
 import 'ui/workspaces/lan_sync_workspace.dart';
 import 'ui/workspaces/livedj_workspace.dart';
 import 'ui/workspaces/karaoke_workspace.dart';
+import 'services/voice_launch.dart';
 
 // ==========================================
 // ENRUTADOR DE ESTADO (SPA - Single Page App)
@@ -335,6 +336,15 @@ class MainWorkspace extends ConsumerStatefulWidget {
 }
 
 class _MainWorkspaceState extends ConsumerState<MainWorkspace> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      ref.read(voiceLaunchProvider).open();
+    });
+  }
+
   void _openMenu() {
     ref.read(mobileNavOpenProvider.notifier).state = true;
   }
@@ -369,6 +379,7 @@ class _MainWorkspaceState extends ConsumerState<MainWorkspace> {
 
   @override
   Widget build(BuildContext context) {
+    ref.watch(voiceLaunchProvider);
     ref.listen<bool>(automixProvider.select((s) => s.isPlaying), (prev, next) {
       final gov = ref.read(hardwareGovernorProvider.notifier);
       if (next) {
