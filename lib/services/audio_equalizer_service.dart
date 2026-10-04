@@ -43,8 +43,12 @@ class EqualizerPreset {
   ];
 }
 
+/// Motor dueño de un ecualizador. Cada uno escribe `af` solo en sus decks.
+enum EqualizerTarget { automix, liveDj }
+
 class AudioEqualizerService {
   final Ref ref;
+  final EqualizerTarget target;
   String currentBaseFilter = '';
   static const List<int> bandFrequencies = [
     31,
@@ -59,7 +63,7 @@ class AudioEqualizerService {
     16000,
   ];
 
-  AudioEqualizerService(this.ref) {
+  AudioEqualizerService(this.ref, this.target) {
     _buildAndApply(preamp: 0.0, gains: List.filled(10, 0.0), enabled: true);
   }
 
@@ -78,13 +82,22 @@ class AudioEqualizerService {
   }) async {
     if (gains.length != 10) return;
 
-    final String halFilter = MixStrategyFactory.getStrategy().hifiFilter;
+    final strategy = MixStrategyFactory.getStrategy();
+    final String halFilter = strategy.colorFilter;
 
     final List<String> eqFilters = [];
 
     if (enabled) {
-      if (preamp != 0.0) {
-        eqFilters.add('volume=volume=${preamp.toStringAsFixed(1)}dB');
+      // Headroom automático: el preamp nunca es mayor que el realce máximo
+      // en negativo, así los realces no empujan la señal sobre 0 dBFS.
+      double maxBoost = 0.0;
+      for (final g in gains) {
+        final double c = g.clamp(-12.0, 12.0).toDouble();
+        if (c > maxBoost) maxBoost = c;
+      }
+      final double effectivePreamp = preamp < -maxBoost ? preamp : -maxBoost;
+      if (effectivePreamp != 0.0) {
+        eqFilters.add('volume=volume=${effectivePreamp.toStringAsFixed(1)}dB');
       }
       for (int i = 0; i < bandFrequencies.length; i++) {
         final gain = gains[i].clamp(-12.0, 12.0);
@@ -101,11 +114,13 @@ class AudioEqualizerService {
       currentBaseFilter += ',${eqFilters.join(',')}';
     }
 
-    // Aplicación atómica a todos los decks en vivo (DJ y liveDj)
-    final activePlayers = [
-      ...ref.read(automixProvider.notifier).deckPlayers,
-      ...ref.read(liveDjProvider.notifier).deckPlayers,
-    ];
+    // Limitador SIEMPRE al final de la cadena, después del ecualizador.
+    currentBaseFilter += ',${strategy.limiterFilter}';
+
+    // Aplicación atómica solo a los decks del motor dueño.
+    final activePlayers = target == EqualizerTarget.automix
+        ? ref.read(automixProvider.notifier).deckPlayers
+        : ref.read(liveDjProvider.notifier).deckPlayers;
 
     for (var player in activePlayers) {
       try {

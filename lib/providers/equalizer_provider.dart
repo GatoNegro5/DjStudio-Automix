@@ -32,13 +32,15 @@ class EqualizerState {
 class EqualizerNotifier extends StateNotifier<EqualizerState> {
   final AudioEqualizerService _service;
 
+  // Arranque en 'Flat / Studio' (índice 1): fidelidad sin coloración.
+  // 'Spotify Signature' y el resto siguen disponibles como preset.
   EqualizerNotifier(this._service)
     : super(
         EqualizerState(
           enabled: true,
-          preamp: EqualizerPreset.defaultPresets[0].preamp,
-          gains: List.from(EqualizerPreset.defaultPresets[0].gains),
-          currentPresetName: EqualizerPreset.defaultPresets[0].name,
+          preamp: EqualizerPreset.defaultPresets[1].preamp,
+          gains: List.from(EqualizerPreset.defaultPresets[1].gains),
+          currentPresetName: EqualizerPreset.defaultPresets[1].name,
         ),
       ) {
     _sync();
@@ -79,7 +81,18 @@ class EqualizerNotifier extends StateNotifier<EqualizerState> {
   );
 }
 
-final equalizerProvider =
+/// Ecualizador de Automix: solo toca los decks de Automix.
+final automixEqualizerProvider =
     StateNotifierProvider<EqualizerNotifier, EqualizerState>((ref) {
-      return EqualizerNotifier(AudioEqualizerService(ref));
+      return EqualizerNotifier(
+        AudioEqualizerService(ref, EqualizerTarget.automix),
+      );
+    });
+
+/// Ecualizador de Live DJ: solo toca los decks de Live DJ.
+final liveDjEqualizerProvider =
+    StateNotifierProvider<EqualizerNotifier, EqualizerState>((ref) {
+      return EqualizerNotifier(
+        AudioEqualizerService(ref, EqualizerTarget.liveDj),
+      );
     });

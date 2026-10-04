@@ -36,6 +36,11 @@ class DirectoryState {
 }
 
 class DirectoryNotifier extends Notifier<DirectoryState> {
+  /// Cada motor persiste su explorador en su propio JSON.
+  final String sessionFileName;
+
+  DirectoryNotifier({this.sessionFileName = '_explorer_session.json'});
+
   late final PlatformMixStrategy _halStrategy;
 
   @override
@@ -50,7 +55,7 @@ class DirectoryNotifier extends Notifier<DirectoryState> {
     // Tomamos la ruta base de la estrategia y le adjuntamos el JSON específico del explorador
     final baseDir = File(_halStrategy.getSessionPath()).parent;
     if (!baseDir.existsSync()) baseDir.createSync(recursive: true);
-    return '${baseDir.path}${Platform.pathSeparator}_explorer_session.json';
+    return '${baseDir.path}${Platform.pathSeparator}$sessionFileName';
   }
 
   Future<void> _initPersistence() async {
@@ -174,3 +179,10 @@ class DirectoryNotifier extends Notifier<DirectoryState> {
 final directoryProvider = NotifierProvider<DirectoryNotifier, DirectoryState>(
   DirectoryNotifier.new,
 );
+
+/// Explorador propio de Live DJ: carpeta, árbol expandido y archivos
+/// independientes de Automix / Lab / Masterizar.
+final liveDjDirectoryProvider =
+    NotifierProvider<DirectoryNotifier, DirectoryState>(
+      () => DirectoryNotifier(sessionFileName: '_livedj_explorer_session.json'),
+    );

@@ -83,7 +83,11 @@ class _AutomixWorkspaceState extends ConsumerState<AutomixWorkspace> {
 
 // --- COMPONENTE 1: ÁRBOL DE DIRECTORIOS ---
 class LibraryTreePanel extends ConsumerStatefulWidget {
-  const LibraryTreePanel({super.key});
+  /// Explorador a usar. Null = el de Automix (`directoryProvider`).
+  /// Live DJ pasa el suyo para no compartir carpeta ni árbol.
+  final NotifierProvider<DirectoryNotifier, DirectoryState>? provider;
+
+  const LibraryTreePanel({super.key, this.provider});
 
   @override
   ConsumerState<LibraryTreePanel> createState() => _LibraryTreePanelState();
@@ -92,6 +96,9 @@ class LibraryTreePanel extends ConsumerStatefulWidget {
 class _LibraryTreePanelState extends ConsumerState<LibraryTreePanel> {
   String _rootPath = '';
   List<Directory> _subDirs = [];
+
+  NotifierProvider<DirectoryNotifier, DirectoryState> get _dir =>
+      widget.provider ?? directoryProvider;
 
   @override
   void initState() {
@@ -139,8 +146,8 @@ class _LibraryTreePanelState extends ConsumerState<LibraryTreePanel> {
   }
 
   Future<void> _changeRootDirectory() async {
-    await ref.read(directoryProvider.notifier).loadDirectory();
-    final newPath = ref.read(directoryProvider).currentPath;
+    await ref.read(_dir.notifier).loadDirectory();
+    final newPath = ref.read(_dir).currentPath;
     if (newPath.isNotEmpty && newPath != _rootPath) {
       setState(() {
         _rootPath = newPath;
@@ -174,7 +181,7 @@ class _LibraryTreePanelState extends ConsumerState<LibraryTreePanel> {
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
-          onTap: () => ref.read(directoryProvider.notifier).scanPath(dir.path),
+          onTap: () => ref.read(_dir.notifier).scanPath(dir.path),
           hoverColor: Colors.white10,
         ),
       );
@@ -195,7 +202,7 @@ class _LibraryTreePanelState extends ConsumerState<LibraryTreePanel> {
         key: Key('${dir.path}_$isExpanded'),
         initiallyExpanded: isExpanded,
         onExpansionChanged: (expanded) {
-          ref.read(directoryProvider.notifier).toggleNode(dir.path, expanded);
+          ref.read(_dir.notifier).toggleNode(dir.path, expanded);
         },
         tilePadding: EdgeInsets.only(left: 15.0 + (depth * 15.0), right: 10.0),
         leading: const Icon(
@@ -226,7 +233,7 @@ class _LibraryTreePanelState extends ConsumerState<LibraryTreePanel> {
   @override
   Widget build(BuildContext context) {
     final expandedPaths = ref.watch(
-      directoryProvider.select((s) => s.expandedPaths),
+      _dir.select((s) => s.expandedPaths),
     );
     final bool isMobile = MediaQuery.of(context).size.width < 800;
 

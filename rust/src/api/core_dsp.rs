@@ -124,6 +124,50 @@ pub async fn get_audio_duration_ms(input_path: String) -> Result<u64, String> {
     Ok(((size_bytes * 8) / 320) as u64)
 }
 
+/// Frecuencia de salida = la del origen, acotada a lo que MP3 admite.
+/// `loudnorm` trabaja a 192 kHz por dentro; sin `-ar` FFmpeg elige la tasa de salida.
+fn mp3_sample_rate_arg(input: &Path) -> String {
+    let rate: Option<u32> = (|| {
+        let file = File::open(input).ok()?;
+        let mss = MediaSourceStream::new(Box::new(file), Default::default());
+        let mut hint = Hint::new();
+        if let Some(ext) = input.extension().and_then(|e| e.to_str()) {
+            hint.with_extension(ext);
+        }
+        let probed = get_probe()
+            .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
+            .ok()?;
+        probed.format.default_track()?.codec_params.sample_rate
+    })();
+    let out: u32 = match rate {
+        Some(32000) => 32000,
+        Some(48000) | Some(96000) | Some(192000) => 48000,
+        _ => 44100,
+    };
+    out.to_string()
+}
+
+/// Pasada 1 de `loudnorm`: devuelve el filtro lineal (pasada 2) con lo medido.
+fn measured_loudnorm_filter(input: &Path) -> Option<String> {
+    let null_sink = if cfg!(target_os = "windows") { "NUL" } else { "/dev/null" };
+    let out = execute_ffmpeg_with_kill_switch(spawn_headless_ffmpeg()
+        .args(["-i", input.to_str()?, "-af", "loudnorm=I=-14:LRA=11:TP=-1.5:print_format=json", "-f", "null", null_sink]))
+        .ok()?;
+    let log = String::from_utf8_lossy(&out.stderr);
+    let i = extract_json_value(&log, "input_i")?;
+    let lra = extract_json_value(&log, "input_lra")?;
+    let tp = extract_json_value(&log, "input_tp")?;
+    let thresh = extract_json_value(&log, "input_thresh")?;
+    let offset = extract_json_value(&log, "target_offset")?;
+    if i.contains("inf") || tp.contains("inf") || thresh.contains("inf") {
+        return None;
+    }
+    Some(format!(
+        "loudnorm=I=-14:LRA=11:TP=-1.5:measured_I={}:measured_LRA={}:measured_TP={}:measured_thresh={}:offset={}:linear=true",
+        i, lra, tp, thresh, offset
+    ))
+}
+
 pub async fn process_auto_trim(input_path: String) -> Result<bool, String> {
     if check_watermark(input_path.clone()).await.unwrap_or(false) {
         return Ok(true);
@@ -135,8 +179,9 @@ pub async fn process_auto_trim(input_path: String) -> Result<bool, String> {
     let temp_path = input.with_file_name("temp_dsp_trim.mp3");
     let filter = "silenceremove=start_periods=1:start_duration=0.05:start_threshold=-30dB,areverse,silenceremove=start_periods=1:start_duration=0.05:start_threshold=-30dB,areverse";
     
+    let sr = mp3_sample_rate_arg(input);
     let output = execute_ffmpeg_with_kill_switch(spawn_headless_ffmpeg()
-        .args(["-y", "-i", input.to_str().unwrap(), "-af", filter, "-c:a", "libmp3lame", "-q:a", "2", temp_path.to_str().unwrap()]))
+        .args(["-y", "-i", input.to_str().unwrap(), "-af", filter, "-ar", sr.as_str(), "-c:a", "libmp3lame", "-b:a", "320k", temp_path.to_str().unwrap()]))
         .map_err(|e| format!("OS Invocation Error: {}", e))?;
 
     if output.status.success() {
@@ -171,8 +216,9 @@ pub async fn normalize_lufs(input_path: String) -> Result<bool, String> {
     let temp_path = input.with_file_name("temp_dsp_norm.mp3");
     let pass2_filter = format!("loudnorm=I=-14:LRA=11:TP=-1.5:measured_I={}:measured_LRA={}:measured_TP={}:measured_thresh={}:linear=true", i, lra, tp, thresh);
 
+    let sr = mp3_sample_rate_arg(input);
     let pass2_output = execute_ffmpeg_with_kill_switch(spawn_headless_ffmpeg()
-        .args(["-y", "-i", input.to_str().unwrap(), "-af", &pass2_filter, "-c:a", "libmp3lame", "-q:a", "2", temp_path.to_str().unwrap()]))
+        .args(["-y", "-i", input.to_str().unwrap(), "-af", &pass2_filter, "-ar", sr.as_str(), "-c:a", "libmp3lame", "-b:a", "320k", temp_path.to_str().unwrap()]))
         .map_err(|e| format!("Paso 2 Error: {}", e))?;
 
     if pass2_output.status.success() {
@@ -196,14 +242,30 @@ pub async fn process_full_pipeline(input_path: String, is_megamix: bool) -> Resu
 
     // 🛠️ BYPASS ALGORÍTMICO: Si es un Megamix, abortamos el corte de silencios (areverse)
     // para evitar que la RAM explote al intentar invertir 1 hora de audio.
-    let filter = if is_megamix {
-        "loudnorm=I=-14:LRA=11:TP=-1.5"
+    let dynamic_filter = if is_megamix {
+        "loudnorm=I=-14:LRA=11:TP=-1.5".to_string()
     } else {
-        "loudnorm=I=-14:LRA=11:TP=-1.5,silenceremove=start_periods=1:start_duration=0.05:start_threshold=-30dB,areverse,silenceremove=start_periods=1:start_duration=0.05:start_threshold=-30dB,areverse"
+        "loudnorm=I=-14:LRA=11:TP=-1.5,silenceremove=start_periods=1:start_duration=0.05:start_threshold=-30dB,areverse,silenceremove=start_periods=1:start_duration=0.05:start_threshold=-30dB,areverse".to_string()
     };
 
+    // Pistas normales: loudnorm de doble pasada lineal (sin bombeo).
+    // Megamix: se mantiene la sola pasada (1 h de audio). Si la medición
+    // no es válida (silencio total), se usa el filtro dinámico de siempre.
+    let filter: String = if is_megamix {
+        dynamic_filter
+    } else {
+        match measured_loudnorm_filter(input) {
+            Some(linear) => format!(
+                "{},silenceremove=start_periods=1:start_duration=0.05:start_threshold=-30dB,areverse,silenceremove=start_periods=1:start_duration=0.05:start_threshold=-30dB,areverse",
+                linear
+            ),
+            None => dynamic_filter,
+        }
+    };
+
+    let sr = mp3_sample_rate_arg(input);
     let output = execute_ffmpeg_with_kill_switch(spawn_headless_ffmpeg()
-        .args(["-y", "-i", input.to_str().unwrap(), "-af", filter, "-c:a", "libmp3lame", "-b:a", "320k", temp_path.to_str().unwrap()]))
+        .args(["-y", "-i", input.to_str().unwrap(), "-af", filter.as_str(), "-ar", sr.as_str(), "-c:a", "libmp3lame", "-b:a", "320k", temp_path.to_str().unwrap()]))
         .map_err(|e| format!("OS Error: {}", e))?;
 
     if output.status.success() {

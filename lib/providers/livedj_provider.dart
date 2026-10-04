@@ -879,7 +879,7 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
     int? manualMixDurationMs,
   }) async {
     final String currentBaseFilter = ref
-        .read(equalizerProvider.notifier)
+        .read(liveDjEqualizerProvider.notifier)
         .currentBaseFilter;
     final platformOut = fadingPlayer.platform as dynamic;
     final platformIn = incomingPlayer.platform as dynamic;

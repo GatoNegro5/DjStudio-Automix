@@ -1269,7 +1269,7 @@ class AutomixNotifier extends Notifier<AutomixState> {
     bool isManualSkip = false,
   }) async {
     final String currentBaseFilter = ref
-        .read(equalizerProvider.notifier)
+        .read(automixEqualizerProvider.notifier)
         .currentBaseFilter;
     final platformOut = fadingPlayer.platform as dynamic;
     final platformIn = incomingPlayer.platform as dynamic;

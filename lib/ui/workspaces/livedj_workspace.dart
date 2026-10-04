@@ -24,11 +24,11 @@ class LiveDjWorkspace extends ConsumerWidget {
             flex: compact ? 6 : 5,
             child: Row(
               children: [
-                const Expanded(
+                Expanded(
                   flex: 2,
                   child: Material(
                     color: DjStudioTheme.bgPanel,
-                    child: LibraryTreePanel(),
+                    child: LibraryTreePanel(provider: liveDjDirectoryProvider),
                   ),
                 ),
                 const VerticalDivider(width: 1, color: Colors.white10),
@@ -49,7 +49,7 @@ class LiveDjFolderPanel extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final dirState = ref.watch(directoryProvider);
+    final dirState = ref.watch(liveDjDirectoryProvider);
     final bool isMobile = MediaQuery.of(context).size.width < 800;
 
     return Column(

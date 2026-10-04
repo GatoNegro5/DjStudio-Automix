@@ -2,8 +2,18 @@ import 'dart:io';
 
 import '../../djiphone/iphone_library.dart';
 
+/// Limitador final. Siempre va DESPUÉS del ecualizador: cualquier realce
+/// que pase de 0 dBFS lo atrapa el limitador, no el recorte digital.
+const String kHifiLimiter = 'alimiter=limit=0.95:level=disabled';
+
 abstract class PlatformMixStrategy {
   String get hifiFilter;
+
+  /// `hifiFilter` sin el limitador (color de la plataforma).
+  String get colorFilter;
+
+  /// Limitador que cierra la cadena `af`.
+  String get limiterFilter => kHifiLimiter;
   String getSessionPath();
   bool get supportsHighFidelityMastering;
 }
@@ -12,6 +22,12 @@ class WindowsMixStrategy implements PlatformMixStrategy {
   @override
   String get hifiFilter =>
       'bass=g=3:f=60,extrastereo=m=1.15,alimiter=limit=0.95:level=disabled';
+
+  @override
+  String get colorFilter => 'bass=g=3:f=60,extrastereo=m=1.15';
+
+  @override
+  String get limiterFilter => kHifiLimiter;
 
   @override
   String getSessionPath() {
@@ -32,6 +48,12 @@ class MacOsMixStrategy implements PlatformMixStrategy {
       'bass=g=3:f=60,extrastereo=m=1.15,alimiter=limit=0.95:level=disabled';
 
   @override
+  String get colorFilter => 'bass=g=3:f=60,extrastereo=m=1.15';
+
+  @override
+  String get limiterFilter => kHifiLimiter;
+
+  @override
   String getSessionPath() {
     final dir = Directory('${Platform.environment['HOME']}/Music/DjPlaylists');
     if (!dir.existsSync()) dir.createSync(recursive: true);
@@ -46,6 +68,12 @@ class AndroidMixStrategy implements PlatformMixStrategy {
   @override
   String get hifiFilter =>
       'bass=g=3:f=60,alimiter=limit=0.95:level=disabled';
+
+  @override
+  String get colorFilter => 'bass=g=3:f=60';
+
+  @override
+  String get limiterFilter => kHifiLimiter;
 
   @override
   String getSessionPath() {
@@ -72,6 +100,12 @@ class IphoneMixStrategy implements PlatformMixStrategy {
   @override
   String get hifiFilter =>
       'bass=g=3:f=60,alimiter=limit=0.95:level=disabled';
+
+  @override
+  String get colorFilter => 'bass=g=3:f=60';
+
+  @override
+  String get limiterFilter => kHifiLimiter;
 
   @override
   String getSessionPath() {
