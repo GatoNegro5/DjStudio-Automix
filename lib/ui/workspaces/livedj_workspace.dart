@@ -7,6 +7,7 @@ import '../../providers/directory_provider.dart';
 import '../../providers/livedj_provider.dart';
 import '../../providers/mix_formula.dart';
 import 'automix_workspace.dart';
+import 'livedj_bpm_badge.dart';
 
 class LiveDjWorkspace extends ConsumerWidget {
   const LiveDjWorkspace({super.key});
@@ -16,25 +17,36 @@ class LiveDjWorkspace extends ConsumerWidget {
     final compact = Platform.isAndroid || Platform.isIOS;
     return Scaffold(
       backgroundColor: DjStudioTheme.bgDark,
-      body: Column(
+      body: Row(
         children: [
-          Expanded(flex: compact ? 4 : 5, child: const LiveDjPlayerPanel()),
-          const Divider(height: 1, color: Colors.white10),
+          // Explorador: columna izquierda a toda la altura, arranca arriba.
           Expanded(
-            flex: compact ? 6 : 5,
-            child: Row(
+            flex: 5,
+            child: Material(
+              color: DjStudioTheme.bgPanel,
+              child: LibraryTreePanel(provider: liveDjDirectoryProvider),
+            ),
+          ),
+          const VerticalDivider(width: 1, color: Colors.white10),
+          Expanded(
+            flex: 19,
+            child: Column(
               children: [
                 Expanded(
-                  flex: 2,
-                  child: Material(
-                    color: DjStudioTheme.bgPanel,
-                    child: LibraryTreePanel(provider: liveDjDirectoryProvider),
+                  flex: compact ? 4 : 5,
+                  child: const LiveDjPlayerPanel(),
+                ),
+                const Divider(height: 1, color: Colors.white10),
+                Expanded(
+                  flex: compact ? 6 : 5,
+                  child: const Row(
+                    children: [
+                      Expanded(flex: 4, child: LiveDjFolderPanel()),
+                      VerticalDivider(width: 1, color: Colors.white10),
+                      Expanded(flex: 5, child: LiveDjCartridgePanel()),
+                    ],
                   ),
                 ),
-                const VerticalDivider(width: 1, color: Colors.white10),
-                const Expanded(flex: 4, child: LiveDjFolderPanel()),
-                const VerticalDivider(width: 1, color: Colors.white10),
-                const Expanded(flex: 5, child: LiveDjCartridgePanel()),
               ],
             ),
           ),
@@ -924,10 +936,17 @@ class LiveDjCartridgePanel extends ConsumerWidget {
                         shape: const Border(
                           bottom: BorderSide(color: Colors.white10),
                         ),
-                        leading: const Icon(
-                          Icons.drag_handle,
-                          color: Colors.white24,
-                          size: 16,
+                        leading: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(
+                              Icons.drag_handle,
+                              color: Colors.white24,
+                              size: 16,
+                            ),
+                            const SizedBox(width: 6),
+                            LiveDjBpmBadge(path: file.path),
+                          ],
                         ),
                         title: Text(
                           fileName,

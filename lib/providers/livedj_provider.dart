@@ -53,6 +53,7 @@ class LiveDjState {
     Duration? duration,
     List<File>? queue,
     String? currentTrackPath,
+    bool clearCurrentTrackPath = false,
     LiveDjMixMode? currentMixMode,
     int? customCueInMs,
     int? customMixOutMs,
@@ -63,7 +64,9 @@ class LiveDjState {
       position: position ?? this.position,
       duration: duration ?? this.duration,
       queue: queue ?? this.queue,
-      currentTrackPath: currentTrackPath ?? this.currentTrackPath,
+      currentTrackPath: clearCurrentTrackPath
+          ? null
+          : (currentTrackPath ?? this.currentTrackPath),
       currentMixMode: currentMixMode ?? this.currentMixMode,
       customCueInMs: customCueInMs ?? this.customCueInMs,
       customMixOutMs: customMixOutMs ?? this.customMixOutMs,
@@ -752,7 +755,21 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
     try {
       await _playerB.stop();
     } catch (_) {}
-    state = state.copyWith(isPlaying: false);
+    // Fin de cola: no queda nada en memoria. Sin pista residual, la próxima
+    // carga arranca desde la primera canción de la cola nueva.
+    _isStandbyArmed = false;
+    _isPrepModeBypass = false;
+    _sessionPositionMs = 0;
+    _sessionWasPlaying = false;
+    _lastSavedPositionMs = 0;
+    state = state.copyWith(
+      isPlaying: false,
+      clearCurrentTrackPath: true,
+      position: Duration.zero,
+      duration: Duration.zero,
+      customCueInMs: -1,
+      customMixOutMs: -1,
+    );
     _saveSnapshot();
   }
 

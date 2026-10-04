@@ -89,6 +89,7 @@ class AutomixState {
     List<String>? playlist,
     int? currentIndex,
     String? currentTrackPath,
+    bool clearCurrentTrackPath = false,
     List<LyricLine>? lyrics,
     int? activeLyricIndex,
     String? nextTrackPath,
@@ -106,7 +107,9 @@ class AutomixState {
       duration: duration ?? this.duration,
       playlist: playlist ?? this.playlist,
       currentIndex: currentIndex ?? this.currentIndex,
-      currentTrackPath: currentTrackPath ?? this.currentTrackPath,
+      currentTrackPath: clearCurrentTrackPath
+          ? null
+          : (currentTrackPath ?? this.currentTrackPath),
       lyrics: lyrics ?? this.lyrics,
       activeLyricIndex: activeLyricIndex ?? this.activeLyricIndex,
       nextTrackPath: clearNextTrackPath
@@ -940,7 +943,32 @@ class AutomixNotifier extends Notifier<AutomixState> {
     try {
       await _playerB.stop();
     } catch (_) {}
-    state = state.copyWith(isPlaying: false, clearNextTrackPath: true);
+
+    if (state.autoMixArmed && _calculateNextIndex() < 0) {
+      // Fin de cola en automático: no queda pista residual en memoria.
+      // Con el candado manual (autoMixArmed=false) la pista se conserva
+      // para seguir marcando SET IN / SET OUT.
+      _cancelOutroProbe();
+      _isPrepModeBypass = false;
+      _sessionPositionMs = 0;
+      _sessionWasPlaying = false;
+      _lastSavedPositionMs = 0;
+      state = state.copyWith(
+        isPlaying: false,
+        clearNextTrackPath: true,
+        clearCurrentTrackPath: true,
+        playlist: const <String>[],
+        currentIndex: -1,
+        position: Duration.zero,
+        duration: Duration.zero,
+        lyrics: const <LyricLine>[],
+        activeLyricIndex: -1,
+        customCueInMs: -1,
+        customMixOutMs: -1,
+      );
+    } else {
+      state = state.copyWith(isPlaying: false, clearNextTrackPath: true);
+    }
     _saveSnapshot();
   }
 
