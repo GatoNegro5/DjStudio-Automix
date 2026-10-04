@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_selector/file_selector.dart';
 
 import '../core/hal/platform_strategy.dart';
+import '../core/audio/dj_audio_handler.dart';
 import 'equalizer_provider.dart';
 import 'mix_formula.dart';
 
@@ -96,6 +97,7 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
   bool _sessionWasPlaying = false;
   bool _freezePersist = false;
   bool _sessionHydrated = false;
+  int _lastOsSecond = -1;
 
   late final PlatformMixStrategy _liveStrategy;
 
@@ -114,6 +116,12 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
 
     _attachListeners(_playerA);
     _initPersistence();
+
+    // TIPO DE MEZCLA persistente: cada cambio de fórmula baja a disco.
+    ref.listen<MixFormula>(mixFormulaProvider, (previous, next) {
+      if (previous == next || !_sessionHydrated) return;
+      _saveSnapshot();
+    });
 
     ref.onDispose(() {
       _positionSub?.cancel();
@@ -251,6 +259,7 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
         'positionMs': pos,
         'mixMode': state.currentMixMode.index,
         'mixStrategy': state.mixStrategy.index,
+        'mixFormula': ref.read(mixFormulaProvider).index,
         'wasPlaying': _freezePersist ? _sessionWasPlaying : state.isPlaying,
       };
       await file.writeAsString(jsonEncode(data));
@@ -433,6 +442,11 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
 
       final mixModeIdx = data['mixMode'] as int? ?? 0;
       final mixStrategyIdx = data['mixStrategy'] as int? ?? 0;
+      final mixFormulaIdx = data['mixFormula'] as int? ?? 0;
+      if (mixFormulaIdx >= 0 && mixFormulaIdx < MixFormula.values.length) {
+        ref.read(mixFormulaProvider.notifier).state =
+            MixFormula.values[mixFormulaIdx];
+      }
 
       if (state.queue.isNotEmpty || state.currentTrackPath != null) {
         return;
@@ -579,6 +593,14 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
         state = state.copyWith(position: pos);
       }
 
+      // Servicio en primer plano (Android): sin esto el SO mata el proceso
+      // en segundo plano / pantalla apagada. Un latido por segundo.
+      final int osSecond = posMs ~/ 1000;
+      if (osSecond != _lastOsSecond) {
+        _lastOsSecond = osSecond;
+        globalAudioHandler.updateOsPlaybackState(state.isPlaying, pos);
+      }
+
       if (!_freezePersist) {
         _sessionPositionMs = posMs;
         _sessionWasPlaying = state.isPlaying;
@@ -616,6 +638,10 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
     _durationSub = player.stream.duration.listen((dur) async {
       state = state.copyWith(duration: dur);
       if (dur.inMilliseconds > 0 && state.currentTrackPath != null) {
+        globalAudioHandler.updateOsMetadata(
+          title: state.currentTrackPath!.replaceAll('\\', '/').split('/').last,
+          duration: dur,
+        );
         final triggerMs = _calculateRadioMixOut(
           dur.inMilliseconds,
           state.currentTrackPath,
@@ -640,6 +666,14 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
       if (_parking) return;
       if (playing == state.isPlaying) return;
       state = state.copyWith(isPlaying: playing);
+      if (playing) {
+        // Controles de notificación/auriculares: el que suena es el dueño.
+        globalAudioHandler.onPlayPause = () => togglePlayPause();
+        globalAudioHandler.onNext = () => forceNext();
+        globalAudioHandler.onPrevious = null;
+        globalAudioHandler.onSeek = (pos) => seek(pos);
+      }
+      globalAudioHandler.updateOsPlaybackState(playing, state.position);
     });
 
     _completedSub = player.stream.completed.listen((completed) {

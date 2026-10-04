@@ -1489,6 +1489,15 @@ class AutomixNotifier extends Notifier<AutomixState> {
       if (_parking) return;
       if (playing == state.isPlaying) return;
       state = state.copyWith(isPlaying: playing);
+      if (playing) {
+        // Controles de notificación/auriculares: el que suena es el dueño.
+        globalAudioHandler.onPlayPause = () => togglePlayPause();
+        globalAudioHandler.onNext = () =>
+            forceTransition(state.currentIndex + 1);
+        globalAudioHandler.onPrevious = () =>
+            forceTransition(state.currentIndex - 1);
+        globalAudioHandler.onSeek = (pos) => seek(pos);
+      }
       globalAudioHandler.updateOsPlaybackState(playing, state.position);
     });
 
