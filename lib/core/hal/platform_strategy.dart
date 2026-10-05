@@ -1,49 +1,34 @@
 import 'dart:io';
 
 import '../../djiphone/iphone_library.dart';
+import '../audio/af_caps.dart';
 
-/// Limitador final. Siempre va DESPUÉS del ecualizador y del nivelador:
-/// cualquier realce que pase de 0 dBFS lo atrapa el limitador, no el recorte.
+/// Limitador final. Va DESPUÉS del ecualizador. Solo se aplica si el libmpv
+/// empaquetado lo trae (el de Windows NO: ver `AfCaps`). Sin limitador, el
+/// margen lo da el diseño: ningún realce neto sobre 0 dB y el nivelador
+/// nunca sube una pista más allá de su pico medido.
 const String kHifiLimiter = 'alimiter=limit=0.95:level=disabled';
 
-/// Nivelador de volumen (todas las canciones a la misma sonoridad).
-/// Escritorio: EBU R128 (loudnorm) a -14 LUFS, el estándar de las
-/// plataformas de streaming, con pico real máximo de -1.5 dBTP.
-const String kLevelerDesktop = 'loudnorm=I=-14:LRA=9:TP=-1.5';
-
-/// Celular: normalizador dinámico liviano (loudnorm remuestrea a 192 kHz y
-/// con dos decks gastaría batería y CPU en segundo plano).
-const String kLevelerMobile = 'dynaudnorm=f=500:g=15:p=0.9:m=8';
-
 abstract class PlatformMixStrategy {
-  /// Cadena completa de arranque: nivelador + limitador, sin coloración.
-  String get hifiFilter;
+  /// Cadena de arranque (solo filtros soportados; puede ser vacía).
+  String get hifiFilter => limiterFilter;
 
   /// Color de la plataforma. Vacío = fidelidad plana (sin realces fijos).
-  String get colorFilter;
+  String get colorFilter => '';
 
-  /// Nivelador de volumen (va después del ecualizador).
-  String get levelerFilter;
+  /// Filtro nivelador. VACÍO: la sonoridad igual de todas las canciones la
+  /// hace `AdaptiveEq` con ReplayGain nativo de mpv (loudnorm/dynaudnorm no
+  /// existen en el libmpv empaquetado).
+  String get levelerFilter => '';
 
-  /// Limitador que cierra la cadena `af`.
-  String get limiterFilter => kHifiLimiter;
+  /// Limitador que cierra la cadena `af` ('' si no está disponible).
+  String get limiterFilter => AfCaps.has('alimiter') ? kHifiLimiter : '';
+
   String getSessionPath();
   bool get supportsHighFidelityMastering;
 }
 
-class WindowsMixStrategy implements PlatformMixStrategy {
-  @override
-  String get hifiFilter => '$levelerFilter,$limiterFilter';
-
-  @override
-  String get colorFilter => '';
-
-  @override
-  String get levelerFilter => kLevelerDesktop;
-
-  @override
-  String get limiterFilter => kHifiLimiter;
-
+class WindowsMixStrategy extends PlatformMixStrategy {
   @override
   String getSessionPath() {
     final dir = Directory(
@@ -57,19 +42,7 @@ class WindowsMixStrategy implements PlatformMixStrategy {
   bool get supportsHighFidelityMastering => true;
 }
 
-class MacOsMixStrategy implements PlatformMixStrategy {
-  @override
-  String get hifiFilter => '$levelerFilter,$limiterFilter';
-
-  @override
-  String get colorFilter => '';
-
-  @override
-  String get levelerFilter => kLevelerDesktop;
-
-  @override
-  String get limiterFilter => kHifiLimiter;
-
+class MacOsMixStrategy extends PlatformMixStrategy {
   @override
   String getSessionPath() {
     final dir = Directory('${Platform.environment['HOME']}/Music/DjPlaylists');
@@ -81,19 +54,7 @@ class MacOsMixStrategy implements PlatformMixStrategy {
   bool get supportsHighFidelityMastering => true;
 }
 
-class AndroidMixStrategy implements PlatformMixStrategy {
-  @override
-  String get hifiFilter => '$levelerFilter,$limiterFilter';
-
-  @override
-  String get colorFilter => '';
-
-  @override
-  String get levelerFilter => kLevelerMobile;
-
-  @override
-  String get limiterFilter => kHifiLimiter;
-
+class AndroidMixStrategy extends PlatformMixStrategy {
   @override
   String getSessionPath() {
     final dir = Directory('/storage/emulated/0/Music/DjPlaylists');
@@ -115,19 +76,7 @@ class MixStrategyFactory {
   }
 }
 
-class IphoneMixStrategy implements PlatformMixStrategy {
-  @override
-  String get hifiFilter => '$levelerFilter,$limiterFilter';
-
-  @override
-  String get colorFilter => '';
-
-  @override
-  String get levelerFilter => kLevelerMobile;
-
-  @override
-  String get limiterFilter => kHifiLimiter;
-
+class IphoneMixStrategy extends PlatformMixStrategy {
   @override
   String getSessionPath() {
     final dir = Directory(IphoneLibrary.playlistsDir);

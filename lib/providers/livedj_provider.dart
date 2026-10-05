@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_selector/file_selector.dart';
 
 import '../core/hal/platform_strategy.dart';
+import '../core/audio/af_caps.dart';
 import '../core/audio/dj_audio_handler.dart';
 import 'equalizer_provider.dart';
 import 'mix_formula.dart';
@@ -18,7 +19,10 @@ enum LiveDjMixMode { activeSync, longBypass }
 
 // 🎚️ Corte de graves de la permuta de bajos: Butterworth de 2 polos a 140 Hz.
 // Idéntico al de Automix. Se inyecta en libmpv vía 'af'; cero DSP por muestras.
-const String _bassKillFilter = 'highpass=f=140:poles=2';
+// Corte de graves con `equalizer` (único filtro de libavfilter que trae el
+// libmpv empaquetado; `highpass` no existe y tumbaba toda la cadena `af`).
+const String _bassKillFilter =
+    'equalizer=f=45:width_type=o:w=2.5:g=-24,equalizer=f=110:width_type=o:w=1.6:g=-14';
 
 // 🎚️ Banda del fundido en cambios manuales; la pista entrante elige el punto.
 const int _manualMixMinMs = 8000;
@@ -979,8 +983,12 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
     final platformIn = incomingPlayer.platform as dynamic;
 
     final bool useBassSwap = mixProfile == LiveDjMixMode.activeSync;
-    final String lowCutIn = '${inBase()},$_bassKillFilter';
-    final String lowCutOut = '${outBase()},$_bassKillFilter';
+    final String lowCutIn = AfCaps.sanitize(
+      [inBase(), _bassKillFilter].where((s) => s.isNotEmpty).join(','),
+    );
+    final String lowCutOut = AfCaps.sanitize(
+      [outBase(), _bassKillFilter].where((s) => s.isNotEmpty).join(','),
+    );
     bool bassSwapped = false;
 
     try {

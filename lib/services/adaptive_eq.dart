@@ -1,83 +1,182 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:math';
-import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:media_kit/media_kit.dart';
 
+import '../core/audio/af_caps.dart';
 import '../core/hal/platform_strategy.dart';
 
-/// EQ adaptativa por canción: mide el espectro real de cada tema (10 bandas
-/// octava, ~30 s de audio) y calcula una corrección suave hacia una curva
-/// objetivo de música comercial. Nunca pasa de ±3 dB, no realza lo que el
-/// archivo no tiene (cortes de mp3 en agudos) y reserva headroom propio.
-/// Es compartida por Automix, Live DJ y FiestaDJ; cada módulo la aplica solo
-/// a sus propios decks.
+/// Perfil medido de una canción.
+class AdaptiveProfile {
+  /// Corrección espectral (dB) en las 10 bandas octava.
+  final List<double> gains;
+
+  /// Ganancia de sonoridad (dB) para igualar el volumen entre canciones.
+  final double levelDb;
+  const AdaptiveProfile(this.gains, this.levelDb);
+
+  Map<String, dynamic> toJson() => {'g': gains, 'l': levelDb};
+
+  static AdaptiveProfile? fromJson(dynamic j) {
+    if (j is! Map) return null;
+    final g = j['g'];
+    final l = j['l'];
+    if (g is! List || g.length != 10 || l is! num) return null;
+    return AdaptiveProfile(
+      g.map((e) => (e as num).toDouble()).toList(),
+      l.toDouble(),
+    );
+  }
+}
+
+/// Audio profesional automático por canción, compartido por Automix, Live DJ
+/// y FiestaDJ (cada uno lo aplica solo a sus propios decks):
+///
+///  * EQ adaptativa: mide 30 s del tema en 10 bandas octava y corrige hacia
+///    una curva típica de música comercial (máx ±3 dB; no realza bandas que
+///    el archivo no tiene).
+///  * Sonoridad igual: mide la sonoridad (K-weighting + compuertas, estilo
+///    BS.1770) y fija la ganancia como desplazamiento de la cadena
+///    `equalizer` (ver `eqChain`). El libmpv empaquetado solo trae
+///    `equalizer` (ver `AfCaps`); `replaygain-fallback` no cambia en vivo.
 class AdaptiveEq {
   AdaptiveEq._();
 
   /// Interruptor global (por defecto activo).
   static bool enabled = true;
 
-  static const List<int> _bands = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
+  /// Sonoridad objetivo (LUFS). Algo sobre los -18 de ReplayGain para no
+  /// perder presencia (las pistas que ya traen etiquetas RG usan las suyas).
+  static const double targetLufs = -16.0;
+
+  static const List<int> bands = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
   static const int _sr = 44100;
 
-  static final Expando<String> _snippet = Expando<String>('adaptiveSnippet');
-  static final Expando<String> _token = Expando<String>('adaptiveToken');
+  static final Expando<List<double>> _gains = Expando<List<double>>('aeqGains');
+  static final Expando<double> _levels = Expando<double>('aeqLevel');
+  static final Expando<String> _token = Expando<String>('aeqToken');
 
   static Map<String, dynamic>? _disk;
-  static final Map<String, List<double>?> _mem = {};
-  static final Map<String, Future<List<double>?>> _pending = {};
+  static final Map<String, AdaptiveProfile?> _mem = {};
+  static final Map<String, Future<AdaptiveProfile?>> _pending = {};
+  static Future<void> _queue = Future.value();
 
-  /// Trozo de cadena `af` (volumen + equalizer) de la canción que sostiene el
-  /// [player], o '' si no hay perfil (aún no medido, desactivado o sin FFmpeg).
-  static String snippetFor(Player player) =>
-      enabled ? (_snippet[player] ?? '') : '';
-
-  /// Limpia el perfil del [player] y mide [path]. Al terminar llama a
-  /// [onReady] con el trozo de filtro (solo si el deck sigue con esa canción).
-  static void attach(
-    Player player,
-    String path, {
-    required void Function(String snippet) onReady,
-  }) {
-    _snippet[player] = '';
-    _token[player] = path;
-    if (!enabled) return;
-    () async {
-      final gains = await profile(path);
-      if (gains == null) return;
-      if (_token[player] != path) return; // el deck ya cambió de canción
-      final s = _build(gains);
-      _snippet[player] = s;
-      if (s.isNotEmpty) onReady(s);
-    }();
+  /// Corrección espectral del [player] (10 ceros si no hay perfil o está
+  /// desactivada).
+  static List<double> gainsFor(Player player) {
+    if (!enabled) return List<double>.filled(10, 0);
+    return _gains[player] ?? List<double>.filled(10, 0);
   }
 
-  static String _build(List<double> g) {
+  /// Cadena `equalizer` de 10 bandas con margen automático: el realce neto
+  /// máximo se compensa bajando todas las bandas (no hay filtro `volume` ni
+  /// limitador en el libmpv empaquetado), así nada pasa de 0 dBFS.
+  ///
+  /// [levelDb] es la ganancia de sonoridad de la canción. El libmpv no
+  /// permite cambiar `replaygain-fallback` con la canción ya abierta (medido:
+  /// solo se lee al cargar el archivo), así que la sonoridad se aplica como
+  /// desplazamiento común de las bandas. Como las 10 bandas se solapan, las
+  /// ganancias se resuelven para que la respuesta real de la cascada en cada
+  /// frecuencia central sea la pedida (cálculo de coeficientes, no DSP).
+  static List<String> eqChain(
+    List<double> gains, {
+    double preamp = 0,
+    double levelDb = 0,
+  }) {
+    if (gains.length != 10) return const [];
     double maxBoost = 0;
+    final g = gains.map((v) => v.clamp(-12.0, 12.0).toDouble()).toList();
     for (final v in g) {
       if (v > maxBoost) maxBoost = v;
     }
-    final parts = <String>[];
-    if (maxBoost > 0.05) {
-      parts.add('volume=volume=${(-maxBoost).toStringAsFixed(1)}dB');
-    }
-    for (int i = 0; i < _bands.length; i++) {
-      if (g[i].abs() >= 0.2) {
-        parts.add(
-          'equalizer=f=${_bands[i]}:width_type=o:w=1:g=${g[i].toStringAsFixed(1)}',
-        );
+    final double shift = (preamp < -maxBoost ? preamp : -maxBoost) + levelDb;
+    final target = List<double>.generate(10, (i) => g[i] + shift);
+    final solved = _solveCascade(target);
+    final out = <String>[];
+    for (int i = 0; i < 10; i++) {
+      final v = solved[i];
+      if (v.abs() >= 0.1) {
+        out.add('equalizer=f=${bands[i]}:width_type=o:w=1:g=${v.toStringAsFixed(1)}');
       }
     }
-    return parts.join(',');
+    return out;
+  }
+
+  /// Respuesta (dB) en [f] Hz de un filtro peaking RBJ (octavas [w]).
+  static double _peakDb(double f0, double gDb, double f) {
+    const double bw = 1.0;
+    final w0 = 2 * pi * f0 / _sr;
+    final alpha = sin(w0) * (exp(ln2 / 2 * bw * w0 / sin(w0)) -
+            exp(-ln2 / 2 * bw * w0 / sin(w0))) /
+        2;
+    final a = pow(10, gDb / 40).toDouble();
+    final c = cos(w0);
+    final b0 = 1 + alpha * a, b1 = -2 * c, b2 = 1 - alpha * a;
+    final a0 = 1 + alpha / a, a1 = -2 * c, a2 = 1 - alpha / a;
+    final w = 2 * pi * f / _sr;
+    final cw = cos(w), sw = sin(w), c2 = cos(2 * w), s2 = sin(2 * w);
+    final nr = b0 + b1 * cw + b2 * c2, ni = -(b1 * sw + b2 * s2);
+    final dr = a0 + a1 * cw + a2 * c2, di = -(a1 * sw + a2 * s2);
+    final m = (nr * nr + ni * ni) / (dr * dr + di * di);
+    return 10 * log(m) / ln10;
+  }
+
+  /// Ajusta las ganancias de las 10 bandas para que la respuesta total de la
+  /// cascada en cada frecuencia central valga [target] (iteración de punto
+  /// fijo sobre el solape entre bandas).
+  static List<double> _solveCascade(List<double> target) {
+    final g = List<double>.from(target);
+    for (int it = 0; it < 12; it++) {
+      double err = 0;
+      for (int i = 0; i < 10; i++) {
+        double h = 0;
+        for (int j = 0; j < 10; j++) {
+          if (g[j].abs() < 0.01) continue;
+          h += _peakDb(bands[j].toDouble(), g[j], bands[i].toDouble());
+        }
+        final e = target[i] - h;
+        err = max(err, e.abs());
+        g[i] = (g[i] + e * 0.8).clamp(-24.0, 24.0).toDouble();
+      }
+      if (err < 0.05) break;
+    }
+    return g;
+  }
+
+  /// Ganancia de sonoridad (dB) de la canción del [player].
+  static double levelFor(Player player) =>
+      enabled ? (_levels[player] ?? 0.0) : 0.0;
+
+  /// Registra la canción [path] en el [player]: limpia lo anterior, mide la
+  /// canción (o toma la caché) y aplica sonoridad + notifica a [onReady] para
+  /// que el motor reconstruya el `af` del deck con la nueva EQ.
+  static void attach(
+    Player player,
+    String path, {
+    required VoidCallback onReady,
+  }) {
+    _gains[player] = null;
+    _levels[player] = null;
+    _token[player] = path;
+    if (!enabled) return;
+    () async {
+      await AfCaps.probe();
+      final prof = await profile(path);
+      if (prof == null) return;
+      if (_token[player] != path) return; // el deck ya cambió de canción
+      _gains[player] = prof.gains;
+      _levels[player] = prof.levelDb;
+      onReady();
+    }();
   }
 
   // ------------------------------------------------------------------ caché
   static File _cacheFile() {
     final base = File(MixStrategyFactory.getStrategy().getSessionPath()).parent;
-    return File('${base.path}${Platform.pathSeparator}_adaptive_eq.json');
+    return File('${base.path}${Platform.pathSeparator}_adaptive_audio.json');
   }
 
   static String _key(String path) {
@@ -110,36 +209,49 @@ class AdaptiveEq {
     } catch (_) {}
   }
 
-  /// Ganancias (10 bandas) de la canción, desde caché o midiéndola.
-  static Future<List<double>?> profile(String path) {
+  /// Perfil de la canción desde caché o midiéndola (en cola, de a una).
+  static Future<AdaptiveProfile?> profile(String path) {
     final k = _key(path);
     if (_mem.containsKey(k)) return Future.value(_mem[k]);
     _loadDisk();
-    final c = _disk![k];
-    if (c is List && c.length == 10) {
-      final g = c.map((e) => (e as num).toDouble()).toList();
-      _mem[k] = g;
-      return Future.value(g);
+    final c = AdaptiveProfile.fromJson(_disk![k]);
+    if (c != null) {
+      _mem[k] = c;
+      return Future.value(c);
     }
-    return _pending[k] ??= _measure(path, k).whenComplete(() => _pending.remove(k));
+    return _pending[k] ??= _enqueue(() => _measure(path, k)).whenComplete(
+      () => _pending.remove(k),
+    );
   }
 
-  static Future<List<double>?> _measure(String path, String k) async {
+  static Future<AdaptiveProfile?> _enqueue(Future<AdaptiveProfile?> Function() job) {
+    final done = Completer<AdaptiveProfile?>();
+    _queue = _queue.then((_) async {
+      try {
+        done.complete(await job());
+      } catch (_) {
+        done.complete(null);
+      }
+    });
+    return done.future;
+  }
+
+  static Future<AdaptiveProfile?> _measure(String path, String k) async {
     String? raw;
     try {
       raw = await _decode(path);
       if (raw == null) return null;
       final Uint8List bytes = await File(raw).readAsBytes();
-      final List<double>? g = await Isolate.run(() => _analyze(bytes));
-      _mem[k] = g;
-      if (g != null) {
+      final AdaptiveProfile? p = await Isolate.run(() => _analyze(bytes));
+      _mem[k] = p;
+      if (p != null) {
         _loadDisk();
-        _disk![k] = g;
+        _disk![k] = p.toJson();
         _saveDisk();
       }
-      return g;
+      return p;
     } catch (e) {
-      debugPrint('🔴 [ADAPTIVE EQ] $path: $e');
+      debugPrint('🔴 [ADAPTIVE AUDIO] $path: $e');
       return null;
     } finally {
       if (raw != null) {
@@ -151,78 +263,139 @@ class AdaptiveEq {
   }
 
   // ---------------------------------------------------------------- decode
-  static String _ffmpeg() {
-    final exeDir = File(Platform.resolvedExecutable).parent.path;
-    final local = Platform.isWindows ? '$exeDir\\ffmpeg.exe' : '$exeDir/ffmpeg';
-    return File(local).existsSync() ? local : 'ffmpeg';
-  }
-
   static int _n = 0;
 
+  static String _tmp() =>
+      '${Directory.systemTemp.path}${Platform.pathSeparator}aeq_${pid}_${_n++}.pcm';
+
+  static bool _usable(String f) {
+    try {
+      return File(f).existsSync() && File(f).lengthSync() > _sr * 2 * 5;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 1) libmpv `ao=pcm` (verificado en el libmpv de Windows; no necesita
+  /// FFmpeg). 2) FFmpeg si existe.
   static Future<String?> _decode(String path) async {
-    final tmp =
-        '${Directory.systemTemp.path}${Platform.pathSeparator}'
-        'aeq_${pid}_${_n++}.pcm';
+    for (final start in const ['30', '0']) {
+      final tmp = _tmp();
+      Player? p;
+      try {
+        p = Player();
+        final dynamic pl = p.platform;
+        await pl?.setProperty('vid', 'no');
+        await pl?.setProperty('ao', 'pcm');
+        await pl?.setProperty('ao-pcm-file', tmp);
+        await pl?.setProperty('ao-pcm-waveheader', 'no');
+        await pl?.setProperty('audio-samplerate', '$_sr');
+        await pl?.setProperty('audio-channels', 'mono');
+        await pl?.setProperty('audio-format', 's16');
+        await pl?.setProperty('untimed', 'yes');
+        await pl?.setProperty('start', start);
+        await pl?.setProperty('length', '30');
+        await pl?.setProperty('af', '');
+        await p.open(Media(path), play: true);
+        await p.stream.completed
+            .firstWhere((c) => c)
+            .timeout(const Duration(seconds: 45));
+      } catch (_) {
+      } finally {
+        try {
+          await p?.dispose();
+        } catch (_) {}
+      }
+      await Future.delayed(const Duration(milliseconds: 150));
+      if (_usable(tmp)) return tmp;
+      try {
+        File(tmp).deleteSync();
+      } catch (_) {}
+    }
     if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
+      final tmp = _tmp();
+      final exeDir = File(Platform.resolvedExecutable).parent.path;
+      final local = Platform.isWindows ? '$exeDir\\ffmpeg.exe' : '$exeDir/ffmpeg';
       for (final seek in const ['30', '0']) {
         try {
-          final r = await Process.run(_ffmpeg(), [
+          final r = await Process.run(File(local).existsSync() ? local : 'ffmpeg', [
             '-v', 'error', '-ss', seek, '-t', '30', '-i', path,
             '-ac', '1', '-ar', '$_sr', '-f', 's16le', '-y', tmp,
           ]).timeout(const Duration(seconds: 40));
-          if (r.exitCode == 0 &&
-              File(tmp).existsSync() &&
-              File(tmp).lengthSync() > _sr * 2 * 5) {
-            return tmp;
-          }
+          if (r.exitCode == 0 && _usable(tmp)) return tmp;
         } catch (_) {}
       }
-      return null;
-    }
-    // Celular: libmpv vuelca el PCM (mejor esfuerzo).
-    Player? p;
-    try {
-      p = Player();
-      final dynamic pl = p.platform;
-      await pl?.setProperty('vid', 'no');
-      await pl?.setProperty('ao', 'pcm');
-      await pl?.setProperty('ao-pcm-file', tmp);
-      await pl?.setProperty('ao-pcm-waveheader', 'no');
-      await pl?.setProperty('audio-samplerate', '$_sr');
-      await pl?.setProperty('audio-channels', 'mono');
-      await pl?.setProperty('audio-format', 's16');
-      await pl?.setProperty('start', '30');
-      await pl?.setProperty('length', '30');
-      await pl?.setProperty('untimed', 'yes');
-      await pl?.setProperty('af', '');
-      await p.open(Media(path), play: true);
-      await p.stream.completed
-          .firstWhere((c) => c)
-          .timeout(const Duration(seconds: 45));
-    } catch (_) {
-    } finally {
-      try {
-        await p?.dispose();
-      } catch (_) {}
-    }
-    await Future.delayed(const Duration(milliseconds: 150));
-    if (File(tmp).existsSync() && File(tmp).lengthSync() > _sr * 2 * 5) {
-      return tmp;
     }
     return null;
   }
 
   // -------------------------------------------------------------- análisis
   // Nivel típico de música comercial por banda octava (dB, relativo a 1 kHz).
-  static const List<double> _target = [
-    -1, 4, 6, 3, 1, 0, -3, -6, -11, -18,
-  ];
+  static const List<double> _target = [-1, 4, 6, 3, 1, 0, -3, -6, -11, -18];
 
-  static List<double>? _analyze(Uint8List b) {
+  static AdaptiveProfile? _analyze(Uint8List b) {
     final n = b.length ~/ 2;
     const int fft = 4096;
     if (n < fft * 8) return null;
     final bd = ByteData.sublistView(b);
+    final samples = Float64List(n);
+    double peak = 0;
+    for (int i = 0; i < n; i++) {
+      final v = bd.getInt16(i * 2, Endian.little) / 32768.0;
+      samples[i] = v;
+      final a = v.abs();
+      if (a > peak) peak = a;
+    }
+    if (peak < 1e-4) return AdaptiveProfile(List<double>.filled(10, 0), 0);
+
+    // ---- Sonoridad: K-weighting (coef. BS.1770 a 48 kHz, aprox. a 44.1)
+    // y bloques de 400 ms con compuerta absoluta y relativa.
+    final k = Float64List(n);
+    {
+      double x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+      const b0 = 1.53512485958697, b1 = -2.69169618940638, b2 = 1.19839281085285;
+      const a1 = -1.69065929318241, a2 = 0.73248077421585;
+      double u1 = 0, u2 = 0, v1 = 0, v2 = 0;
+      const c1 = -1.99004745483398, c2 = 0.99007225036621;
+      for (int i = 0; i < n; i++) {
+        final x = samples[i];
+        final y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+        x2 = x1;
+        x1 = x;
+        y2 = y1;
+        y1 = y;
+        final z = y - 2 * u1 + u2 - c1 * v1 - c2 * v2;
+        u2 = u1;
+        u1 = y;
+        v2 = v1;
+        v1 = z;
+        k[i] = z;
+      }
+    }
+    final blk = (_sr * 0.4).round();
+    final blocks = <double>[];
+    for (int s = 0; s + blk <= n; s += blk ~/ 4) {
+      double e = 0;
+      for (int i = s; i < s + blk; i++) {
+        e += k[i] * k[i];
+      }
+      blocks.add(e / blk);
+    }
+    final abs = blocks.where((e) => e > 1.2e-7).toList(); // ~ -70 LUFS
+    if (abs.isEmpty) return AdaptiveProfile(List<double>.filled(10, 0), 0);
+    final m1 = abs.reduce((a, c) => a + c) / abs.length;
+    final rel = abs.where((e) => e > m1 * 0.1).toList(); // -10 LU
+    final m2 = (rel.isEmpty ? abs : rel).reduce((a, c) => a + c) / (rel.isEmpty ? abs.length : rel.length);
+    final lufs = -0.691 + 10 * log(m2) / ln10;
+    final peakDb = 20 * log(peak) / ln10;
+    // Sube/baja hacia el objetivo, nunca más allá del pico medido (-1.5 dB
+    // de margen: no hay limitador) ni más de +9 / -12 dB.
+    double level = targetLufs - lufs;
+    final maxUp = -peakDb - 1.5;
+    if (level > maxUp) level = maxUp;
+    level = level.clamp(-12.0, 9.0).toDouble();
+
+    // ---- Espectro por bandas octava (FFT 4096, Hann, ~1 trama/0.5 s)
     final win = List<double>.generate(
       fft,
       (i) => 0.5 - 0.5 * cos(2 * pi * i / (fft - 1)),
@@ -233,7 +406,7 @@ class AdaptiveEq {
     final im = Float64List(fft);
     for (int s = 0; s + fft <= n; s += 22050) {
       for (int i = 0; i < fft; i++) {
-        re[i] = bd.getInt16((s + i) * 2, Endian.little) / 32768.0 * win[i];
+        re[i] = samples[s + i] * win[i];
         im[i] = 0;
       }
       _fft(re, im);
@@ -242,24 +415,19 @@ class AdaptiveEq {
       }
       frames++;
     }
-    if (frames == 0) return null;
+    if (frames == 0) return AdaptiveProfile(List<double>.filled(10, 0), level);
     final binHz = _sr / fft;
     final lv = List<double>.filled(10, -120);
-    double total = 0;
     for (int bI = 0; bI < 10; bI++) {
-      final int lo = (_bands[bI] / sqrt2 / binHz).floor().clamp(1, fft ~/ 2 - 1).toInt();
-      final int hi = (_bands[bI] * sqrt2 / binHz).ceil().clamp(lo + 1, fft ~/ 2).toInt();
+      final int lo = (bands[bI] / sqrt2 / binHz).floor().clamp(1, fft ~/ 2 - 1).toInt();
+      final int hi = (bands[bI] * sqrt2 / binHz).ceil().clamp(lo + 1, fft ~/ 2).toInt();
       double e = 0;
       for (int i = lo; i < hi; i++) {
         e += acc[i];
       }
       e /= frames;
-      total += e;
       lv[bI] = 10 * log(e + 1e-12) / ln10;
     }
-    if (total < 1e-6) return List<double>.filled(10, 0); // casi silencio
-
-    // Desviación frente al objetivo, anclada en la zona media (125 Hz–4 kHz).
     double m = 0;
     for (int i = 2; i <= 7; i++) {
       m += lv[i] - _target[i];
@@ -269,8 +437,7 @@ class AdaptiveEq {
     for (int i = 0; i < 10; i++) {
       final d = lv[i] - _target[i] - m;
       double c = -0.5 * d;
-      // Banda prácticamente vacía (corte del archivo): no se realza.
-      if ((i >= 8 || i == 0) && d < -12) c = 0;
+      if ((i >= 8 || i == 0) && d < -12) c = 0; // banda vacía: no se realza
       double hiLim = 3.0;
       if (i == 0) hiLim = 1.0;
       if (i == 8) hiLim = 2.0;
@@ -278,7 +445,7 @@ class AdaptiveEq {
       c = c.clamp(-3.0, hiLim).toDouble();
       out[i] = (c * 10).round() / 10;
     }
-    return out;
+    return AdaptiveProfile(out, (level * 100).round() / 100);
   }
 
   static void _fft(Float64List re, Float64List im) {

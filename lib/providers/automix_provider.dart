@@ -11,6 +11,7 @@ import 'package:flutter/foundation.dart';
 import 'package:djstudio_player/src/rust/api/core_dsp.dart' as rust_dsp;
 
 import '../core/hal/platform_strategy.dart';
+import '../core/audio/af_caps.dart';
 import '../djiphone/iphone_library.dart';
 import '../core/audio/dj_audio_handler.dart';
 
@@ -27,7 +28,10 @@ enum AutomixMixProfile { smoothBassSwap, manualOverride }
 
 // 🎚️ Corte de graves de la permuta de bajos: Butterworth de 2 polos a 140 Hz.
 // Se inyecta en libmpv vía la propiedad 'af'; cero DSP por muestras en Dart.
-const String _bassKillFilter = 'highpass=f=140:poles=2';
+// Corte de graves con `equalizer` (único filtro de libavfilter que trae el
+// libmpv empaquetado; `highpass` no existe y tumbaba toda la cadena `af`).
+const String _bassKillFilter =
+    'equalizer=f=45:width_type=o:w=2.5:g=-24,equalizer=f=110:width_type=o:w=1.6:g=-14';
 
 // ⏱️ Ventana DAWN automática: entra 5 s antes del SET OUT y se prolonga sobre
 // la cola de energía que `silencedetect` encuentre después del punto — nunca
@@ -1353,8 +1357,12 @@ class AutomixNotifier extends Notifier<AutomixState> {
 
     // Un skip manual de 4,5 s no da margen musical para permutar graves.
     final bool useBassSwap = mixProfile == AutomixMixProfile.smoothBassSwap;
-    final String lowCutIn = '${inBase()},$_bassKillFilter';
-    final String lowCutOut = '${outBase()},$_bassKillFilter';
+    final String lowCutIn = AfCaps.sanitize(
+      [inBase(), _bassKillFilter].where((s) => s.isNotEmpty).join(','),
+    );
+    final String lowCutOut = AfCaps.sanitize(
+      [outBase(), _bassKillFilter].where((s) => s.isNotEmpty).join(','),
+    );
     bool bassSwapped = false;
 
     try {

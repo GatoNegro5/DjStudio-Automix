@@ -12,6 +12,7 @@ import '../core/hal/platform_strategy.dart';
 import '../fiestadj/fiesta_beat_analyzer.dart';
 import '../fiestadj/fiesta_loop_synth.dart';
 import '../fiestadj/fiesta_planner.dart';
+import '../core/audio/af_caps.dart';
 import '../services/adaptive_eq.dart';
 import 'directory_provider.dart';
 
@@ -206,7 +207,7 @@ class FiestaDjNotifier extends Notifier<FiestaState> {
       pl?.setProperty('audio-pitch-correction', 'yes');
     }
     final dynamic bpl = _base.platform;
-    bpl?.setProperty('af', kHifiLimiter);
+    bpl?.setProperty('af', strategy.limiterFilter);
     bpl?.setProperty('loop-file', 'inf');
 
     ref.onDispose(() {
@@ -426,11 +427,19 @@ class FiestaDjNotifier extends Notifier<FiestaState> {
     AdaptiveEq.attach(
       d.player,
       path,
-      onReady: (s) {
+      onReady: () {
         try {
           (d.player.platform as dynamic)?.setProperty(
             'af',
-            '$s,${MixStrategyFactory.getStrategy().hifiFilter}',
+            AfCaps.sanitize(
+              [
+                ...AdaptiveEq.eqChain(
+                  AdaptiveEq.gainsFor(d.player),
+                  levelDb: AdaptiveEq.levelFor(d.player),
+                ),
+                MixStrategyFactory.getStrategy().limiterFilter,
+              ].where((s) => s.isNotEmpty).join(','),
+            ),
           );
         } catch (_) {}
       },
