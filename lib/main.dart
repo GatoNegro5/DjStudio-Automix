@@ -27,10 +27,7 @@ import 'ui/workspaces/lab_workspace.dart';
 import 'ui/workspaces/lan_sync_workspace.dart';
 import 'ui/workspaces/livedj_workspace.dart';
 import 'ui/workspaces/karaoke_workspace.dart';
-import 'services/voice_launch.dart';
 import 'services/audio_interruption.dart';
-import 'services/voice_commands.dart';
-import 'ui/widgets/voice_mic_button.dart';
 
 // ==========================================
 // ENRUTADOR DE ESTADO (SPA - Single Page App)
@@ -345,18 +342,6 @@ class MainWorkspace extends ConsumerStatefulWidget {
 }
 
 class _MainWorkspaceState extends ConsumerState<MainWorkspace> {
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      ref.read(voiceLaunchProvider).open();
-      ref
-          .read(voiceCommandsProvider.notifier)
-          .attachRoute(() => ref.read(routerProvider));
-    });
-  }
-
   void _openMenu() {
     ref.read(mobileNavOpenProvider.notifier).state = true;
   }
@@ -391,7 +376,6 @@ class _MainWorkspaceState extends ConsumerState<MainWorkspace> {
 
   @override
   Widget build(BuildContext context) {
-    ref.watch(voiceLaunchProvider);
     ref.listen<bool>(automixProvider.select((s) => s.isPlaying), (prev, next) {
       final gov = ref.read(hardwareGovernorProvider.notifier);
       if (next) {
@@ -684,46 +668,18 @@ class _DjStudioNavColumn extends ConsumerWidget {
       mainAxisSize: compactSheet ? MainAxisSize.min : MainAxisSize.max,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 10, 4, 4),
-          child: Row(
-            children: [
-              const Text(
-                "DjStudio",
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: DjStudioTheme.textMain,
-                  letterSpacing: 1.2,
-                ),
-              ),
-              // Escritorio: micrófono junto al título (en móvil va en la barra).
-              if (!compactSheet) const VoiceMicButton(showMessage: false),
-            ],
+        const Padding(
+          padding: EdgeInsets.fromLTRB(12, 10, 12, 4),
+          child: Text(
+            "DjStudio",
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+              color: DjStudioTheme.textMain,
+              letterSpacing: 1.2,
+            ),
           ),
         ),
-        if (!compactSheet)
-          Consumer(
-            builder: (context, ref, _) {
-              final msg = ref.watch(
-                voiceCommandsProvider.select((s) => s.message),
-              );
-              if (msg.isEmpty) return const SizedBox.shrink();
-              return Padding(
-                padding: const EdgeInsets.fromLTRB(12, 0, 8, 6),
-                child: Text(
-                  msg,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: DjStudioTheme.textMuted,
-                    fontSize: 10,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              );
-            },
-          ),
         if (compactSheet)
           tiles
         else

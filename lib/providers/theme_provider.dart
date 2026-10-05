@@ -1,8 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../ui/widgets/voice_mic_button.dart';
-
 class DjStudioTheme {
   // Traktor / Native Instruments (cabina “lab”)
   static const Color bgDark = Color(0xFF0E1014); // Carbón NI
@@ -103,60 +101,43 @@ class DjStudioMobileModeBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Micrófono de voz junto al título: mismo lugar en todas las pantallas
-    // móviles (Automix, Live DJ, módulos, DjIphone). El resto de la barra
-    // sigue abriendo/cerrando el menú.
     return Material(
       color: DjStudioTheme.bgDark,
-      child: SizedBox(
-        height: 36,
-        width: expand ? double.infinity : null,
-        child: Row(
-          mainAxisSize: expand ? MainAxisSize.max : MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            InkWell(
-              onTap: onTap,
-              child: Padding(
-                padding: const EdgeInsets.only(left: 10, right: 4),
-                child: Center(
-                  widthFactor: 1,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        open ? Icons.close : Icons.menu,
-                        size: 18,
-                        color: accent,
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        title,
-                        style: TextStyle(
-                          color: accent,
-                          fontFamily: 'Consolas',
-                          fontSize: 13,
-                          fontWeight: FontWeight.bold,
-                          letterSpacing: 0.8,
-                        ),
-                      ),
-                      const SizedBox(width: 4),
-                      Icon(
-                        open ? Icons.expand_less : Icons.expand_more,
-                        size: 16,
-                        color: DjStudioTheme.textMuted,
-                      ),
-                    ],
+      child: InkWell(
+        onTap: onTap,
+        child: SizedBox(
+          height: 36,
+          width: expand ? double.infinity : null,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            child: Row(
+              mainAxisSize: expand ? MainAxisSize.max : MainAxisSize.min,
+              children: [
+                Icon(
+                  open ? Icons.close : Icons.menu,
+                  size: 18,
+                  color: accent,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  title,
+                  style: TextStyle(
+                    color: accent,
+                    fontFamily: 'Consolas',
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.8,
                   ),
                 ),
-              ),
+                const SizedBox(width: 4),
+                Icon(
+                  open ? Icons.expand_less : Icons.expand_more,
+                  size: 16,
+                  color: DjStudioTheme.textMuted,
+                ),
+              ],
             ),
-            VoiceMicButton(showMessage: expand),
-            if (expand)
-              Expanded(
-                child: InkWell(onTap: onTap, child: const SizedBox.expand()),
-              ),
-          ],
+          ),
         ),
       ),
     );

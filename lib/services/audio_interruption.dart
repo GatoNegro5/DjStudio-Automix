@@ -8,18 +8,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/automix_provider.dart';
 import '../providers/livedj_provider.dart';
 
-int _voiceWindowUntilMs = 0;
-
-/// El reconocedor de voz (botón micrófono / "Oye DJ") pide foco de audio
-/// transitorio al abrir y cerrar. Eso no es una llamada: durante esta ventana
-/// el guardián ignora sus eventos para no pausar la música por error.
-void markVoiceFocusActivity([int ms = 2500]) {
-  _voiceWindowUntilMs = DateTime.now().millisecondsSinceEpoch + ms;
-}
-
-bool get voiceFocusWindowActive =>
-    DateTime.now().millisecondsSinceEpoch < _voiceWindowUntilMs;
-
 /// Comportamiento de app profesional ante interrupciones del sistema
 /// (llamada telefónica, alarma, otra app de audio, auriculares fuera).
 ///
@@ -110,7 +98,7 @@ class AudioInterruptionGuard {
   Future<void> _requestFocus(AudioSession session) async {
     try {
       final granted = await session.setActive(true);
-      if (!granted && _anyPlaying && !voiceFocusWindowActive) {
+      if (!granted && _anyPlaying) {
         // El sistema nos niega el foco (p. ej. llamada en curso): no sonar encima.
         await _pauseAll(resumeLater: false);
       }
@@ -120,7 +108,6 @@ class AudioInterruptionGuard {
   }
 
   void _onInterruption(AudioInterruptionEvent event) {
-    if (voiceFocusWindowActive) return;
     if (event.begin) {
       switch (event.type) {
         case AudioInterruptionType.duck:

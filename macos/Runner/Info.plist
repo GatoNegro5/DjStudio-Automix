@@ -28,9 +28,5 @@
 	<string>MainMenu</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>DJ Studio escucha el nombre de la carpeta al abrir.</string>
-	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>DJ Studio reconoce el género o la carpeta que pides.</string>
 </dict>
 </plist>

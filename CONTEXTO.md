@@ -164,16 +164,9 @@ UI no muta estado a pelo: `Notifier` / `Provider`.
 - Navegación hablando (duck): la atenúa el SO; no se toca el volumen del motor de mezcla.
 - Pausa del usuario → suelta el foco. Cola, posición y sesión no se tocan.
 
-## 6d. Voz — micrófono junto al título + "Oye DJ" (2026-10-04)
+## 6d. Voz — ELIMINADA (2026-10-05)
 
-`lib/services/voice_commands.dart` (`voiceCommandsProvider`, parser puro `parseVoiceCommand`, `splitWake`) + `lib/ui/widgets/voice_mic_button.dart`. Un solo código para Windows, Android, macOS e iPhone.
-- **Botón:** `VoiceMicButton` va **junto al título**: en móvil dentro de `DjStudioMobileModeBar` (`theme_provider.dart`, lo usan main, Automix, Live DJ y DjIphone); en escritorio junto a "DjStudio" en `_DjStudioNavColumn`. **Toque** = dar una orden (escucha 8 s). **Mantener pulsado** = activar/desactivar la palabra clave **"Oye DJ"** (apagada por defecto; se recuerda en `voice_settings.json` junto a la sesión).
-- **Órdenes:** pausa / para · play / sigue · siguiente · sube / baja volumen o "volumen 40" · mezcla uno / dos / tres (DNA / Phrase 8 / Stealth; solo Live DJ) · shuffle / secuencial · "pon / cambia a [carpeta]" · "cambia de carpeta" (pregunta cuál).
-- **Motor:** obedece al que suena; si nada suena, al del módulo en pantalla (`attachRoute`: 0 Automix, 5 Live DJ). Carpeta: Automix = reemplaza cola y `loadContextAndPlay`; Live DJ = reemplaza cartucho (`clearQueue` + `addAllTracks` + `forceNext`). Los 3 tipos de mezcla y cue-in 10 s no se tocan.
-- **Volumen:** volumen del **sistema** (`volume_controller`); el motor de mezcla gobierna los volúmenes por deck y no tiene máster.
-- **Foco de audio:** el reconocedor toma foco transitorio; `markVoiceFocusActivity()` abre una ventana en la que `AudioInterruptionGuard` ignora esos eventos (no pausa la música por error).
-- **Límites:** "Oye DJ" depende del reconocedor del SO (puede sonar un tic al reiniciar la escucha, gasta batería, y con música alta o app en segundo plano puede no oír). Si el equipo no tiene reconocimiento de voz, el icono se apaga y avisa. `VoiceLaunch` (pregunta al abrir) sigue intacto.
-- iPhone: `Info.plist` lleva `NSMicrophoneUsageDescription` y `NSSpeechRecognitionUsageDescription`; carpetas desde `IphoneLibrary.musicRoot`.
+Gabriel quitó toda la voz: mando de voz (micrófono, "Oye DJ", comandos) y la pregunta "¿Qué pongo?" al abrir. No hay `speech_to_text`, `flutter_tts` ni `volume_controller`; no hay permisos de micrófono/voz en `Info.plist` (iOS/macOS). No reintroducir sin pedido explícito. `AudioInterruptionGuard` (6c) queda sin ventana de voz.
 
 ## 7. DSP
 
@@ -218,6 +211,6 @@ Workflow: `.github/workflows/release.yml`. Tag `v*` dispara build en las 3:
 | Windows | windows | `DjStudio-Installer.exe` (`windows_setup.iss` / Inno Setup) |
 | macOS | macos | `DjStudio-MacOS.zip` |
 
-Versión actual desplegada: `v2.0.12` (v2.0.12: voz, micrófono junto al título + "Oye DJ"; v2.0.11: foco de audio / llamadas; v2.0.7: servicio en primer plano Android + TIPO DE MEZCLA persistente; v2.0.8: independencia Live DJ/Automix, fidelidad; v2.0.9: fin de cola, layout Live DJ, BPM Cartridge; v2.0.10: BPM por ruta/ID3, cola estable). Nunca commitear `GeneratedPluginRegistrant.swift`, `generated_plugin_registrant.cc`, `generated_plugins.cmake`.
+Versión actual desplegada: `v2.0.13` (v2.0.13: se elimina toda la voz; v2.0.12: voz (eliminada); v2.0.11: foco de audio / llamadas; v2.0.7: servicio en primer plano Android + TIPO DE MEZCLA persistente; v2.0.8: independencia Live DJ/Automix, fidelidad; v2.0.9: fin de cola, layout Live DJ, BPM Cartridge; v2.0.10: BPM por ruta/ID3, cola estable). Nunca commitear `GeneratedPluginRegistrant.swift`, `generated_plugin_registrant.cc`, `generated_plugins.cmake`.
 
 Rust targets por OS, `flutter_rust_bridge_codegen generate`, NDK r25c en APK, CocoaPods en Mac. Artefactos → GitHub Releases. Toda config de empaquetado debe cubrir esas 3; no dejar una plataforma fuera.
