@@ -2,45 +2,170 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 
-/// Caché propio de Live DJ (independiente de Automix): BPM por carpeta,
-/// leído de `_dj_metadata.json` de la carpeta donde vive cada canción.
-final Map<String, Future<Map<String, double>>> _liveDjBpmDirCache = {};
+/// BPM para el Cartridge de Live DJ. Código propio: no comparte caché con
+/// Automix (`bpmCacheProvider`).
+///
+/// Orden de búsqueda por canción:
+///  1. `_dj_metadata.json` en la carpeta de la pista o en sus carpetas padre
+///     (Masterizar lo guarda en la carpeta raíz escaneada, con clave = ruta
+///     absoluta; se acepta también clave = nombre de archivo).
+///  2. Etiqueta ID3 `TBPM` dentro del propio MP3.
+///  3. Nombre del archivo (`... 128 BPM ...`).
 
-Future<Map<String, double>> _loadLiveDjBpmDir(String dir) {
-  return _liveDjBpmDirCache.putIfAbsent(dir, () async {
-    final out = <String, double>{};
+class _BpmIndex {
+  final Map<String, double> byPath = {};
+  final Map<String, double> byName = {};
+}
+
+final Map<String, Future<_BpmIndex?>> _indexCache = {};
+final Map<String, Future<double>> _bpmCache = {};
+
+String _normPath(String p) => p.replaceAll('\\', '/').toLowerCase();
+
+String _baseName(String p) {
+  final n = p.replaceAll('\\', '/');
+  final i = n.lastIndexOf('/');
+  return i >= 0 ? n.substring(i + 1) : n;
+}
+
+Future<_BpmIndex?> _loadIndex(String dir) {
+  return _indexCache.putIfAbsent(dir, () async {
     try {
       final f = File('$dir${Platform.pathSeparator}_dj_metadata.json');
-      if (await f.exists()) {
-        final decoded = jsonDecode(await f.readAsString());
-        if (decoded is Map) {
-          decoded.forEach((key, value) {
-            if (value is num) {
-              out[key.toString()] = value.toDouble();
-            } else if (value is Map && value['bpm'] is num) {
-              out[key.toString()] = (value['bpm'] as num).toDouble();
-            }
-          });
+      if (!await f.exists()) return null;
+      final decoded = jsonDecode(await f.readAsString());
+      if (decoded is! Map) return null;
+      final idx = _BpmIndex();
+      decoded.forEach((key, value) {
+        double? bpm;
+        if (value is num) {
+          bpm = value.toDouble();
+        } else if (value is Map && value['bpm'] is num) {
+          bpm = (value['bpm'] as num).toDouble();
         }
-      }
-    } catch (_) {}
-    return out;
+        if (bpm == null || bpm <= 0) return;
+        final k = key.toString();
+        idx.byPath[_normPath(k)] = bpm;
+        idx.byName[_baseName(k).toLowerCase()] = bpm;
+      });
+      return idx;
+    } catch (_) {
+      return null;
+    }
   });
 }
 
-Future<double> _liveDjBpmFor(String path) async {
-  final normalized = path.replaceAll('\\', '/');
-  final slash = normalized.lastIndexOf('/');
-  final name = slash >= 0 ? normalized.substring(slash + 1) : normalized;
-  final dir = File(path).parent.path;
-  final cache = await _loadLiveDjBpmDir(dir);
-  final cached = cache[name];
-  if (cached != null && cached > 0) return cached;
+int _syncsafe(List<int> b, int o) =>
+    (b[o] << 21) | (b[o + 1] << 14) | (b[o + 2] << 7) | b[o + 3];
+
+double _parseBpmText(List<int> bytes) {
+  final sb = StringBuffer();
+  for (final b in bytes) {
+    if (b == 0x2E || (b >= 0x30 && b <= 0x39)) sb.writeCharCode(b);
+  }
+  return double.tryParse(sb.toString()) ?? 0.0;
+}
+
+/// Lee la etiqueta ID3v2 `TBPM` saltando frames grandes (carátulas).
+Future<double> _id3Bpm(String path) async {
+  RandomAccessFile? raf;
+  try {
+    raf = await File(path).open();
+    final head = await raf.read(10);
+    if (head.length < 10 ||
+        head[0] != 0x49 ||
+        head[1] != 0x44 ||
+        head[2] != 0x33) {
+      return 0.0;
+    }
+    final ver = head[3];
+    if (ver < 2 || ver > 4) return 0.0;
+    final tagEnd = 10 + _syncsafe(head, 6);
+    var pos = 10;
+
+    if (ver >= 3 && (head[5] & 0x40) != 0) {
+      await raf.setPosition(pos);
+      final ext = await raf.read(4);
+      if (ext.length < 4) return 0.0;
+      pos += ver == 4
+          ? _syncsafe(ext, 0)
+          : 4 +
+                ((ext[0] << 24) | (ext[1] << 16) | (ext[2] << 8) | ext[3]);
+    }
+
+    final hdrLen = ver == 2 ? 6 : 10;
+    while (pos + hdrLen <= tagEnd) {
+      await raf.setPosition(pos);
+      final h = await raf.read(hdrLen);
+      if (h.length < hdrLen || h[0] == 0) break;
+      final id = String.fromCharCodes(h.sublist(0, ver == 2 ? 3 : 4));
+      final int size = ver == 2
+          ? ((h[3] << 16) | (h[4] << 8) | h[5])
+          : (ver == 4
+                ? _syncsafe(h, 4)
+                : ((h[4] << 24) | (h[5] << 16) | (h[6] << 8) | h[7]));
+      if (size <= 0 || pos + hdrLen + size > tagEnd) break;
+      if (id == 'TBPM' || id == 'TBP') {
+        final body = await raf.read(size);
+        if (body.length > 1) return _parseBpmText(body.sublist(1));
+        return 0.0;
+      }
+      pos += hdrLen + size;
+    }
+  } catch (_) {
+    // sin etiqueta legible
+  } finally {
+    try {
+      await raf?.close();
+    } catch (_) {}
+  }
+  return 0.0;
+}
+
+Future<double> _resolveBpm(String path) async {
+  final normFull = _normPath(path);
+  final name = _baseName(path).toLowerCase();
+
+  // 1) _dj_metadata.json en la carpeta de la pista o en sus padres.
+  var dir = File(path).parent;
+  for (var depth = 0; depth < 6; depth++) {
+    final idx = await _loadIndex(dir.path);
+    if (idx != null) {
+      final hit = idx.byPath[normFull] ?? idx.byName[name];
+      if (hit != null && hit > 0) return hit;
+    }
+    final parent = dir.parent;
+    if (parent.path == dir.path) break;
+    dir = parent;
+  }
+
+  // 2) Etiqueta ID3 TBPM.
+  final tag = await _id3Bpm(path);
+  if (tag > 0) return tag;
+
+  // 3) Nombre del archivo.
   final match = RegExp(
     r'(?:\b|_|-)(\d{2,3}(?:\.\d+)?)\s*bpm\b',
     caseSensitive: false,
-  ).firstMatch(name);
+  ).firstMatch(_baseName(path));
   return match != null ? double.parse(match.group(1)!) : 0.0;
+}
+
+Future<double> _liveDjBpmFor(String path) {
+  return _bpmCache.putIfAbsent(path, () {
+    final fut = _resolveBpm(path);
+    // Un "sin dato" no se recuerda para siempre: Masterizar puede generar
+    // el BPM después y debe aparecer sin reiniciar la app.
+    fut.then((v) {
+      if (v <= 0) {
+        Future.delayed(const Duration(seconds: 45), () {
+          _bpmCache.remove(path);
+          _indexCache.clear();
+        });
+      }
+    });
+    return fut;
+  });
 }
 
 /// BPM de la canción, mostrado a la izquierda de cada fila del Cartridge.

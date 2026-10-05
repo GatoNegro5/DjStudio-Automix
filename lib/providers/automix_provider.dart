@@ -489,7 +489,12 @@ class AutomixNotifier extends Notifier<AutomixState> {
       for (final path in newPlaylistOrdered)
         if (!currentSet.contains(path) && !_shuffleKnown.contains(path)) path,
     ];
+    // Cola estable: añadir pistas ya no re-mezcla todo ni cambia el modo.
+    // El banco solo se aplica con lista vacía; con lista viva, las pistas
+    // nuevas se anexan abajo (rama siguiente) y el orden previo se conserva.
     if (added.isNotEmpty &&
+        state.playlist.isEmpty &&
+        state.mixStrategy == MixStrategy.random &&
         newPlaylistOrdered.length > 2 &&
         !_isCrossfading) {
       state = state.copyWith(

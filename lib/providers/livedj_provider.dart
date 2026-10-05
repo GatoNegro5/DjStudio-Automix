@@ -93,6 +93,9 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
   bool _isCrossfading = false;
   bool _parking = false;
   bool _isStandbyArmed = false;
+  // Pista realmente precargada en el deck standby. Si la cola cambia
+  // (quitar, shuffle, otra pista) antes del cruce, se vuelve a cargar.
+  String? _standbyArmedPath;
   bool _isPrepModeBypass = false;
   int _lastSavedPositionMs = 0;
   int _lastUiPosMs = -1;
@@ -439,7 +442,9 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
         currentTrackPath = null;
       }
       if (currentTrackPath == null && queueFiles.isNotEmpty) {
-        currentTrackPath = queueFiles.first.path;
+        // La pista que pasa a "actual" sale de la cola (cartridge destructiva);
+        // si no, volvería a sonar al terminar.
+        currentTrackPath = queueFiles.removeAt(0).path;
       }
       final positionMs = data['positionMs'] as int?;
 
@@ -479,9 +484,7 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
           await _activePlayer.play();
         }
       }
-      if (state.mixStrategy == LiveDjMixStrategy.random) {
-        _applyLiveShuffleBank(advance: false);
-      }
+      // El orden guardado de la cola es la verdad: no se re-mezcla al reabrir.
     } catch (_) {
     } finally {
       _sessionHydrated = true;
@@ -490,9 +493,10 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
 
   void addTrack(File file) {
     if (!state.queue.any((f) => f.path == file.path)) {
+      // Cola estable: la pista nueva va al final; lo ya cargado no se mueve
+      // ni cambia de modo (secuencial/shuffle solo lo cambia el botón).
       state = state.copyWith(queue: [...state.queue, file]);
       _saveSnapshot();
-      _applyLiveShuffleBank(advance: true);
     }
   }
 
@@ -502,9 +506,13 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
         .where((f) => !currentPaths.contains(f.path))
         .toList();
     if (newFiles.isNotEmpty) {
+      // Cola estable: solo se mezcla el lote nuevo (y solo en modo shuffle);
+      // lo ya cargado conserva su orden.
+      if (state.mixStrategy == LiveDjMixStrategy.random) {
+        newFiles.shuffle(Random());
+      }
       state = state.copyWith(queue: [...state.queue, ...newFiles]);
       _saveSnapshot();
-      _applyLiveShuffleBank(advance: true);
     }
   }
 
@@ -555,9 +563,17 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
             .toList();
 
         if (newFiles.isNotEmpty) {
-          state = state.copyWith(queue: [...state.queue, ...newFiles]);
-          _saveSnapshot();
-          _applyLiveShuffleBank(advance: true);
+          final currentPaths = state.queue.map((f) => f.path).toSet();
+          final fresh = newFiles
+              .where((f) => !currentPaths.contains(f.path))
+              .toList();
+          if (state.mixStrategy == LiveDjMixStrategy.random) {
+            fresh.shuffle(Random());
+          }
+          if (fresh.isNotEmpty) {
+            state = state.copyWith(queue: [...state.queue, ...fresh]);
+            _saveSnapshot();
+          }
         }
       }
     } catch (e) {
@@ -568,16 +584,9 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
   Future<void> playTrackFromQueue(int index) async {
     if (index < 0 || index >= state.queue.length || _isCrossfading) return;
 
-    final selectedFile = state.queue[index];
-
-    List<File> newQueue = List.from(state.queue);
-    newQueue.removeAt(index);
-    newQueue.insert(0, selectedFile);
-
-    state = state.copyWith(queue: newQueue);
-
+    // La pista tocada suena tal cual; el resto de la cola NO se reordena.
     _isPrepModeBypass = false;
-    await forceNext();
+    await forceNext(queueIndex: index);
   }
 
   void _attachListeners(Player player) {
@@ -623,9 +632,11 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
             posMs >= (triggerMs - 10000) &&
             triggerMs > 10000) {
           _isStandbyArmed = true;
+          final String armPath = state.queue[_nextQueueIndex()].path;
+          _standbyArmedPath = armPath;
           await _standbyPlayer.setVolume(0.0);
           await _standbyPlayer.open(
-            Media(state.queue[_nextQueueIndex()].path),
+            Media(armPath),
             play: false,
           );
         }
@@ -732,13 +743,17 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
     await _activePlayer.seek(position);
   }
 
-  Future<void> forceNext() async {
+  Future<void> forceNext({int? queueIndex}) async {
     if (_isCrossfading) return;
     if (state.queue.isEmpty) {
       await _stopWhenNoNext();
       return;
     }
-    await _triggerCrossfade(forceJit: true, isManualSkip: true);
+    await _triggerCrossfade(
+      forceJit: true,
+      isManualSkip: true,
+      queueIndex: queueIndex,
+    );
   }
 
   Future<void> _stopWhenNoNext() async {
@@ -790,11 +805,12 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
   Future<void> _triggerCrossfade({
     bool forceJit = false,
     bool isManualSkip = false,
+    int? queueIndex,
   }) async {
     if (_isCrossfading || state.queue.isEmpty) return;
     _isCrossfading = true;
 
-    final int nextIdx = _nextQueueIndex();
+    final int nextIdx = queueIndex ?? _nextQueueIndex();
     if (nextIdx < 0 || nextIdx >= state.queue.length) {
       _isCrossfading = false;
       await _stopWhenNoNext();
@@ -804,7 +820,7 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
     final Player fadingPlayer = _activePlayer;
     final Player incomingPlayer = _standbyPlayer;
 
-    if (!_isStandbyArmed || forceJit) {
+    if (!_isStandbyArmed || forceJit || _standbyArmedPath != nextTrack) {
       try {
         await incomingPlayer.setVolume(0.0);
         await incomingPlayer.open(Media(nextTrack), play: false);
@@ -860,8 +876,11 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
     _isStandbyArmed = false;
     _attachListeners(_activePlayer);
 
+    // Se quita por ruta (no por índice): la cola pudo cambiar durante la
+    // carga (quitar, añadir, shuffle) y un índice viejo borraría otra pista.
     List<File> newQueue = List.from(state.queue);
-    newQueue.removeAt(nextIdx);
+    final int removeAt = newQueue.indexWhere((f) => f.path == nextTrack);
+    if (removeAt >= 0) newQueue.removeAt(removeAt);
 
     state = state.copyWith(
       queue: newQueue,

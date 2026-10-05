@@ -4,6 +4,12 @@ Fuente única. No hay `REGLAS.md` ni otros `.mdc` de ley. No pedir a Gabriel que
 
 **Obligatorio en todo chat (también el primero).** Cursor inyecta este archivo + `.cursor/rules/contexto.mdc` (`alwaysApply`) en cada turno. Gabriel **no** tiene que escribir “cero diff”, “no borres” ni pegar este bloque. Si el mensaje no lo dice, el default sigue siendo **Se elimina: NADA**. Silencio ≠ permiso. “Arregla”, “revisa”, “urgente”, “desfasada” **no derogan**. Culpa de un borrado colateral = del agente, no de Gabriel por no repetirlo.
 
+## 00. Todo cambio = todos los dispositivos (ley)
+
+**Todo cambio que Gabriel pida aplica a TODOS los dispositivos:** Windows, Android, macOS **e iPhone** (entrada independiente `lib/djiphone/main.dart` + `PlatformMixStrategy` por plataforma). No se entrega un arreglo/feature "solo Windows" ni "solo celular". Si el código vive en una capa compartida (`lib/providers`, `lib/ui/workspaces`), basta un diff; si hay una estrategia/ruta por plataforma (`lib/core/hal/platform_strategy.dart`, `djiphone/`, rutas de sesión, permisos), se revisa y se alinea en el mismo turno. Si algo no puede ser igual en una plataforma (p. ej. voz/ruido en celular), se dice explícito en el cierre; nunca se deja en silencio.
+
+Verificación mínima al cerrar: nombrar las 4 plataformas y confirmar que el diff las cubre (o cuál queda excluida y por qué). Despliegue = commit + tag `v*` + push (el CI de GitHub arma los ejecutables).
+
 ## 0. UI = LOG + OK
 
 Sustituir un hijo (p. ej. rueda LRC por 2 `Text`) = borrar. Compactar, “2 líneas”, “overflow” o “solo celular” no autorizan borrar.
@@ -73,7 +79,7 @@ Bucle infinito. Zero-Start (evasión de silencios). LRC (LRCLib). Lectura de let
 ## 4. Módulos
 
 - **Automix** — `automix_workspace.dart` / `automix_provider.dart`. Leer letra y marcar SET IN/OUT. Sin eso no tiene objeto.
-- **Live DJ** — `livedj_workspace.dart` / `liveDjProvider`. Fiestas. Cartridge FIFO destructiva. ADN DJ: Remix/EDM ~65 %, Tropical/Salsa/Merengue ~80 %, resto ~75 %. Nadie lee letra ni marca SET I/O. El empate debe ser exacto. Misma terna: Explorador | carpeta | **Cartridge**. Tres motores (TIPO DE MEZCLA cicla 1→2→3; no borrar ninguno): (1) **DNA** 65/80/75 + cue-in Zero-Start 10 s si pista > 30 s + fade 18 s + BPM ±12 %; (2) **Phrase 8** mismo ADN, snap 8 compases, `phraseFadeMs`; (3) **Stealth** entra 5–10 %, cruza ~60 %, cola BPM, `lyricMs` vacío (no lee `.lrc`).
+- **Live DJ** — `livedj_workspace.dart` / `liveDjProvider`. Fiestas. Cartridge FIFO destructiva. ADN DJ: Remix/EDM ~65 %, Tropical/Salsa/Merengue ~80 %, resto ~75 %. Nadie lee letra ni marca SET I/O. El empate debe ser exacto. Layout vigente (2026-10-04): **Explorador** = columna izquierda a toda la altura, pegada al header (flex 5); a su derecha (flex 19) el player arriba y debajo **carpeta (4) | Cartridge (5)**. Cada fila del Cartridge muestra el **BPM a la izquierda** de la canción (`livedj_bpm_badge.dart`; orden: `_dj_metadata.json` en la carpeta o padres → etiqueta ID3 `TBPM` → nombre del archivo → "–"). Independiente de Automix: `liveDjDirectoryProvider` (explorador), `liveDjEqualizerProvider` (EQ), controles del SO por motor activo; nada compartido (el BPM del Cartridge no usa `bpmCacheProvider`). Tres motores (TIPO DE MEZCLA cicla 1→2→3; no borrar ninguno): (1) **DNA** 65/80/75 + cue-in Zero-Start 10 s si pista > 30 s + fade 18 s + BPM ±12 %; (2) **Phrase 8** mismo ADN, snap 8 compases, `phraseFadeMs`; (3) **Stealth** entra 5–10 %, cruza ~60 %, cola BPM, `lyricMs` vacío (no lee `.lrc`).
 - **Karaoke** — `karaoke_workspace.dart` + `djstudio_tv/`. Laptop = mando (QR, cola, pausa/skip/borrar, INICIAR/FINALIZAR). TV = audio + letra. Laptop **no** abre `media_kit`. Monitor de letra en laptop = reloj visual, sin sonido.
   - `INICIAR KARAOKE` → `EDGE_EXECUTE` (`_K.mp3` + `.lrc` HTTP :55056).
   - `STAGE_STATE` replica cola/QR/votos/pausa. `TV_PAUSE` / `TV_SKIP` / `TV_REMOVE` suben del mando.
@@ -90,7 +96,7 @@ Bucle infinito. Zero-Start (evasión de silencios). LRC (LRCLib). Lectura de let
 |---|---|---|
 | Nav | sidebar **160 px** `_DjStudioNavColumn` | `_MobileModeBar` **36 px** (`☰ Título ▾`) + overlay 228 px. **No** rail a pantalla completa |
 | Stage | resto del Row | `SafeArea` → mode bar → IndexedStack. Padding derecho **48 px** si `viewPadding.right == 0` (gutter Xiaomi) |
-| Audio | n/a | Minimizar = sigue + `persistSession`. Cerrar = persist + `parkIdleDecks` + stop. Reabrir = misma canción y posición |
+| Audio | n/a | Minimizar = sigue + `persistSession`. Cerrar = persist + `parkIdleDecks` + stop. Reabrir = misma canción y posición. Android: servicio en primer plano (`audio_service`) con latido por segundo; sin él el SO mata el proceso tras ~10 canciones |
 
 **Paleta (ley):** C Traktor / Native Instruments. Gabriel la cerró 2026-09-21. No volver a Pioneer A ni Serato B. Tokens en `DjStudioTheme` (`lib/providers/theme_provider.dart`). Prohibido hardcodear fondos `#161616` / `#222222`.
 
@@ -103,7 +109,7 @@ Bucle infinito. Zero-Start (evasión de silencios). LRC (LRCLib). Lectura de let
 | `syncActive` | `#00E676` | Sync / menú idle |
 | menú seleccionado | `#43B3AE` | Cardenillo |
 
-**Huecos:** Automix mixer **5** / terna **5** (árbol 2 · pistas 4 · cola 5). Live DJ celular player **4** / terna **6** (árbol 2 · carpeta 4 · cartridge 5); Windows player 5 / fila 5. Lab: 2 · 3 · 5.
+**Huecos:** Automix mixer **5** / terna **5** (árbol 2 · pistas 4 · cola 5). Live DJ (todas las plataformas): Explorador 5 | columna derecha 19; en la derecha celular player **4** / fila **6**, Windows player 5 / fila 5, y la fila = carpeta 4 · cartridge 5. (Antes: árbol 2 · carpeta 4 · cartridge 5 bajo el player.) Lab: 2 · 3 · 5.
 
 Overflow amarillo = fallo de cálculo. Hijos no-flex (IconButton 48, Slider) no pueden sumar más que el slot: `tightFor` + `shrinkWrap` + FittedBox. **Cero** `BOTTOM OVERFLOWED`. Nunca quitar hijos para que “quepa”.
 
@@ -136,6 +142,18 @@ Prohibido mezclar listas/UI con el hilo acústico.
 Globales: `playedTracksProvider` (session JSON) · `bpmCacheProvider` (Rust `dspWorkerProvider`) · `wasapiRecordProvider` (Master Out dshow/avfoundation → FFmpeg).
 
 UI no muta estado a pelo: `Notifier` / `Provider`.
+
+## 6b. Colas — estabilidad y fin de cola (2026-10-04)
+
+**Cola estable (Live DJ y Automix):** una canción en cola no se mueve ni desaparece por sí sola.
+- Añadir (`+`, Cargar Carpeta, cargar playlist) **solo anexa al final**. Con shuffle activo se mezcla únicamente el lote nuevo; lo ya cargado conserva su orden. Añadir **no** cambia el modo secuencial/shuffle: eso lo decide solo el botón.
+- El banco de shuffle (10 órdenes) se aplica **solo** al pulsar el botón de shuffle (y en Automix con la lista vacía). Al reabrir la app **no** se re-mezcla: el orden guardado es la verdad.
+- Tocar una fila del Cartridge (play/fila) suena **esa** pista; el resto **no** se reordena (antes se movía al índice 0 y en Stealth sonaba otra).
+- Cruce: la pista entrante se quita de la cola **por ruta**, nunca por índice (la cola puede cambiar durante la carga). El deck standby recuerda qué pista precargó (`_standbyArmedPath`); si la cola cambió, se recarga.
+- Al restaurar sesión sin pista actual, la primera de la cola pasa a "actual" **y sale de la cola** (no suena dos veces).
+- Automix: `syncDynamicPlaylist` ya no re-mezcla todo ni fuerza random al añadir pistas.
+
+**Fin de cola (cola vacía):** se detiene el audio y se **borra la pista residual** (Live DJ: `currentTrackPath`, posición, duración, cue/mix-out; Automix: pista, playlist, índice, letra, solo con `autoMixArmed` y sin siguiente pista; con candado manual se conserva para SET IN/OUT). Se guarda el estado limpio. La siguiente carpeta cargada arranca desde su primera canción, sin reproducir la última de la cola anterior. `copyWith(clearCurrentTrackPath: true)` existe en ambos estados.
 
 ## 7. DSP
 
@@ -179,5 +197,7 @@ Workflow: `.github/workflows/release.yml`. Tag `v*` dispara build en las 3:
 | Android | ubuntu | `app-release.apk` |
 | Windows | windows | `DjStudio-Installer.exe` (`windows_setup.iss` / Inno Setup) |
 | macOS | macos | `DjStudio-MacOS.zip` |
+
+Versión actual desplegada: `v2.0.10` (v2.0.7: servicio en primer plano Android + TIPO DE MEZCLA persistente; v2.0.8: independencia Live DJ/Automix, fidelidad; v2.0.9: fin de cola, layout Live DJ, BPM Cartridge; v2.0.10: BPM por ruta/ID3, cola estable). Nunca commitear `GeneratedPluginRegistrant.swift`, `generated_plugin_registrant.cc`, `generated_plugins.cmake`.
 
 Rust targets por OS, `flutter_rust_bridge_codegen generate`, NDK r25c en APK, CocoaPods en Mac. Artefactos → GitHub Releases. Toda config de empaquetado debe cubrir esas 3; no dejar una plataforma fuera.
