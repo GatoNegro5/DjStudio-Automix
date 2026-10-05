@@ -30,26 +30,29 @@ android {
 
     // Llave fija de release (CI): misma firma en cada versión => el celular
     // actualiza encima sin desinstalar. Sin variables (build local) cae a debug.
+    // Sin variables: llave fija incluida en el repo (android/app/djstudio.jks),
+    // sin secretos: todas las compilaciones (CI o local) llevan la misma firma.
     val ksPath = System.getenv("ANDROID_KEYSTORE_PATH")
-    val hasReleaseKey = ksPath != null && file(ksPath).exists()
+    val hasEnvKey = ksPath != null && file(ksPath).exists()
     signingConfigs {
-        if (hasReleaseKey) {
-            create("djstudioRelease") {
+        create("djstudioRelease") {
+            if (hasEnvKey) {
                 storeFile = file(ksPath!!)
                 storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
                 keyAlias = System.getenv("ANDROID_KEY_ALIAS")
                 keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+            } else {
+                storeFile = file("djstudio.jks")
+                storePassword = "djstudio"
+                keyAlias = "djstudio"
+                keyPassword = "djstudio"
             }
         }
     }
 
     buildTypes {
         release {
-            signingConfig = if (hasReleaseKey) {
-                signingConfigs.getByName("djstudioRelease")
-            } else {
-                signingConfigs.getByName("debug")
-            }
+            signingConfig = signingConfigs.getByName("djstudioRelease")
         }
     }
 }
