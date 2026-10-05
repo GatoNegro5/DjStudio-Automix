@@ -109,13 +109,15 @@ class AudioEqualizerService {
       }
     }
 
-    currentBaseFilter = halFilter;
-    if (eqFilters.isNotEmpty) {
-      currentBaseFilter += ',${eqFilters.join(',')}';
-    }
-
-    // Limitador SIEMPRE al final de la cadena, después del ecualizador.
-    currentBaseFilter += ',${strategy.limiterFilter}';
+    // Cadena: color (vacío = plano) -> EQ -> nivelador de volumen -> limitador.
+    final List<String> chain = [
+      if (halFilter.isNotEmpty) halFilter,
+      ...eqFilters,
+      strategy.levelerFilter,
+      // Limitador SIEMPRE al final, después del ecualizador y el nivelador.
+      strategy.limiterFilter,
+    ];
+    currentBaseFilter = chain.join(',');
 
     // Aplicación atómica solo a los decks del motor dueño.
     final activePlayers = target == EqualizerTarget.automix

@@ -2,15 +2,28 @@ import 'dart:io';
 
 import '../../djiphone/iphone_library.dart';
 
-/// Limitador final. Siempre va DESPUÉS del ecualizador: cualquier realce
-/// que pase de 0 dBFS lo atrapa el limitador, no el recorte digital.
+/// Limitador final. Siempre va DESPUÉS del ecualizador y del nivelador:
+/// cualquier realce que pase de 0 dBFS lo atrapa el limitador, no el recorte.
 const String kHifiLimiter = 'alimiter=limit=0.95:level=disabled';
 
+/// Nivelador de volumen (todas las canciones a la misma sonoridad).
+/// Escritorio: EBU R128 (loudnorm) a -14 LUFS, el estándar de las
+/// plataformas de streaming, con pico real máximo de -1.5 dBTP.
+const String kLevelerDesktop = 'loudnorm=I=-14:LRA=9:TP=-1.5';
+
+/// Celular: normalizador dinámico liviano (loudnorm remuestrea a 192 kHz y
+/// con dos decks gastaría batería y CPU en segundo plano).
+const String kLevelerMobile = 'dynaudnorm=f=500:g=15:p=0.9:m=8';
+
 abstract class PlatformMixStrategy {
+  /// Cadena completa de arranque: nivelador + limitador, sin coloración.
   String get hifiFilter;
 
-  /// `hifiFilter` sin el limitador (color de la plataforma).
+  /// Color de la plataforma. Vacío = fidelidad plana (sin realces fijos).
   String get colorFilter;
+
+  /// Nivelador de volumen (va después del ecualizador).
+  String get levelerFilter;
 
   /// Limitador que cierra la cadena `af`.
   String get limiterFilter => kHifiLimiter;
@@ -20,11 +33,13 @@ abstract class PlatformMixStrategy {
 
 class WindowsMixStrategy implements PlatformMixStrategy {
   @override
-  String get hifiFilter =>
-      'bass=g=3:f=60,extrastereo=m=1.15,alimiter=limit=0.95:level=disabled';
+  String get hifiFilter => '$levelerFilter,$limiterFilter';
 
   @override
-  String get colorFilter => 'bass=g=3:f=60,extrastereo=m=1.15';
+  String get colorFilter => '';
+
+  @override
+  String get levelerFilter => kLevelerDesktop;
 
   @override
   String get limiterFilter => kHifiLimiter;
@@ -44,11 +59,13 @@ class WindowsMixStrategy implements PlatformMixStrategy {
 
 class MacOsMixStrategy implements PlatformMixStrategy {
   @override
-  String get hifiFilter =>
-      'bass=g=3:f=60,extrastereo=m=1.15,alimiter=limit=0.95:level=disabled';
+  String get hifiFilter => '$levelerFilter,$limiterFilter';
 
   @override
-  String get colorFilter => 'bass=g=3:f=60,extrastereo=m=1.15';
+  String get colorFilter => '';
+
+  @override
+  String get levelerFilter => kLevelerDesktop;
 
   @override
   String get limiterFilter => kHifiLimiter;
@@ -66,11 +83,13 @@ class MacOsMixStrategy implements PlatformMixStrategy {
 
 class AndroidMixStrategy implements PlatformMixStrategy {
   @override
-  String get hifiFilter =>
-      'bass=g=3:f=60,alimiter=limit=0.95:level=disabled';
+  String get hifiFilter => '$levelerFilter,$limiterFilter';
 
   @override
-  String get colorFilter => 'bass=g=3:f=60';
+  String get colorFilter => '';
+
+  @override
+  String get levelerFilter => kLevelerMobile;
 
   @override
   String get limiterFilter => kHifiLimiter;
@@ -98,11 +117,13 @@ class MixStrategyFactory {
 
 class IphoneMixStrategy implements PlatformMixStrategy {
   @override
-  String get hifiFilter =>
-      'bass=g=3:f=60,alimiter=limit=0.95:level=disabled';
+  String get hifiFilter => '$levelerFilter,$limiterFilter';
 
   @override
-  String get colorFilter => 'bass=g=3:f=60';
+  String get colorFilter => '';
+
+  @override
+  String get levelerFilter => kLevelerMobile;
 
   @override
   String get limiterFilter => kHifiLimiter;

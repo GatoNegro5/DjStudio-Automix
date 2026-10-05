@@ -213,6 +213,8 @@ Workflow: `.github/workflows/release.yml`. Tag `v*` dispara build en las 3:
 | Windows | windows | `DjStudio-Installer.exe` (`windows_setup.iss` / Inno Setup) |
 | macOS | macos | `DjStudio-MacOS.zip` |
 
+Sonido (todas las plataformas, `platform_strategy.dart` + `audio_equalizer_service.dart`): cadena `af` = color de plataforma (VACÍO: sin +3 dB de graves ni estéreo ensanchado fijos) -> EQ del usuario -> nivelador de volumen (escritorio: `loudnorm` -14 LUFS / TP -1.5; celular: `dynaudnorm` liviano) -> limitador 0.95. Todas las canciones salen al mismo volumen. Pendiente (fase 2): EQ adaptativa por canción con análisis espectral (solo escritorio, hay FFmpeg).
+
 Firma Android: el APK de CI se firma con llave fija (secretos de GitHub `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`; copia local en `%USERPROFILE%\djstudio-keys`, NUNCA al repo) y `versionCode = 100 + run_number`, para actualizar encima sin desinstalar. Sin secretos cae a firma debug.
 
 Controles externos (notificación / bloqueo): `DjAudioHandler` tiene un dueño (`claim` al sonar; `syncOs` solo escribe el dueño o quien suena). Título/duración se refrescan siempre con la pista real. `pause` real desde la notificación (se ignora ≤2 s tras minimizar: `noteAppBackgrounded`); `play` no pausa si ya suena. Automix siguiente/anterior dan la vuelta; Live DJ anterior reinicia la canción.
