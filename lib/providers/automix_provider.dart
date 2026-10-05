@@ -239,6 +239,39 @@ class AutomixNotifier extends Notifier<AutomixState> {
 
   Future<void> persistSession() => _saveSnapshot();
 
+  bool _pausedByInterruption = false;
+
+  /// Llamada/alarma/otra app: pausa ambos decks (también a mitad de un cruce)
+  /// sin tocar cola, posición ni sesión. Devuelve `true` si estaba sonando.
+  Future<bool> pauseForInterruption() async {
+    if (!state.isPlaying) return false;
+    _pausedByInterruption = true;
+    _cancelOutroProbe();
+    try {
+      await _playerA.pause();
+    } catch (_) {}
+    try {
+      await _playerB.pause();
+    } catch (_) {}
+    _saveSnapshot();
+    return true;
+  }
+
+  /// Reanuda exactamente donde quedó, solo si la pausa la causó el sistema.
+  Future<void> resumeAfterInterruption() async {
+    if (!_pausedByInterruption) return;
+    _pausedByInterruption = false;
+    try {
+      await _activeAutomix.play();
+    } catch (_) {}
+    if (_isCrossfading) {
+      try {
+        await _standbyPlayer.play();
+      } catch (_) {}
+    }
+    unawaited(_planVariableMixWindow());
+  }
+
   int? _readSavedUiRoute() {
     try {
       final session = _mixStrategy.getSessionPath();

@@ -54,6 +54,7 @@ dependencies:
   qr_flutter: ^4.1.0
   mime: ^2.0.0
   audio_service: ^0.18.19
+  audio_session: ^0.2.4
 dev_dependencies:
   flutter_test:
     sdk: flutter

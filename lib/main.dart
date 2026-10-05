@@ -28,6 +28,7 @@ import 'ui/workspaces/lan_sync_workspace.dart';
 import 'ui/workspaces/livedj_workspace.dart';
 import 'ui/workspaces/karaoke_workspace.dart';
 import 'services/voice_launch.dart';
+import 'services/audio_interruption.dart';
 
 // ==========================================
 // ENRUTADOR DE ESTADO (SPA - Single Page App)
@@ -188,15 +189,21 @@ class _MobileAudioLifecycle extends ConsumerStatefulWidget {
 
 class _MobileAudioLifecycleState extends ConsumerState<_MobileAudioLifecycle>
     with WidgetsBindingObserver {
+  late final AudioInterruptionGuard _focusGuard;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     globalAudioHandler.onAppDismissed = _silenceEngines;
+    // Llamadas / otras apps de audio: pausa y reanuda como app profesional.
+    _focusGuard = AudioInterruptionGuard(ref);
+    unawaited(_focusGuard.start());
   }
 
   @override
   void dispose() {
+    _focusGuard.dispose();
     if (identical(globalAudioHandler.onAppDismissed, _silenceEngines)) {
       globalAudioHandler.onAppDismissed = null;
     }

@@ -96,7 +96,7 @@ Bucle infinito. Zero-Start (evasión de silencios). LRC (LRCLib). Lectura de let
 |---|---|---|
 | Nav | sidebar **160 px** `_DjStudioNavColumn` | `_MobileModeBar` **36 px** (`☰ Título ▾`) + overlay 228 px. **No** rail a pantalla completa |
 | Stage | resto del Row | `SafeArea` → mode bar → IndexedStack. Padding derecho **48 px** si `viewPadding.right == 0` (gutter Xiaomi) |
-| Audio | n/a | Minimizar = sigue + `persistSession`. Cerrar = persist + `parkIdleDecks` + stop. Reabrir = misma canción y posición. Android: servicio en primer plano (`audio_service`) con latido por segundo; sin él el SO mata el proceso tras ~10 canciones |
+| Audio | n/a | Llamada = pausa y reanuda sola (§6c). Minimizar = sigue + `persistSession`. Cerrar = persist + `parkIdleDecks` + stop. Reabrir = misma canción y posición. Android: servicio en primer plano (`audio_service`) con latido por segundo; sin él el SO mata el proceso tras ~10 canciones |
 
 **Paleta (ley):** C Traktor / Native Instruments. Gabriel la cerró 2026-09-21. No volver a Pioneer A ni Serato B. Tokens en `DjStudioTheme` (`lib/providers/theme_provider.dart`). Prohibido hardcodear fondos `#161616` / `#222222`.
 
@@ -155,6 +155,15 @@ UI no muta estado a pelo: `Notifier` / `Provider`.
 
 **Fin de cola (cola vacía):** se detiene el audio y se **borra la pista residual** (Live DJ: `currentTrackPath`, posición, duración, cue/mix-out; Automix: pista, playlist, índice, letra, solo con `autoMixArmed` y sin siguiente pista; con candado manual se conserva para SET IN/OUT). Se guarda el estado limpio. La siguiente carpeta cargada arranca desde su primera canción, sin reproducir la última de la cola anterior. `copyWith(clearCurrentTrackPath: true)` existe en ambos estados.
 
+## 6c. Foco de audio e interrupciones (2026-10-04)
+
+`lib/services/audio_interruption.dart` (`AudioInterruptionGuard`, paquete `audio_session`), montado en `_MobileAudioLifecycle` (`main.dart`) y `_DjIphoneLifecycle` (`djiphone/main.dart`). Android + iPhone; Windows/macOS no aplica (sin llamadas).
+- Al sonar Automix o Live DJ pide el foco (`setActive(true)`); si el SO lo niega, no suena encima.
+- Llamada/alarma (interrupción temporal) → pausa ambos decks (también a mitad de cruce) con `pauseForInterruption()`; al terminar reanuda sola con `resumeAfterInterruption()`, solo si la pausa la causó el sistema.
+- Otra app toma el audio (pérdida permanente) o se desconectan auriculares/Bluetooth → pausa y **no** reanuda.
+- Navegación hablando (duck): la atenúa el SO; no se toca el volumen del motor de mezcla.
+- Pausa del usuario → suelta el foco. Cola, posición y sesión no se tocan.
+
 ## 7. DSP
 
 **DAWN:** crossfade logarítmico de alta energía. Cruce > 90 % de ganancia real. Prohibido `sin()`/`cos()` en la **ganancia** del crossfade (−3 dB en el medio). Sí trigonometría para otros parámetros (p. ej. `setRate()` al tempo).
@@ -198,6 +207,6 @@ Workflow: `.github/workflows/release.yml`. Tag `v*` dispara build en las 3:
 | Windows | windows | `DjStudio-Installer.exe` (`windows_setup.iss` / Inno Setup) |
 | macOS | macos | `DjStudio-MacOS.zip` |
 
-Versión actual desplegada: `v2.0.10` (v2.0.7: servicio en primer plano Android + TIPO DE MEZCLA persistente; v2.0.8: independencia Live DJ/Automix, fidelidad; v2.0.9: fin de cola, layout Live DJ, BPM Cartridge; v2.0.10: BPM por ruta/ID3, cola estable). Nunca commitear `GeneratedPluginRegistrant.swift`, `generated_plugin_registrant.cc`, `generated_plugins.cmake`.
+Versión actual desplegada: `v2.0.11` (v2.0.11: foco de audio / llamadas; v2.0.7: servicio en primer plano Android + TIPO DE MEZCLA persistente; v2.0.8: independencia Live DJ/Automix, fidelidad; v2.0.9: fin de cola, layout Live DJ, BPM Cartridge; v2.0.10: BPM por ruta/ID3, cola estable). Nunca commitear `GeneratedPluginRegistrant.swift`, `generated_plugin_registrant.cc`, `generated_plugins.cmake`.
 
 Rust targets por OS, `flutter_rust_bridge_codegen generate`, NDK r25c en APK, CocoaPods en Mac. Artefactos → GitHub Releases. Toda config de empaquetado debe cubrir esas 3; no dejar una plataforma fuera.
