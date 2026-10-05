@@ -641,7 +641,13 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
       final int osSecond = posMs ~/ 1000;
       if (osSecond != _lastOsSecond) {
         _lastOsSecond = osSecond;
-        globalAudioHandler.updateOsPlaybackState(state.isPlaying, pos);
+        globalAudioHandler.syncOs(
+          owner: 'livedj',
+          path: state.currentTrackPath,
+          duration: state.duration,
+          playing: state.isPlaying,
+          position: pos,
+        );
       }
 
       if (!_freezePersist) {
@@ -683,9 +689,12 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
     _durationSub = player.stream.duration.listen((dur) async {
       state = state.copyWith(duration: dur);
       if (dur.inMilliseconds > 0 && state.currentTrackPath != null) {
-        globalAudioHandler.updateOsMetadata(
-          title: state.currentTrackPath!.replaceAll('\\', '/').split('/').last,
+        globalAudioHandler.syncOs(
+          owner: 'livedj',
+          path: state.currentTrackPath,
           duration: dur,
+          playing: state.isPlaying,
+          position: state.position,
         );
         final triggerMs = _calculateRadioMixOut(
           dur.inMilliseconds,
@@ -713,12 +722,26 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
       state = state.copyWith(isPlaying: playing);
       if (playing) {
         // Controles de notificación/auriculares: el que suena es el dueño.
-        globalAudioHandler.onPlayPause = () => togglePlayPause();
-        globalAudioHandler.onNext = () => forceNext();
-        globalAudioHandler.onPrevious = null;
-        globalAudioHandler.onSeek = (pos) => seek(pos);
+        globalAudioHandler.claim(
+          'livedj',
+          onPlayPause: () => togglePlayPause(),
+          onPause: () async {
+            if (state.isPlaying) await togglePlayPause();
+          },
+          onNext: () => forceNext(),
+          // Anterior: reinicia la canción (la cola Live DJ es FIFO destructiva).
+          onPrevious: () => seek(Duration.zero),
+          onSeek: (pos) => seek(pos),
+          isPlaying: () => state.isPlaying,
+        );
       }
-      globalAudioHandler.updateOsPlaybackState(playing, state.position);
+      globalAudioHandler.syncOs(
+        owner: 'livedj',
+        path: state.currentTrackPath,
+        duration: state.duration,
+        playing: playing,
+        position: state.position,
+      );
     });
 
     _completedSub = player.stream.completed.listen((completed) {

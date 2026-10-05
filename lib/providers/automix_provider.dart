@@ -184,9 +184,8 @@ class AutomixNotifier extends Notifier<AutomixState> {
     _initPersistence();
 
     globalAudioHandler.onPlayPause = () => togglePlayPause();
-    globalAudioHandler.onNext = () => forceTransition(state.currentIndex + 1);
-    globalAudioHandler.onPrevious = () =>
-        forceTransition(state.currentIndex - 1);
+    globalAudioHandler.onNext = () => _osStep(1);
+    globalAudioHandler.onPrevious = () => _osStep(-1);
     globalAudioHandler.onSeek = (pos) => seek(pos);
 
     ref.onDispose(() {
@@ -926,6 +925,14 @@ class AutomixNotifier extends Notifier<AutomixState> {
     }
   }
 
+  /// Siguiente/anterior desde el icono exterior (notificación, bloqueo):
+  /// da la vuelta a la lista como una app profesional.
+  Future<void> _osStep(int delta) async {
+    final int n = state.playlist.length;
+    if (n < 2 || state.currentIndex < 0) return;
+    await forceTransition((state.currentIndex + delta) % n);
+  }
+
   Future<void> forceTransition(int index) async {
     await jumpToTrack(index);
   }
@@ -1519,7 +1526,13 @@ class AutomixNotifier extends Notifier<AutomixState> {
       }
 
       if (uiTick) {
-        globalAudioHandler.updateOsPlaybackState(state.isPlaying, pos);
+        globalAudioHandler.syncOs(
+          owner: 'automix',
+          path: state.currentTrackPath,
+          duration: state.duration,
+          playing: state.isPlaying,
+          position: pos,
+        );
       }
 
       if (state.autoMixArmed &&
@@ -1543,11 +1556,13 @@ class AutomixNotifier extends Notifier<AutomixState> {
       _recalculateMixWindow();
 
       if (state.currentTrackPath != null) {
-        final fileName = state.currentTrackPath!
-            .replaceAll('\\', '/')
-            .split('/')
-            .last;
-        globalAudioHandler.updateOsMetadata(title: fileName, duration: dur);
+        globalAudioHandler.syncOs(
+          owner: 'automix',
+          path: state.currentTrackPath,
+          duration: dur,
+          playing: state.isPlaying,
+          position: state.position,
+        );
       }
     });
 
@@ -1557,14 +1572,23 @@ class AutomixNotifier extends Notifier<AutomixState> {
       state = state.copyWith(isPlaying: playing);
       if (playing) {
         // Controles de notificación/auriculares: el que suena es el dueño.
-        globalAudioHandler.onPlayPause = () => togglePlayPause();
-        globalAudioHandler.onNext = () =>
-            forceTransition(state.currentIndex + 1);
-        globalAudioHandler.onPrevious = () =>
-            forceTransition(state.currentIndex - 1);
-        globalAudioHandler.onSeek = (pos) => seek(pos);
+        globalAudioHandler.claim(
+          'automix',
+          onPlayPause: () => togglePlayPause(),
+          onPause: () => pause(),
+          onNext: () => _osStep(1),
+          onPrevious: () => _osStep(-1),
+          onSeek: (pos) => seek(pos),
+          isPlaying: () => state.isPlaying,
+        );
       }
-      globalAudioHandler.updateOsPlaybackState(playing, state.position);
+      globalAudioHandler.syncOs(
+        owner: 'automix',
+        path: state.currentTrackPath,
+        duration: state.duration,
+        playing: playing,
+        position: state.position,
+      );
     });
 
     _completedSub = player.stream.completed.listen((completed) {

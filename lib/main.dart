@@ -234,6 +234,9 @@ class _MobileAudioLifecycleState extends ConsumerState<_MobileAudioLifecycle>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (!Platform.isAndroid && !Platform.isIOS) return;
+    if (state != AppLifecycleState.resumed) {
+      globalAudioHandler.noteAppBackgrounded();
+    }
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden) {
       try {

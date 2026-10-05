@@ -203,6 +203,9 @@ class _DjIphoneLifecycleState extends ConsumerState<_DjIphoneLifecycle>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) {
+      globalAudioHandler.noteAppBackgrounded();
+    }
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden) {
       try {
