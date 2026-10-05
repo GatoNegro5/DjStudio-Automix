@@ -18,11 +18,13 @@ import 'package:djstudio_player/services/audio_interruption.dart';import 'packag
 import 'package:djstudio_player/ui/workspaces/dsp_workspace.dart';
 import 'package:djstudio_player/ui/workspaces/lan_sync_workspace.dart';
 import 'package:djstudio_player/ui/workspaces/livedj_workspace.dart';
+import 'package:djstudio_player/ui/workspaces/fiestadj_workspace.dart';
+import 'package:djstudio_player/providers/fiestadj_provider.dart';
 
 /// Entrada de DjIphone. No es lib/main.dart.
 /// Pantallas: Automix, Live DJ, Masterizar, LAN Sync.
 /// Índices iguales al player de escritorio (0, 5, 1, 4).
-const int _kRouteCount = 7;
+const int _kRouteCount = 8;
 
 class DjIphoneRouter extends Notifier<int> {
   @override
@@ -42,7 +44,9 @@ class DjIphoneRouter extends Notifier<int> {
   void persistRoute() => _writeRoute(state);
 
   int _keep(int route) {
-    if (route == 0 || route == 1 || route == 4 || route == 5) return route;
+    if (route == 0 || route == 1 || route == 4 || route == 5 || route == 7) {
+      return route;
+    }
     return 0;
   }
 
@@ -195,6 +199,9 @@ class _DjIphoneLifecycleState extends ConsumerState<_DjIphoneLifecycle>
     } catch (_) {}
     try {
       await ref.read(liveDjProvider.notifier).parkIdleDecks(force: true);
+    } catch (_) {}
+    try {
+      await ref.read(fiestaDjProvider.notifier).parkAll();
     } catch (_) {}
     try {
       await globalAudioHandler.stop();
@@ -413,6 +420,7 @@ class _DjIphoneStage extends ConsumerWidget {
           LanSyncWorkspace(),
           LiveDjWorkspace(),
           SizedBox.shrink(),
+          FiestaDjWorkspace(),
         ],
       ),
     );
@@ -429,6 +437,8 @@ String _title(int route) {
       return 'LAN Sync';
     case 5:
       return 'Live DJ';
+    case 7:
+      return 'FiestaDJ';
     default:
       return 'DjIphone';
   }
@@ -444,6 +454,8 @@ Color _accent(int route) {
       return DjStudioTheme.masterPeak;
     case 5:
       return DjStudioTheme.syncActive;
+    case 7:
+      return const Color(0xFFFF4081);
     default:
       return DjStudioTheme.textMain;
   }
@@ -550,6 +562,7 @@ class _DjIphoneNav extends ConsumerWidget {
         tile(icon: Icons.radio, label: 'Live DJ', route: 5),
         tile(icon: Icons.settings, label: 'Masterizar', route: 1),
         tile(icon: Icons.wifi_tethering, label: 'LAN Sync', route: 4),
+        tile(icon: Icons.celebration, label: 'FiestaDJ', route: 7),
         motor,
       ],
     );

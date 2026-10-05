@@ -2419,11 +2419,14 @@ class WasapiRecordNotifier extends Notifier<bool> {
   @override
   bool build() => false;
 
-  Future<void> toggleRecording(BuildContext context) async {
+  Future<void> toggleRecording(
+    BuildContext context, {
+    String filePrefix = 'LiveMix',
+  }) async {
     if (state) {
       await stopRecording(context);
     } else {
-      await startRecording(context);
+      await startRecording(context, filePrefix: filePrefix);
     }
   }
 
@@ -2475,7 +2478,10 @@ class WasapiRecordNotifier extends Notifier<bool> {
     }
   }
 
-  Future<void> startRecording(BuildContext context) async {
+  Future<void> startRecording(
+    BuildContext context, {
+    String filePrefix = 'LiveMix',
+  }) async {
     if (Platform.isAndroid || Platform.isIOS) {
       if (context.mounted) {
         _showErrorDialog(
@@ -2502,7 +2508,7 @@ class WasapiRecordNotifier extends Notifier<bool> {
         .split('.')
         .first;
     _currentOutputPath =
-        '${dir.path}${Platform.pathSeparator}LiveMix_$dateStr.mp3';
+        '${dir.path}${Platform.pathSeparator}${filePrefix}_$dateStr.mp3';
     _lastErrorLog = "";
 
     try {
@@ -2550,7 +2556,7 @@ class WasapiRecordNotifier extends Notifier<bool> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              '🔴 GRABANDO MASTER OUT: LiveMix_$dateStr.mp3',
+              '🔴 GRABANDO MASTER OUT: ${filePrefix}_$dateStr.mp3',
               style: const TextStyle(
                 color: Colors.white,
                 fontWeight: FontWeight.bold,
