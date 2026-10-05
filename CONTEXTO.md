@@ -199,9 +199,11 @@ final smoothRateOut = pow(rateOut, 1.2).toDouble();
 
 ## 9. Permisos Android (APK)
 
-`READ_EXTERNAL_STORAGE` · `WRITE_EXTERNAL_STORAGE` · `MANAGE_EXTERNAL_STORAGE` (API 30+). Escritura en `/storage/emulated/0/Music`.
+`READ_EXTERNAL_STORAGE` · `WRITE_EXTERNAL_STORAGE` · `MANAGE_EXTERNAL_STORAGE` (API 30+). Escritura en `/storage/emulated/0/Music`. Sin micrófono: `RECORD_AUDIO` y los `<queries>` de voz (reconocedor/TTS) se quitaron el 2026-10-05.
 
 ## 10. CI GitHub (Windows · Android · macOS)
+
+**Regla de Gabriel (2026-10-05): NO hacer `git push` (ni subir tags) a GitHub hasta que él lo diga directamente.** Esto anula el "OK = desplegar" de la sección 0: tras un OK se aplican los cambios y se puede hacer commit local, pero el push solo cuando Gabriel escriba la orden. Un tag pusheado dispara el CI.
 
 Workflow: `.github/workflows/release.yml`. Tag `v*` dispara build en las 3:
 
