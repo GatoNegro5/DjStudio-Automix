@@ -28,11 +28,28 @@ android {
         }
     }
 
+    // Llave fija de release (CI): misma firma en cada versión => el celular
+    // actualiza encima sin desinstalar. Sin variables (build local) cae a debug.
+    val ksPath = System.getenv("ANDROID_KEYSTORE_PATH")
+    val hasReleaseKey = ksPath != null && file(ksPath).exists()
+    signingConfigs {
+        if (hasReleaseKey) {
+            create("djstudioRelease") {
+                storeFile = file(ksPath!!)
+                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("ANDROID_KEY_ALIAS")
+                keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (hasReleaseKey) {
+                signingConfigs.getByName("djstudioRelease")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 }

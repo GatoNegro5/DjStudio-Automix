@@ -213,6 +213,8 @@ Workflow: `.github/workflows/release.yml`. Tag `v*` dispara build en las 3:
 | Windows | windows | `DjStudio-Installer.exe` (`windows_setup.iss` / Inno Setup) |
 | macOS | macos | `DjStudio-MacOS.zip` |
 
+Firma Android: el APK de CI se firma con llave fija (secretos de GitHub `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`; copia local en `%USERPROFILE%\djstudio-keys`, NUNCA al repo) y `versionCode = 100 + run_number`, para actualizar encima sin desinstalar. Sin secretos cae a firma debug.
+
 Controles externos (notificación / bloqueo): `DjAudioHandler` tiene un dueño (`claim` al sonar; `syncOs` solo escribe el dueño o quien suena). Título/duración se refrescan siempre con la pista real. `pause` real desde la notificación (se ignora ≤2 s tras minimizar: `noteAppBackgrounded`); `play` no pausa si ya suena. Automix siguiente/anterior dan la vuelta; Live DJ anterior reinicia la canción.
 
 Versión actual desplegada: `v2.0.14` (v2.0.14: controles externos con dueño + permisos de voz quitados de Android; v2.0.13: se elimina toda la voz; v2.0.12: voz (eliminada); v2.0.11: foco de audio / llamadas; v2.0.7: servicio en primer plano Android + TIPO DE MEZCLA persistente; v2.0.8: independencia Live DJ/Automix, fidelidad; v2.0.9: fin de cola, layout Live DJ, BPM Cartridge; v2.0.10: BPM por ruta/ID3, cola estable). Nunca commitear `GeneratedPluginRegistrant.swift`, `generated_plugin_registrant.cc`, `generated_plugins.cmake`.

@@ -89,13 +89,33 @@ jobs:
           ndk-version: r25c # Versión de producción más estable para Flutter/Rust
           add-to-path: false
 
+      # Llave fija de Android: el APK siempre lleva la misma firma y el
+      # celular actualiza encima sin desinstalar.
+      - name: Prepare Android signing key
+        if: matrix.target == 'apk'
+        shell: bash
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/djstudio-release.jks"
+            echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/djstudio-release.jks" >> "$GITHUB_ENV"
+          fi
+
       - name: Build Platform
         shell: bash
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
-          ${{ matrix.build_cmd }}
+          if [ "${{ matrix.target }}" = "apk" ]; then
+            flutter build apk --release --build-number=$((100 + ${{ github.run_number }}))
+          else
+            ${{ matrix.build_cmd }}
+          fi
 
       - name: Compile Windows Installer
         if: matrix.target == 'windows'
