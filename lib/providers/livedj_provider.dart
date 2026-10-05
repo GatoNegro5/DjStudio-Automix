@@ -501,6 +501,7 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
       _freezePersist = false;
       if (currentTrackPath != null && _readSavedUiRoute() == 5) {
         await _activePlayer.open(Media(currentTrackPath), play: false);
+        ref.read(liveDjEqualizerProvider.notifier).adapt(_activePlayer, currentTrackPath);
         try {
           await _activePlayer.stream.duration
               .firstWhere((d) => d.inMilliseconds > 0)
@@ -676,6 +677,7 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
             Media(armPath),
             play: false,
           );
+          ref.read(liveDjEqualizerProvider.notifier).adapt(_standbyPlayer, armPath);
         }
 
         if (posMs >= triggerMs) {
@@ -778,6 +780,7 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
       }
       try {
         await _activePlayer.open(Media(path), play: true);
+        ref.read(liveDjEqualizerProvider.notifier).adapt(_activePlayer, path);
         _attachListeners(_activePlayer);
       } catch (e) {
         debugPrint("🔴 [LIVEDJ OPEN]: $e");
@@ -878,6 +881,7 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
       try {
         await incomingPlayer.setVolume(0.0);
         await incomingPlayer.open(Media(nextTrack), play: false);
+        ref.read(liveDjEqualizerProvider.notifier).adapt(incomingPlayer, nextTrack);
         try {
           await incomingPlayer.stream.duration
               .firstWhere((d) => d.inMilliseconds > 0)
@@ -968,14 +972,15 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
     bool isManualSkip = false,
     int? manualMixDurationMs,
   }) async {
-    final String currentBaseFilter = ref
-        .read(liveDjEqualizerProvider.notifier)
-        .currentBaseFilter;
+    final eqN = ref.read(liveDjEqualizerProvider.notifier);
+    String inBase() => eqN.filterFor(incomingPlayer);
+    String outBase() => eqN.filterFor(fadingPlayer);
     final platformOut = fadingPlayer.platform as dynamic;
     final platformIn = incomingPlayer.platform as dynamic;
 
     final bool useBassSwap = mixProfile == LiveDjMixMode.activeSync;
-    final String lowCutFilter = '$currentBaseFilter,$_bassKillFilter';
+    final String lowCutIn = '${inBase()},$_bassKillFilter';
+    final String lowCutOut = '${outBase()},$_bassKillFilter';
     bool bassSwapped = false;
 
     try {
@@ -983,9 +988,9 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
       platformOut?.setProperty('audio-pitch-correction', 'yes');
       platformIn?.setProperty(
         'af',
-        useBassSwap ? lowCutFilter : currentBaseFilter,
+        useBassSwap ? lowCutIn : inBase(),
       );
-      platformOut?.setProperty('af', currentBaseFilter);
+      platformOut?.setProperty('af', outBase());
 
       await incomingPlayer.setVolume(0.0);
 
@@ -1015,8 +1020,8 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
 
         if (useBassSwap && !bassSwapped && progress >= 0.5) {
           bassSwapped = true;
-          platformOut?.setProperty('af', lowCutFilter);
-          platformIn?.setProperty('af', currentBaseFilter);
+          platformOut?.setProperty('af', lowCutOut);
+          platformIn?.setProperty('af', inBase());
         }
 
         await incomingPlayer.setVolume(
@@ -1034,8 +1039,8 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
       try {
         await incomingPlayer.setVolume(100.0);
         if (!willGlideRate) await incomingPlayer.setRate(1.0);
-        platformIn?.setProperty('af', currentBaseFilter);
-        platformOut?.setProperty('af', currentBaseFilter);
+        platformIn?.setProperty('af', inBase());
+        platformOut?.setProperty('af', outBase());
         await fadingPlayer.setVolume(0.0);
         await fadingPlayer.setRate(1.0);
         await fadingPlayer.stop();

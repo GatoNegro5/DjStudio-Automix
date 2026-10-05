@@ -1,4 +1,5 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:media_kit/media_kit.dart';
 import '../services/audio_equalizer_service.dart';
 
 class EqualizerState {
@@ -47,6 +48,12 @@ class EqualizerNotifier extends StateNotifier<EqualizerState> {
   }
 
   String get currentBaseFilter => _service.currentBaseFilter;
+
+  /// Cadena `af` del deck con la corrección adaptativa de su canción.
+  String filterFor(Player player) => _service.filterFor(player);
+
+  /// Mide la canción recién abierta en [player] y aplica su curva.
+  void adapt(Player player, String path) => _service.adapt(player, path);
 
   void toggleEnabled(bool value) {
     state = state.copyWith(enabled: value);

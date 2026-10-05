@@ -12,6 +12,7 @@ import '../core/hal/platform_strategy.dart';
 import '../fiestadj/fiesta_beat_analyzer.dart';
 import '../fiestadj/fiesta_loop_synth.dart';
 import '../fiestadj/fiesta_planner.dart';
+import '../services/adaptive_eq.dart';
 import 'directory_provider.dart';
 
 /// Explorador propio de FiestaDj (carpeta y árbol independientes).
@@ -422,6 +423,18 @@ class FiestaDjNotifier extends Notifier<FiestaState> {
     d.startMs = d.grid ? info!.downbeatMs : 0;
     await d.player.setVolume(0);
     await d.player.open(Media(path), play: false);
+    AdaptiveEq.attach(
+      d.player,
+      path,
+      onReady: (s) {
+        try {
+          (d.player.platform as dynamic)?.setProperty(
+            'af',
+            '$s,${MixStrategyFactory.getStrategy().hifiFilter}',
+          );
+        } catch (_) {}
+      },
+    );
     try {
       await d.player.stream.duration
           .firstWhere((x) => x.inMilliseconds > 0)

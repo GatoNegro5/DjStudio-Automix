@@ -1,5 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:media_kit/media_kit.dart';
 import '../core/hal/platform_strategy.dart';
+import 'adaptive_eq.dart';
 import '../providers/automix_provider.dart';
 import '../providers/livedj_provider.dart';
 
@@ -118,6 +120,8 @@ class AudioEqualizerService {
       strategy.limiterFilter,
     ];
     currentBaseFilter = chain.join(',');
+    _preChain = [if (halFilter.isNotEmpty) halFilter, ...eqFilters];
+    _postChain = [strategy.levelerFilter, strategy.limiterFilter];
 
     // Aplicación atómica solo a los decks del motor dueño.
     final activePlayers = target == EqualizerTarget.automix
@@ -128,9 +132,33 @@ class AudioEqualizerService {
       try {
         await (player.platform as dynamic)?.setProperty(
           'af',
-          currentBaseFilter,
+          filterFor(player),
         );
       } catch (_) {}
     }
+  }
+
+  List<String> _preChain = const [];
+  List<String> _postChain = const [];
+
+  /// Cadena completa del [player]: EQ del usuario -> corrección adaptativa
+  /// de SU canción -> nivelador -> limitador. Sin perfil = cadena base.
+  String filterFor(Player player) {
+    final a = AdaptiveEq.snippetFor(player);
+    if (a.isEmpty || _postChain.isEmpty) return currentBaseFilter;
+    return [..._preChain, a, ..._postChain].join(',');
+  }
+
+  /// Llamar tras `open()` en un deck: mide la canción y aplica su curva.
+  void adapt(Player player, String path) {
+    AdaptiveEq.attach(
+      player,
+      path,
+      onReady: (_) {
+        try {
+          (player.platform as dynamic)?.setProperty('af', filterFor(player));
+        } catch (_) {}
+      },
+    );
   }
 }

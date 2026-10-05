@@ -346,6 +346,7 @@ class AutomixNotifier extends Notifier<AutomixState> {
           await _forceOpenAndPlay(playlist[index], seekMs: seekMs);
         } else {
           await _activeAutomix.open(Media(playlist[index]), play: false);
+          ref.read(automixEqualizerProvider.notifier).adapt(_activeAutomix, playlist[index]);
           try {
             await _activeAutomix.stream.duration
                 .firstWhere((d) => d.inMilliseconds > 0)
@@ -1071,6 +1072,7 @@ class AutomixNotifier extends Notifier<AutomixState> {
       try {
         await incomingPlayer.setVolume(0.0);
         await incomingPlayer.open(Media(nextTrack), play: false);
+        ref.read(automixEqualizerProvider.notifier).adapt(incomingPlayer, nextTrack);
       } catch (e) {
         _isCrossfading = false;
         return;
@@ -1173,6 +1175,7 @@ class AutomixNotifier extends Notifier<AutomixState> {
     try {
       await incomingPlayer.setVolume(0.0);
       await incomingPlayer.open(Media(nextTrack), play: false);
+      ref.read(automixEqualizerProvider.notifier).adapt(incomingPlayer, nextTrack);
     } catch (e) {
       _isCrossfading = false;
       return;
@@ -1262,6 +1265,7 @@ class AutomixNotifier extends Notifier<AutomixState> {
     try {
       await incomingPlayer.setVolume(0.0);
       await incomingPlayer.open(Media(nextTrack), play: false);
+      ref.read(automixEqualizerProvider.notifier).adapt(incomingPlayer, nextTrack);
     } catch (e) {
       _isCrossfading = false;
       return;
@@ -1341,15 +1345,16 @@ class AutomixNotifier extends Notifier<AutomixState> {
     double incomingRate = 1.0,
     bool isManualSkip = false,
   }) async {
-    final String currentBaseFilter = ref
-        .read(automixEqualizerProvider.notifier)
-        .currentBaseFilter;
+    final eqN = ref.read(automixEqualizerProvider.notifier);
+    String inBase() => eqN.filterFor(incomingPlayer);
+    String outBase() => eqN.filterFor(fadingPlayer);
     final platformOut = fadingPlayer.platform as dynamic;
     final platformIn = incomingPlayer.platform as dynamic;
 
     // Un skip manual de 4,5 s no da margen musical para permutar graves.
     final bool useBassSwap = mixProfile == AutomixMixProfile.smoothBassSwap;
-    final String lowCutFilter = '$currentBaseFilter,$_bassKillFilter';
+    final String lowCutIn = '${inBase()},$_bassKillFilter';
+    final String lowCutOut = '${outBase()},$_bassKillFilter';
     bool bassSwapped = false;
 
     try {
@@ -1359,9 +1364,9 @@ class AutomixNotifier extends Notifier<AutomixState> {
       // sumando energía en el cruce. Inaudible: su volumen todavía es 0.
       platformIn?.setProperty(
         'af',
-        useBassSwap ? lowCutFilter : currentBaseFilter,
+        useBassSwap ? lowCutIn : inBase(),
       );
-      platformOut?.setProperty('af', currentBaseFilter);
+      platformOut?.setProperty('af', outBase());
 
       await incomingPlayer.setVolume(0.0);
 
@@ -1385,8 +1390,8 @@ class AutomixNotifier extends Notifier<AutomixState> {
         // máximo de la mezcla.
         if (useBassSwap && !bassSwapped && progress >= 0.5) {
           bassSwapped = true;
-          platformOut?.setProperty('af', lowCutFilter);
-          platformIn?.setProperty('af', currentBaseFilter);
+          platformOut?.setProperty('af', lowCutOut);
+          platformIn?.setProperty('af', inBase());
         }
 
         await incomingPlayer.setVolume(
@@ -1406,8 +1411,8 @@ class AutomixNotifier extends Notifier<AutomixState> {
       try {
         await incomingPlayer.setVolume(100.0);
         if (!willGlideRate) await incomingPlayer.setRate(1.0);
-        platformIn?.setProperty('af', currentBaseFilter);
-        platformOut?.setProperty('af', currentBaseFilter);
+        platformIn?.setProperty('af', inBase());
+        platformOut?.setProperty('af', outBase());
         await fadingPlayer.setVolume(0.0);
         await fadingPlayer.setRate(1.0);
         await fadingPlayer.stop();
@@ -1832,6 +1837,7 @@ class AutomixNotifier extends Notifier<AutomixState> {
     if (!wasPlaying) {
       await incomingPlayer.setVolume(100.0);
       await incomingPlayer.open(Media(newPath), play: true);
+      ref.read(automixEqualizerProvider.notifier).adapt(incomingPlayer, newPath);
       _usePlayerA = !_usePlayerA;
       _attachListeners(_activeAutomix);
       return;
@@ -1841,6 +1847,7 @@ class AutomixNotifier extends Notifier<AutomixState> {
     try {
       await incomingPlayer.setVolume(0.0);
       await incomingPlayer.open(Media(newPath), play: false);
+      ref.read(automixEqualizerProvider.notifier).adapt(incomingPlayer, newPath);
       if (state.customCueInMs > 0) {
         await incomingPlayer.seek(Duration(milliseconds: state.customCueInMs));
       }
@@ -1887,6 +1894,7 @@ class AutomixNotifier extends Notifier<AutomixState> {
     final Player incoming = _standbyPlayer;
     await incoming.setVolume(100.0);
     await incoming.open(Media(path), play: true);
+    ref.read(automixEqualizerProvider.notifier).adapt(incoming, path);
     try {
       await incoming.stream.duration
           .firstWhere((d) => d.inMilliseconds > 0)
