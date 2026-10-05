@@ -78,5 +78,9 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>DJ Studio escucha tus órdenes de voz (pausa, siguiente, carpeta, volumen).</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>DJ Studio reconoce las órdenes de voz que le das.</string>
 </dict>
 </plist>

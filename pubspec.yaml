@@ -55,6 +55,7 @@ dependencies:
   mime: ^2.0.0
   audio_service: ^0.18.19
   audio_session: ^0.2.4
+  volume_controller: ^3.7.1
 dev_dependencies:
   flutter_test:
     sdk: flutter

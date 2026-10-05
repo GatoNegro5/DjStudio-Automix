@@ -15,6 +15,7 @@ import 'package:djstudio_player/providers/livedj_provider.dart';
 import 'package:djstudio_player/providers/pipeline_provider.dart';
 import 'package:djstudio_player/providers/theme_provider.dart';
 import 'package:djstudio_player/services/audio_interruption.dart';
+import 'package:djstudio_player/services/voice_commands.dart';
 import 'package:djstudio_player/ui/workspaces/automix_workspace.dart';
 import 'package:djstudio_player/ui/workspaces/dsp_workspace.dart';
 import 'package:djstudio_player/ui/workspaces/lan_sync_workspace.dart';
@@ -283,6 +284,17 @@ class _DjIphoneHome extends ConsumerStatefulWidget {
 }
 
 class _DjIphoneHomeState extends ConsumerState<_DjIphoneHome> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      ref
+          .read(voiceCommandsProvider.notifier)
+          .attachRoute(() => ref.read(djIphoneRouterProvider));
+    });
+  }
+
   void _openMenu() {
     ref.read(mobileNavOpenProvider.notifier).state = true;
   }
