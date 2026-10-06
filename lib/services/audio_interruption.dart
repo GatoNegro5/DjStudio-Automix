@@ -7,8 +7,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../providers/automix_provider.dart';
 import '../providers/livedj_provider.dart';
-import '../providers/fiestadj_provider.dart';
-
 /// Comportamiento de app profesional ante interrupciones del sistema
 /// (llamada telefónica, alarma, otra app de audio, auriculares fuera).
 ///
@@ -33,7 +31,6 @@ class AudioInterruptionGuard {
   final List<ProviderSubscription<dynamic>> _playingSubs = [];
   bool _resumeAutomix = false;
   bool _resumeLiveDj = false;
-  bool _resumeFiesta = false;
   // Pausa causada por el sistema: se conserva el foco para que Android nos
   // avise (GAIN) cuando termine la llamada y poder reanudar.
   bool _interrupted = false;
@@ -66,12 +63,6 @@ class AudioInterruptionGuard {
           (prev, next) => _onPlayingChanged(next),
         ),
       );
-      _playingSubs.add(
-        _ref.listenManual<bool>(
-          fiestaDjProvider.select((s) => s.isPlaying),
-          (prev, next) => _onPlayingChanged(next),
-        ),
-      );
     } catch (e) {
       debugPrint('🔴 [AUDIO FOCUS] init $e');
     }
@@ -89,8 +80,7 @@ class AudioInterruptionGuard {
 
   bool get _anyPlaying =>
       _ref.read(automixProvider).isPlaying ||
-      _ref.read(liveDjProvider).isPlaying ||
-      _ref.read(fiestaDjProvider).isPlaying;
+      _ref.read(liveDjProvider).isPlaying;
 
   void _onPlayingChanged(bool playing) {
     final session = _session;
@@ -138,7 +128,6 @@ class AudioInterruptionGuard {
         case AudioInterruptionType.unknown:
           _resumeAutomix = false;
           _resumeLiveDj = false;
-          _resumeFiesta = false;
           _interrupted = false;
           return;
       }
@@ -161,19 +150,11 @@ class AudioInterruptionGuard {
     } catch (e) {
       debugPrint('🔴 [AUDIO FOCUS] pause livedj $e');
     }
-    try {
-      final fiesta = _ref.read(fiestaDjProvider.notifier);
-      final paused = await fiesta.pauseForInterruption();
-      if (paused && resumeLater) _resumeFiesta = true;
-    } catch (e) {
-      debugPrint('🔴 [AUDIO FOCUS] pause fiesta $e');
-    }
     if (!resumeLater) {
       _resumeAutomix = false;
       _resumeLiveDj = false;
-      _resumeFiesta = false;
       _interrupted = false;
-    } else if (!_resumeAutomix && !_resumeLiveDj && !_resumeFiesta) {
+    } else if (!_resumeAutomix && !_resumeLiveDj) {
       // Nada sonaba: no hay nada que reanudar ni foco que retener.
       _interrupted = false;
     }
@@ -182,12 +163,10 @@ class AudioInterruptionGuard {
   Future<void> _resumeAll() async {
     final wantAutomix = _resumeAutomix;
     final wantLive = _resumeLiveDj;
-    final wantFiesta = _resumeFiesta;
     _resumeAutomix = false;
     _resumeLiveDj = false;
-    _resumeFiesta = false;
     _interrupted = false;
-    if (!wantAutomix && !wantLive && !wantFiesta) return;
+    if (!wantAutomix && !wantLive) return;
     final session = _session;
     if (session != null) {
       try {
@@ -207,13 +186,6 @@ class AudioInterruptionGuard {
         await _ref.read(liveDjProvider.notifier).resumeAfterInterruption();
       } catch (e) {
         debugPrint('🔴 [AUDIO FOCUS] resume livedj $e');
-      }
-    }
-    if (wantFiesta) {
-      try {
-        await _ref.read(fiestaDjProvider.notifier).resumeAfterInterruption();
-      } catch (e) {
-        debugPrint('🔴 [AUDIO FOCUS] resume fiesta $e');
       }
     }
   }

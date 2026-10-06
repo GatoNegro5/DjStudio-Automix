@@ -32,8 +32,8 @@ class AdaptiveProfile {
   }
 }
 
-/// Audio profesional automático por canción, compartido por Automix, Live DJ
-/// y FiestaDJ (cada uno lo aplica solo a sus propios decks):
+/// Audio profesional automático por canción, compartido por Automix y Live DJ
+/// (cada uno lo aplica solo a sus propios decks):
 ///
 ///  * EQ adaptativa: mide 30 s del tema en 10 bandas octava y corrige hacia
 ///    una curva típica de música comercial (máx ±3 dB; no realza bandas que

@@ -27,8 +27,6 @@ import 'ui/workspaces/lab_workspace.dart';
 import 'ui/workspaces/lan_sync_workspace.dart';
 import 'ui/workspaces/livedj_workspace.dart';
 import 'ui/workspaces/karaoke_workspace.dart';
-import 'ui/workspaces/fiestadj_workspace.dart';
-import 'providers/fiestadj_provider.dart';
 import 'services/audio_interruption.dart';
 
 // ==========================================
@@ -229,9 +227,6 @@ class _MobileAudioLifecycleState extends ConsumerState<_MobileAudioLifecycle>
       await ref.read(liveDjProvider.notifier).parkIdleDecks(force: true);
     } catch (_) {}
     try {
-      await ref.read(fiestaDjProvider.notifier).parkAll();
-    } catch (_) {}
-    try {
       await globalAudioHandler.stop();
     } catch (_) {}
   }
@@ -377,7 +372,6 @@ class _MainWorkspaceState extends ConsumerState<MainWorkspace> {
           LanSyncWorkspace(),
           LiveDjWorkspace(),
           KaraokeWorkspace(),
-          FiestaDjWorkspace(),
         ],
       ),
     );
@@ -394,14 +388,6 @@ class _MainWorkspaceState extends ConsumerState<MainWorkspace> {
       }
     });
     ref.listen<bool>(liveDjProvider.select((s) => s.isPlaying), (prev, next) {
-      final gov = ref.read(hardwareGovernorProvider.notifier);
-      if (next) {
-        gov.lockForLivePerformance();
-      } else {
-        gov.releaseLock();
-      }
-    });
-    ref.listen<bool>(fiestaDjProvider.select((s) => s.isPlaying), (prev, next) {
       final gov = ref.read(hardwareGovernorProvider.notifier);
       if (next) {
         gov.lockForLivePerformance();
@@ -519,8 +505,6 @@ String _moduleTitle(int route, bool mobile) {
       return "Live DJ";
     case 6:
       return "Karaoke";
-    case 7:
-      return "FiestaDJ";
     default:
       return "DjStudio";
   }
@@ -542,8 +526,6 @@ Color _moduleAccent(int route) {
       return DjStudioTheme.syncActive;
     case 6:
       return const Color(0xFF39FF14);
-    case 7:
-      return const Color(0xFFFF4081);
     default:
       return DjStudioTheme.textMain;
   }
@@ -647,12 +629,6 @@ class _DjStudioNavColumn extends ConsumerWidget {
           label: "Karaoke",
           route: 6,
           accent: const Color(0xFF39FF14),
-        ),
-        tile(
-          icon: Icons.celebration,
-          label: "FiestaDJ",
-          route: 7,
-          accent: const Color(0xFFFF4081),
         ),
       ],
     );
