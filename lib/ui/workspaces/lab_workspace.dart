@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:convert';
+import 'package:djstudio_player/services/karaoke_engine.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
@@ -400,56 +401,10 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
     }
   }
 
-  String _getFfprobePath() {
-    if (Platform.isAndroid || Platform.isIOS) return 'ffprobe';
-    if (Platform.isMacOS) {
-      if (File('/opt/homebrew/bin/ffprobe').existsSync()) {
-        return '/opt/homebrew/bin/ffprobe';
-      }
-      if (File('/usr/local/bin/ffprobe').existsSync()) {
-        return '/usr/local/bin/ffprobe';
-      }
-      return 'ffprobe';
-    }
-    final exeDir = File(Platform.resolvedExecutable).parent.path;
-    final localPath = Platform.isWindows
-        ? '$exeDir\\ffprobe.exe'
-        : '$exeDir/ffprobe';
-    return File(localPath).existsSync() ? localPath : 'ffprobe';
-  }
-
-  String _getFfmpegPath() {
-    if (Platform.isAndroid || Platform.isIOS) return 'ffmpeg';
-    if (Platform.isMacOS) {
-      if (File('/opt/homebrew/bin/ffmpeg').existsSync()) {
-        return '/opt/homebrew/bin/ffmpeg';
-      }
-      if (File('/usr/local/bin/ffmpeg').existsSync()) {
-        return '/usr/local/bin/ffmpeg';
-      }
-      return 'ffmpeg';
-    }
-    final exeDir = File(Platform.resolvedExecutable).parent.path;
-    final localPath = Platform.isWindows
-        ? '$exeDir\\ffmpeg.exe'
-        : '$exeDir/ffmpeg';
-    return File(localPath).existsSync() ? localPath : 'ffmpeg';
-  }
-
   Future<int> _getAudioDurationMs(String path) async {
     try {
-      final result = await Process.run(_getFfprobePath(), [
-        '-v',
-        'error',
-        '-show_entries',
-        'format=duration',
-        '-of',
-        'default=noprint_wrappers=1:nokey=1',
-        path,
-      ]);
-      final durationSec =
-          double.tryParse(result.stdout.toString().trim()) ?? 0.0;
-      return (durationSec * 1000).toInt();
+      // Rust/symphonia: sin ffprobe, igual en las 4 plataformas.
+      return (await rust_dsp.exactDurationMs(inputPath: path)).toInt();
     } catch (_) {
       return 0;
     }
@@ -1672,29 +1627,8 @@ class KaraokeAIEngine {
       return;
     }
 
-    debugPrint("🤖 [AI ENGINE] Lanzando subproceso Demucs en: $path");
-
-    try {
-      Process.start('python', [
-        'C:\\Python\\djstudio_player\\karaoke_ai_processor.py',
-        path,
-      ], runInShell: true).then((Process process) {
-        // Blindaje contra bytes malformados (cp1252 vs utf8)
-        const decoder = Utf8Decoder(allowMalformed: true);
-
-        process.stdout.transform(decoder).listen((data) {
-          debugPrint("🔵 [DEMUCS]: ${data.trim()}");
-        });
-        process.stderr.transform(decoder).listen((data) {
-          debugPrint("🔴 [DEMUCS PROGRESS]: ${data.trim()}");
-        });
-
-        process.exitCode.then((code) {
-          debugPrint("✅ [AI ENGINE] Extracción IA terminada con código: $code");
-        });
-      });
-    } catch (e) {
-      debugPrint("🔴 [FATAL I/O] Fallo al iniciar puente Python: $e");
-    }
+    debugPrint("🤖 [AI ENGINE] Karaoke IA (Rust/ONNX) en: $path");
+    KaraokeEngine.run(path, onStatus: (s) => debugPrint("🔵 [KARAOKE]: $s"))
+        .whenComplete(() => debugPrint("✅ [AI ENGINE] Extracción IA terminada"));
   }
 }

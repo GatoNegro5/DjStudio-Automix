@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:convert';
+import 'package:djstudio_player/services/karaoke_engine.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
@@ -166,19 +167,8 @@ class _YoutubeSearchAndDownloadWorkspaceState
 
   Future<int> _getAudioDurationMs(String path) async {
     try {
-      final ffprobePath = await _resolveBinary('ffprobe');
-      final result = await Process.run(ffprobePath, [
-        '-v',
-        'error',
-        '-show_entries',
-        'format=duration',
-        '-of',
-        'default=noprint_wrappers=1:nokey=1',
-        path,
-      ]);
-      final durationSec =
-          double.tryParse(result.stdout.toString().trim()) ?? 0.0;
-      return (durationSec * 1000).toInt();
+      // Rust/symphonia: sin ffprobe, igual en las 4 plataformas.
+      return (await rust_dsp.exactDurationMs(inputPath: path)).toInt();
     } catch (_) {
       return 0;
     }
@@ -373,13 +363,11 @@ class _YoutubeSearchAndDownloadWorkspaceState
 
     setState(() {
       _isProcessing = true;
-      _statusText = "Iniciando motor híbrido (Extracción + FFmpeg)...";
+      _statusText = "Iniciando motor híbrido (Extracción + MP3 Rust)...";
     });
 
     try {
       final ytdlpPath = await _resolveBinary('yt-dlp');
-      final ffmpegPath = await _resolveBinary('ffmpeg');
-
       final downloadPath = _selectedFolderPath;
       if (!Directory(downloadPath).existsSync()) {
         Directory(downloadPath).createSync(recursive: true);
@@ -409,9 +397,7 @@ class _YoutubeSearchAndDownloadWorkspaceState
       final process = await Process.start(ytdlpPath, [
         '--rm-cache-dir',
         '-f',
-        'bestaudio',
-        '--ffmpeg-location',
-        ffmpegPath,
+        '140/bestaudio[ext=m4a]/bestaudio',
         '-o',
         tempRawPath,
         targetUrl,
@@ -429,22 +415,16 @@ class _YoutubeSearchAndDownloadWorkspaceState
         throw Exception("Fallo CLI Extractor. Traza: $errorTrace");
       }
 
-      setState(() => _statusText = "Transcodificando a MP3 Temp vía FFmpeg...");
+      setState(() => _statusText = "Codificando a MP3 320k (motor Rust/LAME)...");
 
-      final ffmpegProcess = await Process.run(ffmpegPath, [
-        '-y',
-        '-i',
-        tempRawPath,
-        '-vn',
-        '-b:a',
-        '320k',
-        tempMp3Path,
-      ]);
-
-      if (ffmpegProcess.exitCode != 0) {
-        throw Exception(
-          "Fallo en motor FFmpeg: ${ffmpegProcess.stderr.toString()}",
+      try {
+        await rust_dsp.encodeToMp3(
+          inputPath: tempRawPath,
+          outputPath: tempMp3Path,
+          bitrateKbps: 320,
         );
+      } catch (e) {
+        throw Exception("Fallo en el codificador MP3: $e");
       }
 
       try {
@@ -1310,29 +1290,8 @@ class KaraokeAIEngine {
       return;
     }
 
-    debugPrint("🤖 [AI ENGINE] Lanzando subproceso Demucs en: $path");
-
-    try {
-      Process.start('python', [
-        'C:\\Python\\djstudio_player\\karaoke_ai_processor.py',
-        path,
-      ], runInShell: true).then((Process process) {
-        // Blindaje contra bytes malformados (cp1252 vs utf8)
-        const decoder = Utf8Decoder(allowMalformed: true);
-
-        process.stdout.transform(decoder).listen((data) {
-          debugPrint("🔵 [DEMUCS]: ${data.trim()}");
-        });
-        process.stderr.transform(decoder).listen((data) {
-          debugPrint("🔴 [DEMUCS PROGRESS]: ${data.trim()}");
-        });
-
-        process.exitCode.then((code) {
-          debugPrint("✅ [AI ENGINE] Extracción IA terminada con código: $code");
-        });
-      });
-    } catch (e) {
-      debugPrint("🔴 [FATAL I/O] Fallo al iniciar puente Python: $e");
-    }
+    debugPrint("🤖 [AI ENGINE] Karaoke IA (Rust/ONNX) en: $path");
+    KaraokeEngine.run(path, onStatus: (s) => debugPrint("🔵 [KARAOKE]: $s"))
+        .whenComplete(() => debugPrint("✅ [AI ENGINE] Extracción IA terminada"));
   }
 }

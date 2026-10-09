@@ -6,22 +6,41 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `atomic_replace`, `execute_ffmpeg_with_kill_switch`, `extract_bpm_dsp`, `extract_json_value`, `get_ffmpeg_path`, `spawn_headless_ffmpeg`
+// These functions are ignored because they are not marked as `pub`: `analyze_and_tag`, `analyze_file`, `dbg_err`, `decode_channels`, `detect_bpm`, `edge_silence_ms`, `ext_text`, `finish`, `forward`, `integrated_lufs`, `inverse`, `is_mp3`, `k_weight`, `lame_bitrate`, `new`, `new`, `new`, `num_from`, `open_format`, `process`, `push`, `rec_stream`, `run`, `set_ext`, `to_mono`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Analysis`, `Biquad`, `Decoded`, `KStft`, `Mp3Sink`, `RecHandle`, `Resampler`
 
-void abortActiveProcess() =>
-    RustLib.instance.api.crateApiCoreDspAbortActiveProcess();
+/// Decodifica un tramo a PCM mono s16le a `target_rate` Hz (EQ adaptativa).
+Future<Uint8List> decodeMonoPcm({
+  required String inputPath,
+  required int startSecs,
+  required int lengthSecs,
+  required int targetRate,
+}) => RustLib.instance.api.crateApiCoreDspDecodeMonoPcm(
+  inputPath: inputPath,
+  startSecs: startSecs,
+  lengthSecs: lengthSecs,
+  targetRate: targetRate,
+);
 
+/// Duración EXACTA en ms. Un MP3 sin cabecera Xing (o con carátula grande)
+/// hace que libmpv la ESTIME por tamaño/bitrate y se pase. Si el contenedor
+/// trae el total de cuadros se usa; si no, se suman las duraciones de los
+/// paquetes (sin decodificar). Devuelve 0 si no se puede determinar.
+Future<BigInt> exactDurationMs({required String inputPath}) =>
+    RustLib.instance.api.crateApiCoreDspExactDurationMs(inputPath: inputPath);
+
+/// Duración en ms para quien ya la usaba (mismo nombre). Ahora es exacta.
 Future<BigInt> getAudioDurationMs({required String inputPath}) => RustLib
     .instance
     .api
     .crateApiCoreDspGetAudioDurationMs(inputPath: inputPath);
 
-Future<bool> processAutoTrim({required String inputPath}) =>
-    RustLib.instance.api.crateApiCoreDspProcessAutoTrim(inputPath: inputPath);
+/// Lee lo que dejó el masterizado (sin decodificar). Sirve a Live DJ y Automix.
+Future<MasterTags> readMasterTags({required String inputPath}) =>
+    RustLib.instance.api.crateApiCoreDspReadMasterTags(inputPath: inputPath);
 
-Future<bool> normalizeLufs({required String inputPath}) =>
-    RustLib.instance.api.crateApiCoreDspNormalizeLufs(inputPath: inputPath);
-
+/// Masterizado de una pista: volumen + silencios + BPM, sin recodificar.
+/// (Mismo nombre y firma que antes; ya no usa FFmpeg.)
 Future<bool> processFullPipeline({
   required String inputPath,
   required bool isMegamix,
@@ -29,6 +48,19 @@ Future<bool> processFullPipeline({
   inputPath: inputPath,
   isMegamix: isMegamix,
 );
+
+/// Solo volumen (ReplayGain). Misma salida que `process_full_pipeline`.
+Future<bool> normalizeLufs({required String inputPath}) =>
+    RustLib.instance.api.crateApiCoreDspNormalizeLufs(inputPath: inputPath);
+
+/// Solo silencios de inicio/fin (se guardan como cue, no se corta el archivo).
+Future<bool> processAutoTrim({required String inputPath}) =>
+    RustLib.instance.api.crateApiCoreDspProcessAutoTrim(inputPath: inputPath);
+
+Future<double> autoDetectAndInjectBpm({required String inputPath}) => RustLib
+    .instance
+    .api
+    .crateApiCoreDspAutoDetectAndInjectBpm(inputPath: inputPath);
 
 Future<String> readAudioGenre({required String inputPath}) =>
     RustLib.instance.api.crateApiCoreDspReadAudioGenre(inputPath: inputPath);
@@ -39,10 +71,117 @@ Future<bool> injectWatermark({required String inputPath}) =>
 Future<bool> checkWatermark({required String inputPath}) =>
     RustLib.instance.api.crateApiCoreDspCheckWatermark(inputPath: inputPath);
 
+/// Reset de SONIDO: quita el sello y las etiquetas de masterizado (ReplayGain,
+/// DJS_*). No toca letras (.lrc) ni el resto de las etiquetas del archivo.
 Future<bool> clearWatermark({required String inputPath}) =>
     RustLib.instance.api.crateApiCoreDspClearWatermark(inputPath: inputPath);
 
-Future<double> autoDetectAndInjectBpm({required String inputPath}) => RustLib
-    .instance
-    .api
-    .crateApiCoreDspAutoDetectAndInjectBpm(inputPath: inputPath);
+/// Convierte CUALQUIER audio decodificable (m4a/AAC, MP3, FLAC, WAV, OGG…)
+/// a MP3 CBR con LAME (calidad máxima). Decodifica en streaming (RAM plana).
+/// Reemplaza al antiguo `ffmpeg -vn -b:a 320k`.
+Future<bool> encodeToMp3({
+  required String inputPath,
+  required String outputPath,
+  required int bitrateKbps,
+}) => RustLib.instance.api.crateApiCoreDspEncodeToMp3(
+  inputPath: inputPath,
+  outputPath: outputPath,
+  bitrateKbps: bitrateKbps,
+);
+
+/// Dónde muere la energía del outro: inicio (ms absolutos) de la última racha
+/// de ≥ 0.4 s por debajo de -32 dBFS en los últimos ~12 s. 0 = no hay.
+/// Reemplaza al antiguo `ffmpeg silencedetect`.
+Future<BigInt> outroEnergyEndMs({
+  required String inputPath,
+  required BigInt durationMs,
+}) => RustLib.instance.api.crateApiCoreDspOutroEnergyEndMs(
+  inputPath: inputPath,
+  durationMs: durationMs,
+);
+
+Future<bool> isMasterRecording() =>
+    RustLib.instance.api.crateApiCoreDspIsMasterRecording();
+
+/// Graba la salida master a MP3 320 kbps. Windows: loopback WASAPI del
+/// dispositivo de salida. macOS: entrada de audio predeterminada.
+/// Android/iOS: no disponible (el sistema lo veta).
+Future<void> startMasterRecording({
+  required String outputPath,
+  required int bitrateKbps,
+}) => RustLib.instance.api.crateApiCoreDspStartMasterRecording(
+  outputPath: outputPath,
+  bitrateKbps: bitrateKbps,
+);
+
+/// Detiene la grabación y cierra el MP3 (flush de LAME).
+Future<void> stopMasterRecording() =>
+    RustLib.instance.api.crateApiCoreDspStopMasterRecording();
+
+/// Progreso 0.0‥1.0 de la pista que se está separando.
+Future<double> karaokeProgress() =>
+    RustLib.instance.api.crateApiCoreDspKaraokeProgress();
+
+/// Pide detener la separación en curso (corta en el siguiente bloque).
+Future<void> karaokeCancel() =>
+    RustLib.instance.api.crateApiCoreDspKaraokeCancel();
+
+/// Separa la voz y escribe la pista instrumental como MP3 320 kbps.
+/// `model_path` = UVR-MDX-NET-Inst_HQ_3.onnx. Sin Python ni FFmpeg.
+Future<bool> karaokeSeparate({
+  required String inputPath,
+  required String modelPath,
+  required String outputPath,
+}) => RustLib.instance.api.crateApiCoreDspKaraokeSeparate(
+  inputPath: inputPath,
+  modelPath: modelPath,
+  outputPath: outputPath,
+);
+
+/// Resultado leído de las etiquetas de una pista (sin decodificar).
+class MasterTags {
+  final bool analyzed;
+
+  /// Ganancia ReplayGain (dB) para llegar a -18 LUFS.
+  final double gainDb;
+  final double lufs;
+  final double peak;
+
+  /// Silencio inicial / final (ms).
+  final BigInt leadMs;
+  final BigInt tailMs;
+  final double bpm;
+
+  const MasterTags({
+    required this.analyzed,
+    required this.gainDb,
+    required this.lufs,
+    required this.peak,
+    required this.leadMs,
+    required this.tailMs,
+    required this.bpm,
+  });
+
+  @override
+  int get hashCode =>
+      analyzed.hashCode ^
+      gainDb.hashCode ^
+      lufs.hashCode ^
+      peak.hashCode ^
+      leadMs.hashCode ^
+      tailMs.hashCode ^
+      bpm.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is MasterTags &&
+          runtimeType == other.runtimeType &&
+          analyzed == other.analyzed &&
+          gainDb == other.gainDb &&
+          lufs == other.lufs &&
+          peak == other.peak &&
+          leadMs == other.leadMs &&
+          tailMs == other.tailMs &&
+          bpm == other.bpm;
+}

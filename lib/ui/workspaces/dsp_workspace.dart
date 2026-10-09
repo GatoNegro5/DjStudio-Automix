@@ -12,6 +12,7 @@ import '../../providers/metadata_provider.dart';
 import '../../providers/nlp_provider.dart';
 import '../../providers/dsp_provider.dart';
 import '../../providers/db_provider.dart';
+import '../../services/karaoke_engine.dart';
 
 // ==========================================
 // 🧠 ESTADO GLOBAL DEL MOTOR DE IA
@@ -53,6 +54,7 @@ class AiEngineNotifier extends StateNotifier<AiEngineState> {
 
   void requestStop() {
     if (!state.isRunning || state.stopping) return;
+    KaraokeEngine.stopQueue = true;
     try {
       stopFlag.parent.createSync(recursive: true);
       stopFlag.writeAsStringSync('1');
@@ -259,9 +261,7 @@ class DspNlpWorkspace extends ConsumerWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      isMobile
-                          ? "Estás en el celular. Haremos una preparación rápida de las canciones:"
-                          : "Estás en la computadora. Aplicaremos la mejora de sonido completa:",
+                      "Masterizado no destructivo (el audio no se recodifica y tus letras no se tocan):",
                       style: const TextStyle(
                         color: Colors.white70,
                         fontSize: 12,
@@ -272,7 +272,7 @@ class DspNlpWorkspace extends ConsumerWidget {
                     _buildCapabilityRow(
                       Icons.check_circle,
                       const Color(0xFF39FF14),
-                      "Buscar letras automáticamente",
+                      "Limpiar los nombres de los archivos",
                     ),
                     _buildCapabilityRow(
                       Icons.check_circle,
@@ -291,29 +291,15 @@ class DspNlpWorkspace extends ConsumerWidget {
                     ),
 
                     _buildCapabilityRow(
-                      isMobile ? Icons.lock : Icons.check_circle,
-                      isMobile ? Colors.white24 : const Color(0xFF39FF14),
-                      "Igualar el volumen de todas las pistas",
-                      isMobile ? "Usa la compu" : null,
+                      Icons.check_circle,
+                      const Color(0xFF39FF14),
+                      "Medir el volumen de cada pista (igualarlo al sonar)",
                     ),
                     _buildCapabilityRow(
-                      isMobile ? Icons.lock : Icons.check_circle,
-                      isMobile ? Colors.white24 : const Color(0xFF39FF14),
-                      "Recortar espacios vacíos al inicio y final",
-                      isMobile ? "Usa la compu" : null,
+                      Icons.check_circle,
+                      const Color(0xFF39FF14),
+                      "Detectar los espacios vacíos al inicio y final",
                     ),
-
-                    if (isMobile) ...[
-                      const SizedBox(height: 15),
-                      const Text(
-                        "💡 Tip: Para que tus canciones suenen más fuerte y nítidas, mejóralas primero en tu computadora y luego pásalas al celular.",
-                        style: TextStyle(
-                          color: Colors.orangeAccent,
-                          fontSize: 11,
-                          fontStyle: FontStyle.italic,
-                        ),
-                      ),
-                    ],
                   ],
                 ),
               ),
@@ -424,8 +410,6 @@ class DspNlpWorkspace extends ConsumerWidget {
     final pipe = ref.read(pipelineProvider.notifier);
     ref.read(directoryProvider.notifier).scanPath(targetPath);
     bool checkAbort() => ref.read(pipelineProvider).isAborted;
-
-    final bool isMobileOS = Platform.isAndroid || Platform.isIOS;
 
     final Map<String, Map<String, dynamic>> mixProfiles = {
       'salsa': {'curve': 'echo_out', 'durationMs': 0},
@@ -549,49 +533,31 @@ class DspNlpWorkspace extends ConsumerWidget {
 
           final cleanName = currentPath.split(Platform.pathSeparator).last;
 
-          final double fileSizeMB =
-              File(currentPath).lengthSync() / (1024 * 1024);
-          final bool isHeavyMix = fileSizeMB > 16.0;
-
           int durationAfterMs = 0;
 
-          if (!isMobileOS) {
-            currentStage = "DSP_FFMPEG";
-            pipe.updateProgress(
-              i + 1,
-              total,
-              cleanName,
-              "🪄 Mejorando calidad de sonido...",
-            );
+          // MASTERIZADO no destructivo (Rust, sin FFmpeg, igual en Windows,
+          // Mac y celular): volumen (ReplayGain), silencios de inicio/fin y
+          // BPM quedan en las etiquetas; el MP3 NO se recodifica, así que el
+          // audio y la letra no se mueven. Las LETRAS son otro botón.
+          currentStage = "DSP_ANALYSIS";
+          pipe.updateProgress(
+            i + 1,
+            total,
+            cleanName,
+            "🪄 Midiendo volumen, espacios y ritmo...",
+          );
 
-            final durationBeforeMs = (await rust_dsp.getAudioDurationMs(
-              inputPath: currentPath,
-            )).toInt();
+          final bool analyzed = await ref
+              .read(dspWorkerProvider)
+              .analyzeTrack(currentPath);
+          if (checkAbort()) break;
 
-            await ref
-                .read(dspWorkerProvider)
-                .processSingleFile(currentPath)
-                .timeout(
-                  const Duration(seconds: 180),
-                  onTimeout: () => throw Exception(
-                    "Timeout DSP: Estrangulamiento Térmico FFmpeg.",
-                  ),
-                );
-            if (checkAbort()) break;
+          durationAfterMs = (await rust_dsp.getAudioDurationMs(
+            inputPath: currentPath,
+          )).toInt();
 
-            durationAfterMs = (await rust_dsp.getAudioDurationMs(
-              inputPath: currentPath,
-            )).toInt();
-
-            final trimmedMs = durationBeforeMs - durationAfterMs;
-            if (trimmedMs > 50) {
-              final lrcFileToPatch = currentPath.replaceAll(
-                RegExp(r'\.mp3$|\.webm$', caseSensitive: false),
-                '.lrc',
-              );
-              await _offsetLrcTimeline(lrcFileToPatch, trimmedMs);
-            }
-
+          // El sello solo se pone si la pista de verdad quedó analizada.
+          if (analyzed) {
             currentStage = "WATERMARK_ID3";
             pipe.updateProgress(
               i + 1,
@@ -607,62 +573,24 @@ class DspNlpWorkspace extends ConsumerWidget {
                     "Timeout: Bloqueo de disco al inyectar ID3v2.",
                   ),
                 );
-            if (checkAbort()) break;
           } else {
-            pipe.updateProgress(
-              i + 1,
-              total,
-              cleanName,
-              "📱 Preparando en modo celular...",
+            debugPrint(
+              "⚠️ [DSP] Sin análisis (formato no soportado o error): $cleanName. No se sella.",
             );
-            await Future.delayed(const Duration(milliseconds: 50));
-          }
-
-          final finalName = currentPath.split(Platform.pathSeparator).last;
-
-          currentStage = "NLP_LYRICS";
-          if (isHeavyMix) {
-            pipe.updateProgress(
-              i + 1,
-              total,
-              finalName,
-              "⏭️ Mix Pesado (${fileSizeMB.toStringAsFixed(1)}MB). Omitiendo NLP...",
-            );
-            await Future.delayed(const Duration(milliseconds: 500));
-          } else {
-            pipe.updateProgress(
-              i + 1,
-              total,
-              finalName,
-              "🎤 Descargando letras...",
-            );
-            try {
-              await ref
-                  .read(nlpWorkerProvider)
-                  .processSingleFile(currentPath)
-                  .timeout(
-                    const Duration(seconds: 60),
-                    onTimeout: () => throw Exception("Timeout de Red LRCLib."),
-                  );
-            } catch (e) {
-              debugPrint(
-                "⚠️ [NLP Aislando Error] Letra no encontrada para $finalName: $e",
-              );
-            }
           }
           if (checkAbort()) break;
 
+          final finalName = currentPath.split(Platform.pathSeparator).last;
+
           String rawGenre = 'desconocido';
-          if (!isMobileOS) {
-            currentStage = "GENRE_CLASSIFICATION";
-            pipe.updateProgress(
-              i + 1,
-              total,
-              finalName,
-              "🎛️ Configurando género musical...",
-            );
-            rawGenre = await rust_dsp.readAudioGenre(inputPath: currentPath);
-          }
+          currentStage = "GENRE_CLASSIFICATION";
+          pipe.updateProgress(
+            i + 1,
+            total,
+            finalName,
+            "🎛️ Configurando género musical...",
+          );
+          rawGenre = await rust_dsp.readAudioGenre(inputPath: currentPath);
 
           String assignedProfile = 'constant_power';
           int assignedDuration = 6000;
@@ -695,13 +623,27 @@ class DspNlpWorkspace extends ConsumerWidget {
                   inputPath: currentPath,
                 )).toInt();
 
+          // El audio ya no se recorta: los silencios medidos (etiquetas) se
+          // saltan con el cue-in y se excluyen del mix-out.
+          int leadMs = 0;
+          int tailMs = 0;
+          try {
+            final mt = await rust_dsp.readMasterTags(inputPath: currentPath);
+            if (mt.analyzed) {
+              leadMs = mt.leadMs.toInt();
+              tailMs = mt.tailMs.toInt();
+            }
+          } catch (_) {}
+
           int calculatedCueIn =
               (rawGenre.contains('electro') || rawGenre.contains('rock'))
               ? 100
               : 350;
-          int calculatedMixOut = physicalDurationMs > assignedDuration
-              ? physicalDurationMs - assignedDuration
-              : physicalDurationMs - 2000;
+          if (leadMs > 0) calculatedCueIn = (leadMs - 50).clamp(0, 15000);
+          final int usableMs = physicalDurationMs - tailMs;
+          int calculatedMixOut = usableMs > assignedDuration
+              ? usableMs - assignedDuration
+              : usableMs - 2000;
           if (calculatedMixOut < 0) calculatedMixOut = 0;
 
           int finalCueIn =
@@ -947,6 +889,90 @@ class DspNlpWorkspace extends ConsumerWidget {
     }
   }
 
+  // ==========================================
+  // 📝 LETRAS (independiente del masterizado de sonido)
+  // ==========================================
+  Future<void> _executeLyrics(
+    BuildContext context,
+    WidgetRef ref,
+    String targetPath,
+  ) async {
+    final pipe = ref.read(pipelineProvider.notifier);
+    bool checkAbort() => ref.read(pipelineProvider).isAborted;
+    Map<LyricStatus, int> counts = {};
+    try {
+      pipe.updateProgress(0, 1, "Preparando letras...", "📝 Letras");
+      counts = await ref
+          .read(nlpWorkerProvider)
+          .downloadForDirectory(targetPath, isCancelled: checkAbort);
+    } catch (e) {
+      debugPrint("🔴 [LETRAS ERROR]: $e");
+    } finally {
+      pipe.reset();
+      if (context.mounted) {
+        final int ok = counts[LyricStatus.ok] ?? 0;
+        final int kept = counts[LyricStatus.kept] ?? 0;
+        final int none = counts[LyricStatus.noMatch] ?? 0;
+        final int bad = counts[LyricStatus.failed] ?? 0;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              "📝 Letras: $ok nuevas · $kept ya estaban (intactas) · $none sin coincidencia segura · $bad con error",
+              style: const TextStyle(
+                fontWeight: FontWeight.bold,
+                color: Colors.black,
+              ),
+            ),
+            backgroundColor: const Color(0xFF00FFFF),
+            duration: const Duration(seconds: 8),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _executeLyricsReset(
+    BuildContext context,
+    WidgetRef ref,
+    String targetPath,
+  ) async {
+    final bool? go = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF121212),
+        title: const Text(
+          "Borrar letras automáticas",
+          style: TextStyle(color: Colors.white, fontSize: 16),
+        ),
+        content: const Text(
+          "Solo se borran las letras que descargó la app y que no has tocado. "
+          "Las letras que arreglaste tú NO se borran.",
+          style: TextStyle(color: Colors.white70, fontSize: 13),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text("CANCELAR"),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text("BORRAR AUTOMÁTICAS"),
+          ),
+        ],
+      ),
+    );
+    if (go != true) return;
+    final int n = await ref.read(nlpWorkerProvider).resetAutoLyrics(targetPath);
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("📝 $n letras automáticas borradas. Las tuyas siguen intactas.")),
+      );
+    }
+  }
+
+  // RESET DE SONIDO: quita el sello y las etiquetas de masterizado y purga
+  // la base ISAR SIN tocar letras ni cues fijados a mano.
   Future<void> _executeFactoryReset(
     BuildContext context,
     WidgetRef ref,
@@ -1243,7 +1269,7 @@ class DspNlpWorkspace extends ConsumerWidget {
             _buildActionCard(
               title: "MASTERIZACIÓN PROFESIONAL",
               description:
-                  "Pipeline atómico (PC/Mac). Optimiza audio (LUFS), recorta silencios, extrae semántica y asigna curvas.",
+                  "Sin FFmpeg ni recodificar (PC/Mac): mide volumen (LUFS), espacios y ritmo (BPM), asigna género y curvas de mezcla. No toca letras.",
               icon: Icons.rocket_launch,
               color: const Color(0xFF39FF14),
               isPrimary: true,
@@ -1261,7 +1287,7 @@ class DspNlpWorkspace extends ConsumerWidget {
             _buildActionCard(
               title: "PREPARACIÓN MÓVIL",
               description:
-                  "Alineación NLP e Indexación ISAR. (La Masterización DSP no está disponible en Android).",
+                  "Mide volumen, espacios y ritmo sin recodificar, y calcula cues. Igual que en PC (sin FFmpeg).",
               icon: Icons.phone_android,
               color: Colors.cyanAccent,
               isPrimary: true,
@@ -1277,6 +1303,35 @@ class DspNlpWorkspace extends ConsumerWidget {
         }
 
         cardNodes.addAll([
+          _buildActionCard(
+            title: "LETRAS",
+            description:
+                "Descarga letras solo si coinciden artista, título y duración. Nunca pisa una letra que ya tengas.",
+            icon: Icons.lyrics_outlined,
+            color: const Color(0xFFFFC107),
+            isPrimary: false,
+            onTap: (dirState.currentPath.isEmpty || isBusy)
+                ? null
+                : () => _executeLyrics(context, ref, dirState.currentPath),
+            footer: OutlinedButton.icon(
+              onPressed: (dirState.currentPath.isEmpty || isBusy)
+                  ? null
+                  : () => _executeLyricsReset(
+                      context,
+                      ref,
+                      dirState.currentPath,
+                    ),
+              icon: const Icon(Icons.delete_sweep_outlined, size: 16),
+              label: const Text(
+                'BORRAR LETRAS AUTOMÁTICAS',
+                style: TextStyle(fontSize: 10),
+              ),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: const Color(0xFFFFC107),
+                side: const BorderSide(color: Color(0xFFFFC107)),
+              ),
+            ),
+          ),
           // 🛠️ TARJETA MUTANTE: Se transforma y muestra el porcentaje al activarse
           _buildActionCard(
             title: aiState.isRunning
@@ -1334,7 +1389,8 @@ class DspNlpWorkspace extends ConsumerWidget {
           ),
           _buildActionCard(
             title: "RESET DE FÁBRICA",
-            description: "Destruye firmas ID3v2 y purga la Base de Datos ISAR.",
+            description:
+                "Quita el sello y las etiquetas de sonido y purga ISAR. NO toca letras ni cues manuales.",
             icon: Icons.dangerous,
             color: Colors.redAccent,
             isPrimary: false,
@@ -1415,6 +1471,8 @@ class DspNlpWorkspace extends ConsumerWidget {
                     Expanded(flex: 2, child: cardNodes[2]),
                     const SizedBox(width: 15),
                     Expanded(flex: 2, child: cardNodes[3]),
+                    const SizedBox(width: 15),
+                    Expanded(flex: 2, child: cardNodes[4]),
                   ],
                 ),
               ),
@@ -1970,65 +2028,13 @@ class KaraokeAIEngine {
     }
 
     ref?.read(aiEngineProvider.notifier).start(path);
-    debugPrint("🤖 [AI ENGINE] Lanzando subproceso Demucs en: $path");
+    debugPrint("🤖 [AI ENGINE] Karaoke IA (Rust/ONNX) en: $path");
 
-    try {
-      Process.start('python', [
-        'C:\\Python\\djstudio_player\\karaoke_ai_processor.py',
-        path,
-      ], runInShell: true).then((Process process) {
-        const decoder = Utf8Decoder(allowMalformed: true);
-        String currentTrack = "";
-
-        process.stdout.transform(decoder).listen((data) {
-          final text = data.trim();
-          debugPrint("🔵 [DEMUCS]: $text");
-
-          if (text.contains('[Procesando IA Demucs SINGLE]')) {
-            currentTrack = text.split('SINGLE]').last.trim();
-            ref
-                ?.read(aiEngineProvider.notifier)
-                .updateStatus('Analizando: $currentTrack');
-          } else if (text.contains('[Exito]')) {
-            ref
-                ?.read(aiEngineProvider.notifier)
-                .updateStatus('¡Instrumental Listo!: $currentTrack');
-          } else if (text.contains('[COOLDOWN]')) {
-            ref
-                ?.read(aiEngineProvider.notifier)
-                .updateStatus('Enfriando CPU… $currentTrack');
-          } else if (text.contains('truncado')) {
-            ref
-                ?.read(aiEngineProvider.notifier)
-                .updateStatus('Descartado _K truncado: $currentTrack');
-          } else if (text.contains('[CANCEL]')) {
-            ref
-                ?.read(aiEngineProvider.notifier)
-                .updateStatus('Cola cancelada. Última pista cerrada.');
-          }
-        });
-
-        process.stderr.transform(decoder).listen((data) {
-          final text = data.trim();
-          if (text.contains('%|')) {
-            final match = RegExp(r'(\d+)%').firstMatch(text);
-            if (match != null) {
-              final percent = match.group(0);
-              ref
-                  ?.read(aiEngineProvider.notifier)
-                  .updateStatus('Aislando Voces: $percent - $currentTrack');
-            }
-          }
-        });
-
-        process.exitCode.then((code) {
-          debugPrint("✅ [AI ENGINE] Extracción IA terminada con código: $code");
-          ref?.read(aiEngineProvider.notifier).stop();
-        });
-      });
-    } catch (e) {
-      debugPrint("🔴 [FATAL I/O] Fallo al iniciar puente Python: $e");
+    KaraokeEngine.run(path, onStatus: (s) {
+      ref?.read(aiEngineProvider.notifier).updateStatus(s);
+    }).whenComplete(() {
+      debugPrint("✅ [AI ENGINE] Extracción IA terminada");
       ref?.read(aiEngineProvider.notifier).stop();
-    }
+    });
   }
 }

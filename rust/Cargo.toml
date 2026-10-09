@@ -11,6 +11,22 @@ flutter_rust_bridge = "=2.12.0"
 regex = "1.10.4"
 symphonia = { version = "0.5.3", features = ["all"] }
 id3 = "1.14.0"
+mp3lame-encoder = "0.2"
+rustfft = "6"
+
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+cpal = "0.15"
+# Karaoke IA en escritorio: ONNX Runtime (MIT), binarios oficiales de pyke.
+ort = "=2.0.0-rc.10"
+
+[target.'cfg(not(any(target_os = "windows", target_os = "macos")))'.dependencies]
+# Karaoke IA en Android/iOS: Rust puro, sin nativos.
+tract-onnx = "0.21"
+
+# mp3lame-sys 0.1.11 no compila para Android desde un host Windows (usa la
+# config de MSVC con clang). Copia local con config.h corregido.
+[patch.crates-io]
+mp3lame-sys = { path = "vendor/mp3lame-sys" }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }

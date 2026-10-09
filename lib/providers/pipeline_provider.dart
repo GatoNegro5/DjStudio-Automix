@@ -46,10 +46,8 @@ class MediaProcessKiller {
   static void executeGlobalHardAbort() {
     try {
       if (Platform.isWindows) {
-        Process.run('taskkill', ['/F', '/IM', 'ffmpeg.exe']);
         Process.run('taskkill', ['/F', '/IM', 'yt-dlp.exe']);
       } else {
-        Process.run('killall', ['-9', 'ffmpeg']);
         Process.run('killall', ['-9', 'yt-dlp']);
       }
     } catch (_) {}

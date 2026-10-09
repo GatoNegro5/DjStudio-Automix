@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
+import 'package:djstudio_player/src/rust/api/core_dsp.dart' as rust_dsp;
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 
 class TrackRepairDialog extends StatefulWidget {
@@ -81,21 +82,33 @@ class _TrackRepairDialogState extends State<TrackRepairDialog> {
       final outPath =
           '${widget.targetDirectory}${Platform.pathSeparator}${widget.queryName}.mp3';
 
-      // Invocación a FFmpeg vía yt-dlp para extracción directa
+      // yt-dlp baja el AAC crudo; el MP3 lo codifica Rust/LAME (sin FFmpeg).
+      final rawPath =
+          '${tempDir.path}${Platform.pathSeparator}repair_raw_${video.id}.m4a';
+      if (File(rawPath).existsSync()) File(rawPath).deleteSync();
       final process = await Process.start(ytdlpPath, [
         '-f',
-        'bestaudio',
-        '-x',
-        '--audio-format',
-        'mp3',
-        '--audio-quality',
-        '192K',
+        '140/bestaudio[ext=m4a]/bestaudio',
         '-o',
-        outPath,
+        rawPath,
         'https://youtube.com/watch?v=${video.id}',
       ]);
 
-      final exitCode = await process.exitCode;
+      int exitCode = await process.exitCode;
+      if (exitCode == 0 && File(rawPath).existsSync()) {
+        try {
+          await rust_dsp.encodeToMp3(
+            inputPath: rawPath,
+            outputPath: outPath,
+            bitrateKbps: 320,
+          );
+        } catch (_) {
+          exitCode = 1;
+        }
+        try {
+          File(rawPath).deleteSync();
+        } catch (_) {}
+      }
       if (exitCode == 0) {
         if (mounted) {
           Navigator.pop(

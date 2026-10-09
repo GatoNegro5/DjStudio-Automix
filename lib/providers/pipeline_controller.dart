@@ -53,14 +53,7 @@ class PipelineController {
     String fileName,
   ) async {
     try {
-      // 1. Ejecutar SIGKILL para liberar el I/O Lock del Sistema Operativo
-      if (Platform.isWindows) {
-        Process.runSync('taskkill', ['/F', '/IM', 'ffmpeg.exe']);
-        Process.runSync('taskkill', ['/F', '/IM', 'ffprobe.exe']);
-      } else {
-        Process.runSync('killall', ['-9', 'ffmpeg']);
-        Process.runSync('killall', ['-9', 'ffprobe']);
-      }
+      // 1. Sin binarios externos (FFmpeg eliminado): nada que matar.
 
       // 2. Pausa crítica para que el Kernel libere el Handle del archivo
       await Future.delayed(const Duration(milliseconds: 1500));

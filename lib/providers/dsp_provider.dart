@@ -14,20 +14,10 @@ class DspWorker {
   DspWorker(this.ref);
 
   // 🛠️ INYECCIÓN ARQUITECTURA: Validación Nativa Ultrarrápida en Dart
+  // Sello leído con Rust (id3): sin ffprobe, igual en las 4 plataformas.
   Future<bool> _isWatermarkedFast(String filePath) async {
     try {
-      if (Platform.isAndroid || Platform.isIOS) return false;
-      final result = await Process.run('ffprobe', [
-        '-v',
-        'quiet',
-        '-show_entries',
-        'format_tags=DjStudio_M3_V2',
-        '-of',
-        'default=noprint_wrappers=1:nokey=1',
-        filePath,
-      ]);
-      final output = result.stdout.toString().trim().toLowerCase();
-      return output == 'verified';
+      return await rust_dsp.checkWatermark(inputPath: filePath);
     } catch (e) {
       return false;
     }
@@ -244,7 +234,6 @@ class DspWorker {
     String directoryPath, {
     bool Function()? isCancelled,
   }) async {
-    if (Platform.isAndroid || Platform.isIOS) return;
     await _runRustBatch(directoryPath, "Master LUFS", (
       path, {
       bool isMegamix = false,
@@ -266,7 +255,6 @@ class DspWorker {
     String directoryPath, {
     bool Function()? isCancelled,
   }) async {
-    if (Platform.isAndroid || Platform.isIOS) return;
     await _runRustBatch(directoryPath, "DSP Trim", (
       path, {
       bool isMegamix = false,
@@ -283,7 +271,6 @@ class DspWorker {
     String directoryPath, {
     bool Function()? isCancelled,
   }) async {
-    if (Platform.isAndroid || Platform.isIOS) return;
     await _runRustBatch(
       directoryPath,
       "Sello Watermark",
@@ -298,7 +285,6 @@ class DspWorker {
     String directoryPath, {
     bool Function()? isCancelled,
   }) async {
-    if (Platform.isAndroid || Platform.isIOS) return;
     await _runRustBatch(
       directoryPath,
       "♻️ Reset Watermark",
@@ -349,6 +335,9 @@ class DspWorker {
       pipe.updateProgress(i + 1, total, filename, "🗑️ Purgando DB ISAR");
 
       try {
+        // Los cues fijados a mano (SET IN/OUT) jamás se purgan.
+        final meta = await ref.read(dbServiceProvider).getTrackMetadata(file.path);
+        if (meta != null && meta.isManualCue) continue;
         await ref.read(dbServiceProvider).deleteTrackMetadata(file.path);
       } catch (_) {
         pipe.addQuarantine(filename);
@@ -363,7 +352,7 @@ class DspWorker {
     String moduleName,
     Future<bool> Function(String, {bool isMegamix}) rustTask, {
     bool Function()? isCancelled,
-    bool bypassIfWatermarked = true,
+    bool bypassIfWatermarked = false,
   }) async {
     final dir = Directory(directoryPath);
     if (!dir.existsSync()) return;
@@ -408,12 +397,6 @@ class DspWorker {
       final file = files[i];
       final filename = file.uri.pathSegments.last;
 
-      try {
-        File(
-          'C:\\Python\\djstudio_player\\ULTIMA_PISTA.txt',
-        ).writeAsStringSync("PISTA ACTUAL:\n${file.path}");
-      } catch (_) {}
-
       pipe.updateProgress(i + 1, total, filename, moduleName);
 
       try {
@@ -440,10 +423,6 @@ class DspWorker {
         final success = await rustTask(file.path, isMegamix: false).timeout(
           const Duration(seconds: 90),
           onTimeout: () {
-            if (Platform.isWindows) {
-              Process.runSync('taskkill', ['/F', '/IM', 'ffmpeg.exe']);
-            }
-            sleep(const Duration(milliseconds: 1500));
             pipe.updateProgress(i + 1, total, filename, "⚠️ Saltado: Timeout");
             return false;
           },
@@ -460,26 +439,27 @@ class DspWorker {
     }
   }
 
-  Future<String> processSingleFile(String filePath) async {
-    final file = File(filePath);
-    if (!file.existsSync() || Platform.isAndroid || Platform.isIOS) {
-      return filePath;
-    }
-
+  /// Masterizado no destructivo de UNA pista (Rust, sin FFmpeg, 4 plataformas):
+  /// volumen (ReplayGain), silencios de inicio/fin y BPM quedan en las
+  /// etiquetas ID3; el audio NO se recodifica. `true` = pista analizada.
+  /// Si ya estaba analizada, Rust la reconoce y no repite el trabajo.
+  Future<bool> analyzeTrack(String filePath) async {
     try {
-      final isSealed = await _isWatermarkedFast(filePath);
-      if (!isSealed) {
-        final double fileSizeMb = file.lengthSync() / (1024 * 1024);
-        // 🛠️ BYPASS ABSOLUTO TAMBIÉN EN PISTAS INDIVIDUALES
-        if (fileSizeMb > 26.0) return filePath;
+      final file = File(filePath);
+      if (!file.existsSync()) return false;
+      // Megamix (> 26 MB): no se mide, igual que antes.
+      if (file.lengthSync() / (1024 * 1024) > 26.0) return true;
+      return await rust_dsp
+          .processFullPipeline(inputPath: filePath, isMegamix: false)
+          .timeout(const Duration(seconds: 120));
+    } catch (e) {
+      debugPrint('🔴 [DSP analyzeTrack] $filePath: $e');
+      return false;
+    }
+  }
 
-        await rust_dsp.processFullPipeline(
-          inputPath: filePath,
-          isMegamix: false,
-        );
-      }
-    } catch (_) {}
-
+  Future<String> processSingleFile(String filePath) async {
+    await analyzeTrack(filePath);
     return filePath;
   }
 }

@@ -156,7 +156,6 @@ class AutomixNotifier extends Notifier<AutomixState> {
   bool _mixPlanReady = false;
   int _autoMixAnchorMs = 0;
   String? _outroPlanToken;
-  Process? _outroProbe;
   int _outroProbeGen = 0;
   bool _outroProbeBusy = false;
   String? _lastDurationPlanKey;
@@ -751,84 +750,34 @@ class AutomixNotifier extends Notifier<AutomixState> {
   }
 
   void _cancelOutroProbe() {
+    // La sonda corre en Rust (no hay proceso que matar): invalidar la
+    // generación descarta cualquier resultado en vuelo.
     _outroProbeGen++;
-    final Process? proc = _outroProbe;
-    _outroProbe = null;
-    if (proc == null) return;
-    try {
-      proc.kill();
-    } catch (_) {}
   }
 
-  String _resolveFfmpeg() {
-    if (Platform.isAndroid || Platform.isIOS) return 'ffmpeg';
-    final exeDir = File(Platform.resolvedExecutable).parent.path;
-    final localFFmpeg = Platform.isWindows
-        ? '$exeDir\\ffmpeg.exe'
-        : '$exeDir/ffmpeg';
-    return File(localFFmpeg).existsSync() ? localFFmpeg : 'ffmpeg';
-  }
-
-  /// Detecta dónde muere la energía del outro (silencedetect en libav).
-  /// Cero DSP por muestras en Dart. Resultado cacheado por ruta.
+  /// Detecta dónde muere la energía del outro (Rust, en proceso, todas las
+  /// plataformas). Resultado cacheado por ruta.
   Future<int> _probeOutroEnergyEndMs(String path, int durationMs) async {
     final cached = _outroEnergyEndCache[path];
     if (cached != null) return cached;
     if (durationMs <= 0) return 0;
 
-    // Android: FFmpeg por pista satura CPU/RAM y tumba el proceso (~20 temas).
-    if (Platform.isAndroid || Platform.isIOS) {
-      _outroEnergyEndCache[path] = durationMs;
-      return durationMs;
-    }
-
     if (_outroEnergyEndCache.length >= 48) {
       _outroEnergyEndCache.remove(_outroEnergyEndCache.keys.first);
     }
 
-    if (_outroProbe != null || _outroProbeBusy) return -1;
+    if (_outroProbeBusy) return -1;
     _outroProbeBusy = true;
 
-    const windowMs = 12000;
-    final seekMs = durationMs > windowMs ? durationMs - windowMs : 0;
     final int gen = _outroProbeGen;
 
     try {
-      final Process proc = await Process.start(_resolveFfmpeg(), [
-        '-hide_banner',
-        '-nostdin',
-        '-threads',
-        '1',
-        '-ss',
-        (seekMs / 1000.0).toStringAsFixed(3),
-        '-i',
-        path,
-        '-t',
-        ((durationMs - seekMs) / 1000.0).toStringAsFixed(3),
-        '-af',
-        'silencedetect=noise=-32dB:d=0.4',
-        '-f',
-        'null',
-        '-',
-      ]);
-      if (gen != _outroProbeGen) {
-        proc.kill();
-        return durationMs;
-      }
-      _outroProbe = proc;
-      final Future<String> logFuture = proc.stderr
-          .transform(utf8.decoder)
-          .join();
-      final Future<void> drainOut = proc.stdout.drain<void>();
-      await proc.exitCode;
-      final String log = await logFuture;
-      await drainOut;
+      final int energyEnd = (await rust_dsp.outroEnergyEndMs(
+        inputPath: path,
+        durationMs: BigInt.from(durationMs),
+      )).toInt();
       if (gen != _outroProbeGen) return durationMs;
-      if (identical(_outroProbe, proc)) _outroProbe = null;
-      final hits = RegExp(r'silence_start:\s*([0-9.]+)').allMatches(log);
-      if (hits.isNotEmpty) {
-        final relSec = double.parse(hits.last.group(1)!);
-        final energyEnd = seekMs + (relSec * 1000).round();
+      if (energyEnd > 0) {
         final clamped = energyEnd.clamp(
           (durationMs * 0.55).toInt(),
           durationMs,
@@ -840,7 +789,7 @@ class AutomixNotifier extends Notifier<AutomixState> {
         return clamped;
       }
     } catch (e) {
-      debugPrint('🔴 [TRACKER OUTRO] silencedetect falló: $e');
+      debugPrint('🔴 [TRACKER OUTRO] sonda de outro falló: $e');
       if (gen != _outroProbeGen) return durationMs;
     } finally {
       _outroProbeBusy = false;
@@ -2428,10 +2377,7 @@ class BpmCacheNotifier extends Notifier<Map<String, double>> {
 }
 
 class WasapiRecordNotifier extends Notifier<bool> {
-  Process? _recordingProcess;
   String? _currentOutputPath;
-  String _lastErrorLog = "";
-
   @override
   bool build() => false;
 
@@ -2443,54 +2389,6 @@ class WasapiRecordNotifier extends Notifier<bool> {
       await stopRecording(context);
     } else {
       await startRecording(context, filePrefix: filePrefix);
-    }
-  }
-
-  String _getFFmpegPath() {
-    if (Platform.isAndroid || Platform.isIOS) return 'ffmpeg';
-    final exeDir = File(Platform.resolvedExecutable).parent.path;
-    final localFFmpeg = Platform.isWindows
-        ? '$exeDir\\ffmpeg.exe'
-        : '$exeDir/ffmpeg';
-    if (File(localFFmpeg).existsSync()) return localFFmpeg;
-    return 'ffmpeg';
-  }
-
-  Future<String> _getLoopbackDevice() async {
-    if (Platform.isWindows) {
-      try {
-        final process = await Process.run(_getFFmpegPath(), [
-          '-list_devices',
-          'true',
-          '-f',
-          'dshow',
-          '-i',
-          'dummy',
-        ]);
-        final logs = process.stderr.toString();
-        final lines = logs.split('\n');
-
-        for (int i = 0; i < lines.length; i++) {
-          final lowerLine = lines[i].toLowerCase();
-          if (lowerLine.contains('(audio)') &&
-              (lowerLine.contains('mezcla') ||
-                  lowerLine.contains('estéreo') ||
-                  lowerLine.contains('stereo'))) {
-            if (i + 1 < lines.length &&
-                lines[i + 1].toLowerCase().contains('alternative name')) {
-              final match = RegExp(r'"([^"]+)"').firstMatch(lines[i + 1]);
-              if (match != null) return 'audio=${match.group(1)!}';
-            }
-          }
-        }
-      } catch (_) {}
-      return r'audio=@device_cm_{33D9A762-90C8-11D0-BD43-00A0C911CE86}\wave_{E2847FF6-6193-463E-848F-0E16C78BD2EA}';
-    } else if (Platform.isMacOS) {
-      return ':0';
-    } else {
-      throw UnsupportedError(
-        'Driver de loopback no soportado en esta plataforma.',
-      );
     }
   }
 
@@ -2525,48 +2423,14 @@ class WasapiRecordNotifier extends Notifier<bool> {
         .first;
     _currentOutputPath =
         '${dir.path}${Platform.pathSeparator}${filePrefix}_$dateStr.mp3';
-    _lastErrorLog = "";
 
     try {
-      final deviceName = await _getLoopbackDevice();
-      final format = Platform.isWindows ? 'dshow' : 'avfoundation';
-
-      debugPrint(
-        "🟢 [Hardware Tracker] Ruteando bus maestro a: $deviceName ($format)",
+      await rust_dsp.startMasterRecording(
+        outputPath: _currentOutputPath!,
+        bitrateKbps: 320,
       );
-
-      final args = [
-        '-y',
-        '-f',
-        format,
-        '-i',
-        deviceName,
-        '-c:a',
-        'libmp3lame',
-        '-b:a',
-        '320k',
-        _currentOutputPath!,
-      ];
-
-      _recordingProcess = await Process.start(_getFFmpegPath(), args);
       state = true;
-
-      _recordingProcess!.stderr.transform(utf8.decoder).listen((log) {
-        _lastErrorLog += log;
-      });
-
-      _recordingProcess!.exitCode.then((code) {
-        if (code != 0 && code != 255 && state) {
-          state = false;
-          if (context.mounted) {
-            _showErrorDialog(
-              context,
-              "🔴 VETO TÉCNICO: FFmpeg Colapsó",
-              _lastErrorLog,
-            );
-          }
-        }
-      });
+      debugPrint("🟢 [Hardware Tracker] Grabando bus maestro (Rust/LAME 320k)");
 
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -2585,17 +2449,19 @@ class WasapiRecordNotifier extends Notifier<bool> {
       }
     } catch (e) {
       debugPrint("🔴 [RECORD FATAL]: $e");
+      state = false;
+      if (context.mounted) {
+        _showErrorDialog(context, "🔴 VETO TÉCNICO: Grabador", '$e');
+      }
     }
   }
 
   Future<void> stopRecording(BuildContext context) async {
-    if (_recordingProcess != null) {
-      _recordingProcess!.stdin.writeln('q');
-      await Future.delayed(const Duration(milliseconds: 500));
-      _recordingProcess!.kill();
-      _recordingProcess = null;
+    try {
+      await rust_dsp.stopMasterRecording();
+    } catch (e) {
+      debugPrint('🔴 [RECORD STOP]: $e');
     }
-
     state = false;
 
     final file = File(_currentOutputPath ?? '');

@@ -33,7 +33,7 @@ class LiveDjWorkspace extends ConsumerWidget {
             child: Column(
               children: [
                 Expanded(
-                  flex: compact ? 4 : 5,
+                  flex: compact ? 5 : 5,
                   child: const LiveDjPlayerPanel(),
                 ),
                 const Divider(height: 1, color: Colors.white10),
@@ -253,6 +253,13 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
       nextName =
           state.queue.first.path.replaceAll('\\', '/').split('/').last;
     }
+    // Radio encendida: el "siguiente" es el que la Radio ya eligió, no la cola.
+    if (state.radioOn) {
+      final String? rn = state.radioNextPath;
+      nextName = rn == null
+          ? 'RADIO ▸ eligiendo…'
+          : 'RADIO ▸ ${rn.replaceAll('\\', '/').split('/').last}';
+    }
     final engineModeStr = isMixBypass
         ? "BYPASS (MEZCLA PROTEGIDA)"
         : (mixFormula == MixFormula.stealthGap
@@ -275,32 +282,110 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
     final titleSize = compact ? 13.0 : 16.0;
     final timeSize = compact ? 14.0 : 18.0;
 
-    final onAirBadge = Container(
-      padding: EdgeInsets.symmetric(
-        horizontal: compact ? 6 : 10,
-        vertical: compact ? 2 : 4,
-      ),
-      decoration: BoxDecoration(
-        color: DjStudioTheme.alertCritical.withValues(alpha: 0.1),
-        border: Border.all(color: DjStudioTheme.alertCritical),
-        borderRadius: BorderRadius.circular(4),
-      ),
-      child: const Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.sensors, color: DjStudioTheme.alertCritical, size: 12),
-          SizedBox(width: 5),
-          Text(
-            "ON AIR",
-            style: TextStyle(
-              color: DjStudioTheme.alertCritical,
-              fontWeight: FontWeight.bold,
-              fontSize: 10,
-            ),
+    // ON AIR Radio: encendido = rojo; apagado = rojo vino (look de apagado).
+    final bool radioOn = state.radioOn;
+    final Color radioColor = radioOn
+        ? DjStudioTheme.alertCritical
+        : const Color(0xFF7A2E3E);
+    final onAirBadge = Tooltip(
+      message: radioOn
+          ? 'Radio ENCENDIDA: toma canciones de las carpetas de género. Toca para apagar.'
+          : 'Radio apagada. Toca para encender (la cola queda congelada).',
+      child: GestureDetector(
+        onTap: () => ref.read(liveDjProvider.notifier).toggleRadio(),
+        child: Container(
+          padding: EdgeInsets.symmetric(
+            horizontal: compact ? 6 : 10,
+            vertical: compact ? 2 : 4,
           ),
-        ],
+          decoration: BoxDecoration(
+            color: radioColor.withValues(alpha: radioOn ? 0.1 : 0.05),
+            border: Border.all(color: radioColor),
+            borderRadius: BorderRadius.circular(4),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.sensors, color: radioColor, size: 12),
+              const SizedBox(width: 5),
+              Text(
+                "ON AIR Radio",
+                style: TextStyle(
+                  color: radioColor,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 10,
+                ),
+                maxLines: 1,
+              ),
+            ],
+          ),
+        ),
       ),
     );
+
+    // Controlador de GÉNERO: visible solo con la Radio encendida.
+    // Ningún chip marcado = Todo.
+    Widget genreChip(String label, bool selected, VoidCallback onTap) {
+      return Padding(
+        padding: const EdgeInsets.only(right: 6),
+        child: GestureDetector(
+          onTap: onTap,
+          child: Container(
+            padding: EdgeInsets.symmetric(
+              horizontal: compact ? 8 : 10,
+              vertical: compact ? 2 : 4,
+            ),
+            decoration: BoxDecoration(
+              color: selected
+                  ? DjStudioTheme.syncActive.withValues(alpha: 0.18)
+                  : Colors.transparent,
+              border: Border.all(
+                color: selected ? DjStudioTheme.syncActive : Colors.white24,
+              ),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              label,
+              style: TextStyle(
+                color: selected ? DjStudioTheme.syncActive : Colors.white54,
+                fontWeight: FontWeight.bold,
+                fontSize: compact ? 10 : 11,
+              ),
+              maxLines: 1,
+            ),
+          ),
+        ),
+      );
+    }
+
+    final Widget radioChips = radioOn
+        ? Padding(
+            padding: EdgeInsets.only(top: compact ? 3 : 8),
+            child: SizedBox(
+              height: compact ? 24 : 28,
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    genreChip(
+                      'Todo',
+                      state.radioGenres.isEmpty,
+                      () => ref.read(liveDjProvider.notifier).clearRadioGenres(),
+                    ),
+                    for (final id in kRadioGenreIds)
+                      genreChip(
+                        kRadioGenreLabels[id]!,
+                        state.radioGenres.contains(id),
+                        () => ref
+                            .read(liveDjProvider.notifier)
+                            .toggleRadioGenre(id),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          )
+        : const SizedBox.shrink();
 
     final studioTitle = Text(
       "STUDIO 1 - LIVEDJ ENGINE",
@@ -353,6 +438,7 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
             ],
           ],
         ),
+        radioChips,
         SizedBox(height: compact ? 4 : gap),
         if (compact)
           SizedBox(
@@ -652,10 +738,12 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
               IconButton(
                 icon: Icon(
                   Icons.skip_next,
-                  color: state.queue.isEmpty ? Colors.white24 : Colors.white70,
+                  color: (state.queue.isEmpty && !state.radioOn)
+                      ? Colors.white24
+                      : Colors.white70,
                   size: 30,
                 ),
-                onPressed: state.queue.isEmpty
+                onPressed: (state.queue.isEmpty && !state.radioOn)
                     ? null
                     : () => ref.read(liveDjProvider.notifier).forceNext(),
               ),

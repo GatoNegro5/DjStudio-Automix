@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'pipeline_provider.dart';
 import 'package:flutter/foundation.dart';
+import 'package:djstudio_player/src/rust/api/core_dsp.dart' as rust_dsp;
 import 'db_provider.dart'; // 🛠️ Requerido para inyectar Cues a la BD
 
 final nlpWorkerProvider = Provider((ref) => NlpWorker(ref));
@@ -217,21 +218,11 @@ class NlpWorker {
     pipe.reset();
   }
 
+  // Duración EXACTA con Rust (sin ffprobe), igual en las 4 plataformas.
   Future<int> _getLocalDurationSec(String filePath) async {
     try {
-      final result = await Process.run('ffprobe', [
-        '-v',
-        'error',
-        '-show_entries',
-        'format=duration',
-        '-of',
-        'default=noprint_wrappers=1:nokey=1',
-        filePath,
-      ]);
-      if (result.exitCode == 0) {
-        return (double.tryParse(result.stdout.toString().trim()) ?? 0.0)
-            .toInt();
-      }
+      final ms = await rust_dsp.exactDurationMs(inputPath: filePath);
+      return (ms.toInt() / 1000).round();
     } catch (_) {}
     return 0;
   }
@@ -322,6 +313,7 @@ class NlpWorker {
       '.lrc',
     );
     await File(lrcPath).writeAsString(syncedLyrics);
+    await _unmarkAuto(lrcPath); // letra fijada a mano: ya no es automática
 
     // Inyectar el Bounding Box al forzar letra manual
     final localSec = await _getLocalDurationSec(audioPath);
@@ -332,7 +324,105 @@ class NlpWorker {
     );
   }
 
-  Future<void> _fetchAndSaveLrc(String audioPath, String lrcPath) async {
+  // ----------------------------------------------------- coincidencia segura
+  // Una letra equivocada es peor que ninguna: solo se acepta un resultado
+  // cuyo ARTISTA, TÍTULO y DURACIÓN coinciden con el archivo. Nada de recortar
+  // el título palabra por palabra ni de aceptar el primer resultado.
+
+  static const Map<String, String> _accents = {
+    'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u', 'ü': 'u', 'ñ': 'n',
+    'à': 'a', 'è': 'e', 'ì': 'i', 'ò': 'o', 'ù': 'u',
+  };
+
+  String _norm(String s) {
+    var t = s.toLowerCase();
+    _accents.forEach((k, v) => t = t.replaceAll(k, v));
+    t = t.replaceAll(RegExp(r'[\(\[\{][^\)\]\}]*[\)\]\}]'), ' ');
+    t = t.replaceAll(RegExp(r'\b(feat|ft|featuring)\b.*$'), ' ');
+    t = t.replaceAll(RegExp(r'[^a-z0-9]+'), ' ').trim();
+    return t;
+  }
+
+  Set<String> _tokens(String s) =>
+      _norm(s).split(' ').where((w) => w.isNotEmpty).toSet();
+
+  /// Parecido entre dos textos (0..1): comunes / el mayor de los dos.
+  double _similar(String a, String b) {
+    final ta = _tokens(a);
+    final tb = _tokens(b);
+    if (ta.isEmpty || tb.isEmpty) return 0.0;
+    final common = ta.intersection(tb).length;
+    return common / (ta.length > tb.length ? ta.length : tb.length);
+  }
+
+  /// Mejor candidato seguro, o null si ninguno es confiable.
+  Map<String, dynamic>? _bestSafeMatch(
+    List<dynamic> items, {
+    required String artist,
+    required String title,
+    required int localSec,
+  }) {
+    Map<String, dynamic>? best;
+    double bestScore = 0.0;
+    for (final raw in items) {
+      if (raw is! Map) continue;
+      final synced = raw['syncedLyrics']?.toString() ?? '';
+      if (synced.trim().isEmpty) continue;
+
+      final double titleSim = _similar(title, raw['trackName']?.toString() ?? '');
+      if (titleSim < 0.75) continue;
+
+      double artistSim = 1.0;
+      if (artist.isNotEmpty) {
+        artistSim = _similar(artist, raw['artistName']?.toString() ?? '');
+        // El artista del archivo puede traer "A & B": basta con que uno encaje.
+        if (artistSim < 0.5) {
+          final apiArtist = _norm(raw['artistName']?.toString() ?? '');
+          final fileArtist = _norm(artist);
+          if (apiArtist.isEmpty ||
+              !(fileArtist.contains(apiArtist) ||
+                  apiArtist.contains(fileArtist))) {
+            continue;
+          }
+          artistSim = 0.6;
+        }
+      }
+
+      final int apiDur = (raw['duration'] as num?)?.toInt() ?? 0;
+      double durScore = 0.5;
+      if (localSec > 0 && apiDur > 0) {
+        final int diff = (apiDur - localSec).abs();
+        if (diff > 8) continue; // otra versión / otra canción
+        durScore = 1.0 - (diff / 8.0) * 0.5;
+      } else if (titleSim < 0.99 || artistSim < 0.99) {
+        // Sin duración que lo confirme solo vale una coincidencia exacta.
+        continue;
+      }
+
+      final double score = titleSim * 2 + artistSim + durScore;
+      if (score > bestScore) {
+        bestScore = score;
+        best = Map<String, dynamic>.from(raw);
+      }
+    }
+    return best;
+  }
+
+  Future<List<dynamic>> _lrclibSearch(String url) async {
+    try {
+      final response = await _resilientGet(url);
+      if (response.statusCode == 200) {
+        final parsed = jsonDecode(response.body);
+        if (parsed is List) return parsed;
+      }
+    } catch (e) {
+      debugPrint("🟡 [NLP Tracker] Búsqueda evadió error: $e");
+    }
+    return const [];
+  }
+
+  /// true = letra guardada. false = sin coincidencia segura (no se escribe nada).
+  Future<bool> _fetchAndSaveLrc(String audioPath, String lrcPath) async {
     try {
       final filename = audioPath
           .split(RegExp(r'[\\/]'))
@@ -341,119 +431,141 @@ class NlpWorker {
       final parts = filename.split(' - ');
       final localSec = await _getLocalDurationSec(audioPath);
 
-      if (parts.length >= 2) {
-        final artist = parts[0].trim();
-        final originalTrack = parts[1].trim();
-        List<String> trackWords = originalTrack.split(' ');
+      final String artist = parts.length >= 2 ? parts[0].trim() : '';
+      final String title = parts.length >= 2
+          ? parts.sublist(1).join(' - ').trim()
+          : filename.trim();
+      final String cleanTitle = title
+          .replaceAll(RegExp(r'[\(\[\{][^\)\]\}]*[\)\]\}]'), ' ')
+          .replaceAll(RegExp(r'\s+'), ' ')
+          .trim();
 
-        while (trackWords.isNotEmpty) {
-          final currentTrackAttempt = trackWords.join(' ');
-          final url =
-              'https://lrclib.net/api/search?artist_name=${Uri.encodeComponent(artist)}&track_name=${Uri.encodeComponent(currentTrackAttempt)}';
+      final urls = <String>[
+        if (artist.isNotEmpty)
+          'https://lrclib.net/api/search?artist_name=${Uri.encodeComponent(artist)}&track_name=${Uri.encodeComponent(title)}',
+        if (artist.isNotEmpty && cleanTitle.isNotEmpty && cleanTitle != title)
+          'https://lrclib.net/api/search?artist_name=${Uri.encodeComponent(artist)}&track_name=${Uri.encodeComponent(cleanTitle)}',
+        'https://lrclib.net/api/search?q=${Uri.encodeComponent(artist.isEmpty ? cleanTitle : '$artist $cleanTitle')}',
+      ];
 
-          try {
-            final response = await _resilientGet(url);
-            if (response.statusCode == 200) {
-              final parsed = jsonDecode(response.body);
-              if (parsed is List && parsed.isNotEmpty) {
-                parsed.sort((a, b) {
-                  final aSync =
-                      a['syncedLyrics']?.toString().isNotEmpty ?? false;
-                  final bSync =
-                      b['syncedLyrics']?.toString().isNotEmpty ?? false;
-                  if (aSync && !bSync) return -1;
-                  if (!aSync && bSync) return 1;
-                  if (localSec > 0) {
-                    final aDur = (a['duration'] as num?)?.toInt() ?? 0;
-                    final bDur = (b['duration'] as num?)?.toInt() ?? 0;
-                    return (aDur - localSec).abs().compareTo(
-                      (bDur - localSec).abs(),
-                    );
-                  }
-                  return 0;
-                });
-
-                for (var item in parsed) {
-                  final syncedLyrics = item['syncedLyrics'];
-                  if (syncedLyrics != null &&
-                      syncedLyrics.toString().trim().isNotEmpty) {
-                    await File(lrcPath).writeAsString(syncedLyrics);
-                    await _processVocalBoundingBox(
-                      audioPath,
-                      syncedLyrics,
-                      localSec,
-                    );
-
-                    debugPrint(
-                      "🟢 [NLP Tracker] LRC consolidado y Bounding Box guardado: $currentTrackAttempt",
-                    );
-                    return;
-                  }
-                }
-              }
-            }
-          } catch (e) {
-            debugPrint("🟡 [NLP Tracker] Pipeline iterativo evadió error: $e");
-          }
-          trackWords.removeLast();
-          await Future.delayed(const Duration(milliseconds: 300));
+      for (final url in urls) {
+        final items = await _lrclibSearch(url);
+        final best = _bestSafeMatch(
+          items,
+          artist: artist,
+          title: title,
+          localSec: localSec,
+        );
+        if (best != null) {
+          final String synced = best['syncedLyrics'].toString();
+          await File(lrcPath).writeAsString(synced);
+          await _markAuto(lrcPath);
+          await _processVocalBoundingBox(audioPath, synced, localSec);
+          debugPrint(
+            "🟢 [NLP Tracker] Letra segura: ${best['artistName']} - ${best['trackName']} (${best['duration']}s vs $localSec s)",
+          );
+          return true;
         }
+        await Future.delayed(const Duration(milliseconds: 250));
       }
-
-      final fallbackUrl =
-          'https://lrclib.net/api/search?q=${Uri.encodeComponent(filename)}';
-      try {
-        final fallbackResponse = await _resilientGet(fallbackUrl);
-        if (fallbackResponse.statusCode == 200) {
-          final parsed = jsonDecode(fallbackResponse.body);
-          if (parsed is List && parsed.isNotEmpty) {
-            parsed.sort((a, b) {
-              final aSync = a['syncedLyrics']?.toString().isNotEmpty ?? false;
-              final bSync = b['syncedLyrics']?.toString().isNotEmpty ?? false;
-              if (aSync && !bSync) return -1;
-              if (!aSync && bSync) return 1;
-              if (localSec > 0) {
-                final aDur = (a['duration'] as num?)?.toInt() ?? 0;
-                final bDur = (b['duration'] as num?)?.toInt() ?? 0;
-                return (aDur - localSec).abs().compareTo(
-                  (bDur - localSec).abs(),
-                );
-              }
-              return 0;
-            });
-
-            for (var item in parsed) {
-              final syncedLyrics = item['syncedLyrics'];
-              if (syncedLyrics != null &&
-                  syncedLyrics.toString().trim().isNotEmpty) {
-                await File(lrcPath).writeAsString(syncedLyrics);
-                await _processVocalBoundingBox(
-                  audioPath,
-                  syncedLyrics,
-                  localSec,
-                );
-
-                debugPrint(
-                  "🟢 [NLP Tracker] LRC y Bounding Box salvados vía Failsafe Delta.",
-                );
-                return;
-              }
-            }
-          }
-        }
-      } catch (e) {
-        debugPrint("🟡 [NLP Tracker] Failsafe evadió error: $e");
-      }
+      debugPrint("🟡 [NLP Tracker] Sin coincidencia segura: $filename");
+      return false;
     } catch (e) {
       debugPrint("🔴 [NLP Tracker] Excepción crítica de I/O: $e");
+      return false;
     }
   }
 
-  Future<void> processSingleFile(String filePath) async {
-    final file = File(filePath);
-    if (!file.existsSync() || Platform.isAndroid || Platform.isIOS) {
-      return;
+  // ------------------------------------------- registro de letras AUTOMÁTICAS
+  // Solo las letras que descargó esta app se anotan aquí. Las que tú arreglaste
+  // (o cualquier .lrc que no esté en la lista) nunca se tocan ni se borran.
+
+  File _autoRegistry(String folder) =>
+      File('$folder${Platform.pathSeparator}_lyrics_auto.json');
+
+  Map<String, dynamic> _readAuto(String folder) {
+    try {
+      final f = _autoRegistry(folder);
+      if (f.existsSync()) {
+        final d = jsonDecode(f.readAsStringSync());
+        if (d is Map<String, dynamic>) return d;
+      }
+    } catch (_) {}
+    return <String, dynamic>{};
+  }
+
+  Future<void> _markAuto(String lrcPath) async {
+    try {
+      final f = File(lrcPath);
+      final folder = f.parent.path;
+      final reg = _readAuto(folder);
+      reg[f.uri.pathSegments.last] = f.lengthSync();
+      await _autoRegistry(folder).writeAsString(jsonEncode(reg));
+    } catch (_) {}
+  }
+
+  Future<void> _unmarkAuto(String lrcPath) async {
+    try {
+      final f = File(lrcPath);
+      final folder = f.parent.path;
+      final reg = _readAuto(folder);
+      if (reg.remove(f.uri.pathSegments.last) != null) {
+        await _autoRegistry(folder).writeAsString(jsonEncode(reg));
+      }
+    } catch (_) {}
+  }
+
+  /// RESET DE LETRAS: borra solo los .lrc descargados por la app que siguen
+  /// SIN cambios (mismo tamaño). Nunca borra una letra fija o editada.
+  /// Devuelve cuántas borró.
+  Future<int> resetAutoLyrics(
+    String directoryPath, {
+    bool Function()? isCancelled,
+  }) async {
+    final dir = Directory(directoryPath);
+    if (!dir.existsSync()) return 0;
+    int removed = 0;
+    final folders = <String>{directoryPath};
+    try {
+      for (final e in dir.listSync(recursive: true)) {
+        if (e is Directory) folders.add(e.path);
+      }
+    } catch (_) {}
+    for (final folder in folders) {
+      if (isCancelled != null && isCancelled()) break;
+      final reg = _readAuto(folder);
+      if (reg.isEmpty) continue;
+      final keep = <String, dynamic>{};
+      reg.forEach((name, size) {
+        final f = File('$folder${Platform.pathSeparator}$name');
+        try {
+          if (f.existsSync() && f.lengthSync() == (size as num).toInt()) {
+            f.deleteSync();
+            removed++;
+          } else if (f.existsSync()) {
+            keep[name] = size; // editada: ya no es automática, se respeta
+          }
+        } catch (_) {
+          keep[name] = size;
+        }
+      });
+      try {
+        if (keep.isEmpty) {
+          _autoRegistry(folder).deleteSync();
+        } else {
+          _autoRegistry(folder).writeAsStringSync(jsonEncode(keep));
+        }
+      } catch (_) {}
     }
+    return removed;
+  }
+
+  /// Resultado de intentar la letra de una pista.
+  /// ok = letra nueva · kept = ya tenía una letra válida (no se toca) ·
+  /// noMatch = sin coincidencia segura · failed = error / pista inexistente.
+  Future<LyricStatus> processSingleFile(String filePath) async {
+    final file = File(filePath);
+    if (!file.existsSync()) return LyricStatus.failed;
 
     final lrcPath = filePath.replaceAll(
       RegExp(r'\.mp3$|\.webm$', caseSensitive: false),
@@ -473,23 +585,61 @@ class NlpWorker {
           );
           await lrcFile.delete();
         } else {
-          return;
+          // Letra válida (descargada o arreglada por Gabriel): INTOCABLE.
+          return LyricStatus.kept;
         }
       } catch (e) {
         debugPrint(
-          "⚠️ [NLP I/O] Imposible leer .lrc existente, forzando purga: $e",
+          "⚠️ [NLP I/O] Imposible leer .lrc existente, no se toca: $e",
         );
-        await lrcFile.delete();
+        return LyricStatus.failed;
       }
     }
 
     try {
-      await _fetchAndSaveLrc(filePath, lrcPath);
+      return await _fetchAndSaveLrc(filePath, lrcPath)
+          ? LyricStatus.ok
+          : LyricStatus.noMatch;
     } catch (e) {
       debugPrint("🔴 [NLP Scraper Fatal Error]: $e");
-      if (!lrcFile.existsSync()) {
-        await lrcFile.writeAsString("[00:00.00] Letra no encontrada\n");
-      }
+      return LyricStatus.failed;
     }
   }
+
+  /// Descarga las letras de una carpeta y devuelve el conteo por resultado.
+  Future<Map<LyricStatus, int>> downloadForDirectory(
+    String directoryPath, {
+    bool Function()? isCancelled,
+  }) async {
+    final counts = <LyricStatus, int>{for (final s in LyricStatus.values) s: 0};
+    final dir = Directory(directoryPath);
+    if (!dir.existsSync()) return counts;
+    final files = dir
+        .listSync(recursive: true)
+        .whereType<File>()
+        .where((f) {
+          final p = f.path.toLowerCase();
+          return p.endsWith('.mp3') && !p.endsWith('_k.mp3');
+        })
+        .toList();
+    final pipe = ref.read(pipelineProvider.notifier);
+    final total = files.length;
+    for (int i = 0; i < total; i++) {
+      if (isCancelled != null && isCancelled()) break;
+      final f = files[i];
+      final name = f.uri.pathSegments.last;
+      pipe.updateProgress(i + 1, total, name, "📝 Letras");
+      // Mix pesado (> 16 MB): no tiene letra.
+      if (f.lengthSync() / (1024 * 1024) > 16.0) {
+        counts[LyricStatus.kept] = counts[LyricStatus.kept]! + 1;
+        continue;
+      }
+      final st = await processSingleFile(f.path);
+      counts[st] = counts[st]! + 1;
+      await Future.delayed(const Duration(milliseconds: 150));
+    }
+    return counts;
+  }
 }
+
+enum LyricStatus { ok, kept, noMatch, failed }

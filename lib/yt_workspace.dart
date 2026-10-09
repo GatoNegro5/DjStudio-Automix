@@ -102,48 +102,10 @@ class _YoutubeSearchAndDownloadWorkspaceState
   // ---------------------------------------------------------
   // 🛠️ MÓDULO DE TELEMETRÍA Y COMPENSACIÓN VECTORIAL
   // ---------------------------------------------------------
-  String _getFfmpegPath() {
-    if (Platform.isAndroid || Platform.isIOS) {
-      debugPrint("🟢 [TRACKER BIN] Plataforma Móvil. Path FFMPEG: 'ffmpeg'");
-      return 'ffmpeg';
-    }
-    final exeDir = File(Platform.resolvedExecutable).parent.path;
-    final localPath = Platform.isWindows
-        ? '$exeDir\\ffmpeg.exe'
-        : '$exeDir/ffmpeg';
-    final exists = File(localPath).existsSync();
-    debugPrint("🟢 [TRACKER BIN] Path FFMPEG: $localPath | Existe: $exists");
-    return exists ? localPath : 'ffmpeg';
-  }
-
-  String _getFfprobePath() {
-    if (Platform.isAndroid || Platform.isIOS) {
-      debugPrint("🟢 [TRACKER BIN] Plataforma Móvil. Path FFPROBE: 'ffprobe'");
-      return 'ffprobe';
-    }
-    final exeDir = File(Platform.resolvedExecutable).parent.path;
-    final localPath = Platform.isWindows
-        ? '$exeDir\\ffprobe.exe'
-        : '$exeDir/ffprobe';
-    final exists = File(localPath).existsSync();
-    debugPrint("🟢 [TRACKER BIN] Path FFPROBE: $localPath | Existe: $exists");
-    return exists ? localPath : 'ffprobe';
-  }
-
   Future<int> _getAudioDurationMs(String path) async {
     try {
-      final result = await Process.run(_getFfprobePath(), [
-        '-v',
-        'error',
-        '-show_entries',
-        'format=duration',
-        '-of',
-        'default=noprint_wrappers=1:nokey=1',
-        path,
-      ]);
-      final durationSec =
-          double.tryParse(result.stdout.toString().trim()) ?? 0.0;
-      return (durationSec * 1000).toInt();
+      // Rust/symphonia: sin ffprobe, igual en las 4 plataformas.
+      return (await rust_dsp.exactDurationMs(inputPath: path)).toInt();
     } catch (_) {
       return 0;
     }
@@ -479,7 +441,7 @@ class _YoutubeSearchAndDownloadWorkspaceState
 
     setState(() {
       _isProcessing = true;
-      _statusText = "Iniciando motor híbrido (VR Bypass + FFmpeg)...";
+      _statusText = "Iniciando motor híbrido (VR Bypass + MP3 Rust)...";
     });
 
     try {
@@ -517,7 +479,7 @@ class _YoutubeSearchAndDownloadWorkspaceState
       final process = await Process.start(ytdlpPath, [
         '--rm-cache-dir',
         '-f',
-        '140/bestaudio',
+        '140/bestaudio[ext=m4a]/bestaudio',
         '--extractor-args',
         'youtube:player_client=android_vr',
         '-o',
@@ -537,22 +499,16 @@ class _YoutubeSearchAndDownloadWorkspaceState
         throw Exception("Fallo CLI Extractor. Traza: $errorTrace");
       }
 
-      setState(() => _statusText = "Transcodificando a MP3 Temp vía FFmpeg...");
+      setState(() => _statusText = "Codificando a MP3 320k (motor Rust/LAME)...");
 
-      final ffmpegProcess = await Process.run(_getFfmpegPath(), [
-        '-y',
-        '-i',
-        tempRawPath,
-        '-vn',
-        '-b:a',
-        '320k',
-        tempMp3Path,
-      ]);
-
-      if (ffmpegProcess.exitCode != 0) {
-        throw Exception(
-          "Fallo en motor FFmpeg: ${ffmpegProcess.stderr.toString()}",
+      try {
+        await rust_dsp.encodeToMp3(
+          inputPath: tempRawPath,
+          outputPath: tempMp3Path,
+          bitrateKbps: 320,
         );
+      } catch (e) {
+        throw Exception("Fallo en el codificador MP3: $e");
       }
 
       try {

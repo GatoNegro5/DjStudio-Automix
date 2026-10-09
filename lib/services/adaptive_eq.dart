@@ -6,6 +6,7 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:media_kit/media_kit.dart';
 
+import 'package:djstudio_player/src/rust/api/core_dsp.dart' as rust_dsp;
 import '../core/audio/af_caps.dart';
 import '../core/hal/platform_strategy.dart';
 
@@ -237,12 +238,27 @@ class AdaptiveEq {
   }
 
   static Future<AdaptiveProfile?> _measure(String path, String k) async {
-    String? raw;
     try {
-      raw = await _decode(path);
-      if (raw == null) return null;
-      final Uint8List bytes = await File(raw).readAsBytes();
-      final AdaptiveProfile? p = await Isolate.run(() => _analyze(bytes));
+      // REGLA (CONTEXTO): solo existen 2 decks. Se decodifica en proceso con
+      // Rust/symphonia: sin reproductor, sin FFmpeg, igual en las 4 plataformas.
+      Uint8List? bytes;
+      for (final start in const [30, 0]) {
+        try {
+          final b = await rust_dsp.decodeMonoPcm(
+            inputPath: path,
+            startSecs: start,
+            lengthSecs: 30,
+            targetRate: _sr,
+          );
+          if (b.length > _sr * 2 * 5) {
+            bytes = b;
+            break;
+          }
+        } catch (_) {}
+      }
+      if (bytes == null) return null;
+      final Uint8List data = bytes;
+      final AdaptiveProfile? p = await Isolate.run(() => _analyze(data));
       _mem[k] = p;
       if (p != null) {
         _loadDisk();
@@ -253,82 +269,8 @@ class AdaptiveEq {
     } catch (e) {
       debugPrint('🔴 [ADAPTIVE AUDIO] $path: $e');
       return null;
-    } finally {
-      if (raw != null) {
-        try {
-          File(raw).deleteSync();
-        } catch (_) {}
-      }
     }
   }
-
-  // ---------------------------------------------------------------- decode
-  static int _n = 0;
-
-  static String _tmp() =>
-      '${Directory.systemTemp.path}${Platform.pathSeparator}aeq_${pid}_${_n++}.pcm';
-
-  static bool _usable(String f) {
-    try {
-      return File(f).existsSync() && File(f).lengthSync() > _sr * 2 * 5;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  /// 1) libmpv `ao=pcm` (verificado en el libmpv de Windows; no necesita
-  /// FFmpeg). 2) FFmpeg si existe.
-  static Future<String?> _decode(String path) async {
-    for (final start in const ['30', '0']) {
-      final tmp = _tmp();
-      Player? p;
-      try {
-        p = Player();
-        final dynamic pl = p.platform;
-        await pl?.setProperty('vid', 'no');
-        await pl?.setProperty('ao', 'pcm');
-        await pl?.setProperty('ao-pcm-file', tmp);
-        await pl?.setProperty('ao-pcm-waveheader', 'no');
-        await pl?.setProperty('audio-samplerate', '$_sr');
-        await pl?.setProperty('audio-channels', 'mono');
-        await pl?.setProperty('audio-format', 's16');
-        await pl?.setProperty('untimed', 'yes');
-        await pl?.setProperty('start', start);
-        await pl?.setProperty('length', '30');
-        await pl?.setProperty('af', '');
-        await p.open(Media(path), play: true);
-        await p.stream.completed
-            .firstWhere((c) => c)
-            .timeout(const Duration(seconds: 45));
-      } catch (_) {
-      } finally {
-        try {
-          await p?.dispose();
-        } catch (_) {}
-      }
-      await Future.delayed(const Duration(milliseconds: 150));
-      if (_usable(tmp)) return tmp;
-      try {
-        File(tmp).deleteSync();
-      } catch (_) {}
-    }
-    if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
-      final tmp = _tmp();
-      final exeDir = File(Platform.resolvedExecutable).parent.path;
-      final local = Platform.isWindows ? '$exeDir\\ffmpeg.exe' : '$exeDir/ffmpeg';
-      for (final seek in const ['30', '0']) {
-        try {
-          final r = await Process.run(File(local).existsSync() ? local : 'ffmpeg', [
-            '-v', 'error', '-ss', seek, '-t', '30', '-i', path,
-            '-ac', '1', '-ar', '$_sr', '-f', 's16le', '-y', tmp,
-          ]).timeout(const Duration(seconds: 40));
-          if (r.exitCode == 0 && _usable(tmp)) return tmp;
-        } catch (_) {}
-      }
-    }
-    return null;
-  }
-
   // -------------------------------------------------------------- análisis
   // Nivel típico de música comercial por banda octava (dB, relativo a 1 kHz).
   static const List<double> _target = [-1, 4, 6, 3, 1, 0, -3, -6, -11, -18];
