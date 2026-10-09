@@ -1,5 +1,5 @@
 #ifndef AppVer
-  #define AppVer "1.0.1"
+  #define AppVer "3.0.1"
 #endif
 [Setup]
 AppName=DjStudio
