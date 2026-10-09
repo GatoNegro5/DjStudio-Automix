@@ -112,15 +112,16 @@ jobs:
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
           if [ "${{ matrix.target }}" = "apk" ]; then
-            flutter build apk --release --build-number=$((100 + ${{ github.run_number }}))
+            flutter build apk --release --build-name="${GITHUB_REF_NAME#v}" --build-number=$((100 + ${{ github.run_number }}))
           else
-            ${{ matrix.build_cmd }}
+            ${{ matrix.build_cmd }} --build-name="${GITHUB_REF_NAME#v}"
           fi
 
       - name: Compile Windows Installer
         if: matrix.target == 'windows'
         run: |
-          "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" windows_setup.iss
+          set "V=${{ github.ref_name }}"
+          "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVer=%V:~1% windows_setup.iss
         shell: cmd
 
       - name: Zip MacOS Build

@@ -1,6 +1,9 @@
+#ifndef AppVer
+  #define AppVer "1.0.1"
+#endif
 [Setup]
 AppName=DjStudio
-AppVersion=1.0.52
+AppVersion={#AppVer}
 DefaultDirName={autopf}\DjStudio
 DefaultGroupName=DjStudio
 OutputDir=.\

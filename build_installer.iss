@@ -1,5 +1,5 @@
 #define MyAppName "DjStudio"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.0.1"
 #define MyAppPublisher "Gabriel Calle"
 #define MyAppExeName "djstudio_player.exe"
 #define BuildPath "C:\Python\djstudio_player\build\windows\x64\runner\Release"
