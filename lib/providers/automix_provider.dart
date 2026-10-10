@@ -1067,7 +1067,7 @@ class AutomixNotifier extends Notifier<AutomixState> {
         currentIndex: 0,
         currentTrackPath: nextTrack,
         position: Duration(milliseconds: cueInMs),
-        duration: incomingPlayer.state.duration,
+        duration: await _trueDuration(nextTrack, incomingPlayer.state.duration),
         lyrics: _lyricPrime[nextTrack] ?? const <LyricLine>[],
         activeLyricIndex: -1,
       );
@@ -1177,7 +1177,7 @@ class AutomixNotifier extends Notifier<AutomixState> {
       currentIndex: 0,
       currentTrackPath: nextTrack,
         position: Duration(milliseconds: cueInMs),
-        duration: incomingPlayer.state.duration,
+        duration: await _trueDuration(nextTrack, incomingPlayer.state.duration),
         lyrics: _lyricPrime[nextTrack] ?? const <LyricLine>[],
         activeLyricIndex: -1,
     );
@@ -1267,7 +1267,7 @@ class AutomixNotifier extends Notifier<AutomixState> {
       currentIndex: 0,
       currentTrackPath: nextTrack,
         position: Duration(milliseconds: cueInMs),
-        duration: incomingPlayer.state.duration,
+        duration: await _trueDuration(nextTrack, incomingPlayer.state.duration),
         lyrics: _lyricPrime[nextTrack] ?? const <LyricLine>[],
         activeLyricIndex: -1,
     );
@@ -1398,6 +1398,39 @@ class AutomixNotifier extends Notifier<AutomixState> {
     }
   }
 
+  final Map<String, int> _exactDurCache = {};
+
+  /// Duración real del archivo (Rust). Si difiere de la de libmpv en más de
+  /// 1.5 s manda la real: evita la barra que termina al 70-80 % y daña la mezcla.
+  Future<Duration> _trueDuration(String? path, Duration mpv) async {
+    if (path == null) return mpv;
+    try {
+      int? ms = _exactDurCache[path];
+      if (ms == null) {
+        ms = (await rust_dsp.exactDurationMs(inputPath: path)).toInt();
+        _exactDurCache[path] = ms;
+      }
+      if (ms > 0 && (ms - mpv.inMilliseconds).abs() > 1500) {
+        debugPrint('⏱️ [AUTOMIX] Duración corregida ${mpv.inSeconds}s → ${ms ~/ 1000}s: $path');
+        return Duration(milliseconds: ms);
+      }
+    } catch (_) {}
+    return mpv;
+  }
+
+  /// Aplica la duración real a la pista actual y recalcula la ventana de mezcla.
+  Future<void> _applyTrueDuration(String? path, Duration mpv) async {
+    if (path == null || mpv.inMilliseconds <= 0) return;
+    final Duration real = await _trueDuration(path, mpv);
+    if (real == mpv || state.currentTrackPath != path) return;
+    if (state.duration == real) return;
+    _lastDurationPlanKey = '$path|${real.inMilliseconds}';
+    state = state.copyWith(duration: real);
+    try {
+      _recalculateMixWindow();
+    } catch (_) {}
+  }
+
   void _attachListeners(Player player) {
     _lastUiPosMs = -1;
     _lastLyricIndex = -2;
@@ -1422,6 +1455,7 @@ class AutomixNotifier extends Notifier<AutomixState> {
       try {
         _recalculateMixWindow();
       } catch (_) {}
+      unawaited(_applyTrueDuration(state.currentTrackPath, liveDur));
     } else if (livePlaying || livePos.inMilliseconds > 0) {
       state = state.copyWith(isPlaying: livePlaying, position: livePos);
     }
@@ -1516,6 +1550,7 @@ class AutomixNotifier extends Notifier<AutomixState> {
       _lastDurationPlanKey = key;
       state = state.copyWith(duration: dur);
       _recalculateMixWindow();
+      unawaited(_applyTrueDuration(state.currentTrackPath, dur));
 
       if (state.currentTrackPath != null) {
         globalAudioHandler.syncOs(
@@ -1866,7 +1901,7 @@ class AutomixNotifier extends Notifier<AutomixState> {
       await _standbyPlayer.setVolume(0.0);
       await _standbyPlayer.stop();
     } catch (_) {}
-    final Duration d = _activeAutomix.state.duration;
+    final Duration d = await _trueDuration(path, _activeAutomix.state.duration);
     if (d.inMilliseconds > 0) {
       state = state.copyWith(
         duration: d,

@@ -193,9 +193,14 @@ pub async fn exact_duration_ms(input_path: String) -> Result<u64, String> {
         Some(tb) => tb,
         None => return Ok(0),
     };
-    if let Some(n) = params.n_frames {
-        let t = tb.calc_time(n);
-        return Ok(t.seconds * 1000 + (t.frac * 1000.0) as u64);
+    // MP3: la cabecera Xing/Info suele mentir (archivos recortados, unidos o
+    // re-etiquetados) y libmpv la cree. En MP3 se cuentan los frames reales.
+    let is_mp3 = params.codec == symphonia::core::codecs::CODEC_TYPE_MP3;
+    if !is_mp3 {
+        if let Some(n) = params.n_frames {
+            let t = tb.calc_time(n);
+            return Ok(t.seconds * 1000 + (t.frac * 1000.0) as u64);
+        }
     }
     let mut total: u64 = 0;
     while let Ok(p) = format.next_packet() {
