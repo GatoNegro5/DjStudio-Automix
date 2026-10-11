@@ -20,6 +20,7 @@ import 'core/audio/dj_audio_handler.dart';
 import 'core/hal/platform_strategy.dart';
 
 // 🛠️ FIX: Rutas actualizadas a la nueva Clean Architecture
+import 'ui/widgets/app_version_label.dart';
 import 'ui/workspaces/automix_workspace.dart';
 import 'ui/workspaces/dsp_workspace.dart';
 import 'ui/workspaces/yt_workspace.dart';
@@ -683,6 +684,7 @@ class _DjStudioNavColumn extends ConsumerWidget {
             ),
           ),
         ),
+        const AppVersionLabel(),
         if (compactSheet)
           tiles
         else

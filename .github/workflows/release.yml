@@ -217,7 +217,7 @@ jobs:
       - name: Build unsigned iOS app
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
-          flutter build ios --release --no-codesign -t lib/djiphone/main.dart
+          flutter build ios --release --no-codesign --verbose -t lib/djiphone/main.dart
 
       - name: Pack DjIphone.ipa
         run: |

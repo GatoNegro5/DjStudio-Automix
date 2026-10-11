@@ -14,7 +14,8 @@ import 'package:djstudio_player/providers/automix_provider.dart';
 import 'package:djstudio_player/providers/livedj_provider.dart';
 import 'package:djstudio_player/providers/pipeline_provider.dart';
 import 'package:djstudio_player/providers/theme_provider.dart';
-import 'package:djstudio_player/services/audio_interruption.dart';import 'package:djstudio_player/ui/workspaces/automix_workspace.dart';
+import 'package:djstudio_player/services/audio_interruption.dart';import 'package:djstudio_player/ui/widgets/app_version_label.dart';
+import 'package:djstudio_player/ui/workspaces/automix_workspace.dart';
 import 'package:djstudio_player/ui/workspaces/dsp_workspace.dart';
 import 'package:djstudio_player/ui/workspaces/lan_sync_workspace.dart';
 import 'package:djstudio_player/ui/workspaces/livedj_workspace.dart';
@@ -547,6 +548,7 @@ class _DjIphoneNav extends ConsumerWidget {
             ),
           ),
         ),
+        const AppVersionLabel(),
         tile(icon: Icons.album, label: 'Automix', route: 0),
         tile(icon: Icons.radio, label: 'Live DJ', route: 5),
         tile(icon: Icons.settings, label: 'Masterizar', route: 1),
