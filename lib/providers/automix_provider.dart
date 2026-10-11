@@ -12,6 +12,7 @@ import 'package:djstudio_player/src/rust/api/core_dsp.dart' as rust_dsp;
 
 import '../core/hal/platform_strategy.dart';
 import '../core/audio/af_caps.dart';
+import '../core/audio/tempo_drift.dart';
 import '../djiphone/iphone_library.dart';
 import '../core/audio/dj_audio_handler.dart';
 
@@ -160,6 +161,7 @@ class AutomixNotifier extends Notifier<AutomixState> {
   bool _outroProbeBusy = false;
   String? _lastDurationPlanKey;
   int _lastUiPosMs = -1;
+  final TempoDrift _drift = TempoDrift();
   int _lastLyricIndex = -2;
   String? _shownLyricsPath;
   List<LyricLine>? _lyricUndo;
@@ -1056,7 +1058,7 @@ class AutomixNotifier extends Notifier<AutomixState> {
       final incomingBpm = _extractBpm(nextTrack);
       double incomingRate = 1.0;
       if (fadingBpm > 60 && incomingBpm > 60) {
-        final ratio = fadingBpm / incomingBpm;
+        final ratio = (fadingBpm * fadingPlayer.state.rate) / incomingBpm;
         if (ratio >= 0.88 && ratio <= 1.12) incomingRate = ratio;
       }
 
@@ -1161,7 +1163,7 @@ class AutomixNotifier extends Notifier<AutomixState> {
     double incomingRate = 1.0;
 
     if (fadingBpm > 60 && incomingBpm > 60) {
-      final ratio = fadingBpm / incomingBpm;
+      final ratio = (fadingBpm * fadingPlayer.state.rate) / incomingBpm;
       if (ratio >= 0.88 && ratio <= 1.12) {
         incomingRate = ratio;
       }
@@ -1251,7 +1253,7 @@ class AutomixNotifier extends Notifier<AutomixState> {
     double incomingRate = 1.0;
 
     if (fadingBpm > 60 && incomingBpm > 60) {
-      final ratio = fadingBpm / incomingBpm;
+      final ratio = (fadingBpm * fadingPlayer.state.rate) / incomingBpm;
       if (ratio >= 0.88 && ratio <= 1.12) {
         incomingRate = ratio;
       }
@@ -1376,11 +1378,15 @@ class AutomixNotifier extends Notifier<AutomixState> {
     } finally {
       // 🛡️ FIX: el glide de tempo arranca en incomingRate. Fijar aquí el rate a
       // 1.0 provocaba un salto de velocidad hacia atrás al iniciar la rampa.
-      final bool willGlideRate = incomingRate != 1.0;
+      // Mucha corrección de tempo: NO se vuelve de golpe al BPM real; se queda
+      // y TempoDrift lo acerca 1-2 BPM en la mitad, al 75 % y antes de la mezcla.
+      _drift.begin(_extractBpm(state.currentTrackPath), incomingRate);
+      final bool keepRate = _drift.active && incomingRate != 1.0;
+      final bool willGlideRate = incomingRate != 1.0 && !keepRate;
 
       try {
         await incomingPlayer.setVolume(100.0);
-        if (!willGlideRate) await incomingPlayer.setRate(1.0);
+        if (!willGlideRate && !keepRate) await incomingPlayer.setRate(1.0);
         platformIn?.setProperty('af', inBase());
         platformOut?.setProperty('af', outBase());
         await fadingPlayer.setVolume(0.0);
@@ -1475,6 +1481,18 @@ class AutomixNotifier extends Notifier<AutomixState> {
 
     _positionSub = player.stream.position.listen((Duration pos) {
       final posMs = pos.inMilliseconds;
+
+      if (!_isCrossfading && state.duration.inMilliseconds > 0) {
+        final double curRate = player.state.rate;
+        final double? tgt = _drift.tick(
+          posMs: posMs,
+          durMs: state.duration.inMilliseconds,
+          mixOutMs: state.customMixOutMs,
+          rate: curRate,
+          nextBpm: _extractBpm(state.nextTrackPath),
+        );
+        if (tgt != null) unawaited(_drift.ramp(player, curRate, tgt));
+      }
 
       if (state.customCueInMs > 0 &&
           posMs < state.customCueInMs &&
@@ -1843,6 +1861,8 @@ class AutomixNotifier extends Notifier<AutomixState> {
 
     // Sustitución en frío: sin audio saliente no hay nada que fundir.
     if (!wasPlaying) {
+      _drift.begin(_extractBpm(newPath), 1.0);
+      await incomingPlayer.setRate(1.0);
       await incomingPlayer.setVolume(100.0);
       await incomingPlayer.open(Media(newPath), play: true);
       ref.read(automixEqualizerProvider.notifier).adapt(incomingPlayer, newPath);
@@ -1900,6 +1920,10 @@ class AutomixNotifier extends Notifier<AutomixState> {
   Future<void> _forceOpenAndPlay(String path, {int seekMs = 0}) async {
     _isCrossfading = false;
     final Player incoming = _standbyPlayer;
+    _drift.begin(_extractBpm(path), 1.0);
+    try {
+      await incoming.setRate(1.0);
+    } catch (_) {}
     await incoming.setVolume(100.0);
     await incoming.open(Media(path), play: true);
     ref.read(automixEqualizerProvider.notifier).adapt(incoming, path);

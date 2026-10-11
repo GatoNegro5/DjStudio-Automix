@@ -10,6 +10,7 @@ import 'package:file_selector/file_selector.dart';
 import 'package:djstudio_player/src/rust/api/core_dsp.dart' as rust_dsp;
 import '../core/hal/platform_strategy.dart';
 import '../core/audio/af_caps.dart';
+import '../core/audio/tempo_drift.dart';
 import '../services/track_tags.dart';
 import '../core/audio/dj_audio_handler.dart';
 import 'equalizer_provider.dart';
@@ -147,6 +148,10 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
   bool _freezePersist = false;
   bool _sessionHydrated = false;
   int _lastOsSecond = -1;
+  // Regulación sutil de tempo (ver tempo_drift.dart) y BPM real de la pista
+  // entrante (etiqueta/nombre o medido por beat_grid).
+  final TempoDrift _drift = TempoDrift();
+  double _incomingNatBpm = 0.0;
 
   late final PlatformMixStrategy _liveStrategy;
 
@@ -586,6 +591,10 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
 
       _freezePersist = false;
       if (currentTrackPath != null && _readSavedUiRoute() == 5) {
+        _drift.begin(_extractBpm(currentTrackPath), 1.0);
+        try {
+          await _activePlayer.setRate(1.0);
+        } catch (_) {}
         await _activePlayer.open(Media(currentTrackPath), play: false);
         ref.read(liveDjEqualizerProvider.notifier).adapt(_activePlayer, currentTrackPath);
         try {
@@ -787,6 +796,18 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
           (state.queue.isNotEmpty || state.radioOn)) {
         final triggerMs = _calculateRadioMixOut(durMs, state.currentTrackPath);
 
+        if (!_isCrossfading) {
+          final double curRate = player.state.rate;
+          final double? tgt = _drift.tick(
+            posMs: posMs,
+            durMs: durMs,
+            mixOutMs: triggerMs,
+            rate: curRate,
+            nextBpm: _extractBpm(_standbyArmedPath),
+          );
+          if (tgt != null) unawaited(_drift.ramp(player, curRate, tgt));
+        }
+
         // No se arma durante un cruce: el deck "standby" es el que aún suena
         // (saliendo); recargarlo mete pistas fantasma y deja el armado huérfano.
         if (!_isStandbyArmed &&
@@ -926,6 +947,10 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
         return;
       }
       try {
+        _drift.begin(_extractBpm(path), 1.0);
+        try {
+          await _activePlayer.setRate(1.0);
+        } catch (_) {}
         await _activePlayer.open(Media(path), play: true);
         ref.read(liveDjEqualizerProvider.notifier).adapt(_activePlayer, path);
         _attachListeners(_activePlayer);
@@ -1447,8 +1472,11 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
       } catch (_) {}
     }
 
+    _incomingNatBpm = incomingBpm;
+    // BPM con el que SUENA ahora el saliente (puede ir regulado, ver TempoDrift).
+    final double outRate = fadingPlayer.state.rate;
     if (fadingBpm > 60 && incomingBpm > 60) {
-      final ratio = fadingBpm / incomingBpm;
+      final ratio = (fadingBpm * outRate) / incomingBpm;
       if (ratio >= 0.88 && ratio <= 1.12) {
         incomingRate = ratio;
       }
@@ -1482,7 +1510,8 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
             .ceilToDouble();
         final double nextBeat = gridOut.beatMs + kOut * pOut;
         // 20 ms: latencia de arranque del deck entrante.
-        final int waitMs = (nextBeat - nowOut).round() - 20;
+        // El saliente avanza `outRate` ms de pista por cada ms real.
+        final int waitMs = ((nextBeat - nowOut) / outRate).round() - 20;
         final int left = waitMs - sw.elapsedMilliseconds;
         if (left > 0 && left < 1500) {
           await Future.delayed(Duration(milliseconds: left));
@@ -1626,11 +1655,15 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
     } catch (e) {
       debugPrint("🔴 [ERROR DSP]: $e");
     } finally {
-      final bool willGlideRate = incomingRate != 1.0;
+      // Mucha corrección de tempo: NO se vuelve de golpe al BPM real; se queda
+      // y TempoDrift lo acerca 1-2 BPM en la mitad, al 75 % y antes de la mezcla.
+      _drift.begin(_incomingNatBpm, incomingRate);
+      final bool keepRate = _drift.active && incomingRate != 1.0;
+      final bool willGlideRate = incomingRate != 1.0 && !keepRate;
 
       try {
         await incomingPlayer.setVolume(100.0);
-        if (!willGlideRate) await incomingPlayer.setRate(1.0);
+        if (!willGlideRate && !keepRate) await incomingPlayer.setRate(1.0);
         platformIn?.setProperty('af', inBase());
         platformOut?.setProperty('af', outBase());
         await fadingPlayer.setVolume(0.0);
