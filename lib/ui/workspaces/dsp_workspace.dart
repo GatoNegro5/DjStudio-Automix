@@ -518,6 +518,9 @@ class DspNlpWorkspace extends ConsumerWidget {
           continue;
         }
 
+        // Reloj de esta pista: sirve para descansar la CPU después (ver abajo).
+        final Stopwatch trackClock = Stopwatch()..start();
+
         try {
           currentStage = "METADATA_CLEANUP";
           pipe.updateProgress(
@@ -784,7 +787,13 @@ class DspNlpWorkspace extends ConsumerWidget {
           }
         }
 
-        await Future.delayed(const Duration(milliseconds: 100));
+        // Descanso térmico: la CPU descansa ~70 % de lo que trabajó la pista
+        // (mín. 300 ms, máx. 4 s). Antes eran solo 100 ms y el procesador
+        // quedaba al 100 % sostenido durante toda la carpeta.
+        final int restMs = (trackClock.elapsedMilliseconds * 0.7)
+            .round()
+            .clamp(300, 4000);
+        await Future.delayed(Duration(milliseconds: restMs));
       }
 
       if (!checkAbort()) {
