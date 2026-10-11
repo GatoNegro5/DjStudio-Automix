@@ -831,7 +831,20 @@ class AutomixNotifier extends Notifier<AutomixState> {
     final int gen = _outroProbeGen;
 
     // El análisis del outro decide cuánta cola real queda después del SET OUT.
-    final int energyEnd = await _probeOutroEnergyEndMs(path, durationMs);
+    // Sonda ocupada (-1) = otro plan sigue en vuelo (p. ej. al corregir la
+    // duración real): esperar y reintentar; abortar dejaba el plan sin listo
+    // y la mezcla nunca disparaba en la línea roja.
+    int energyEnd = await _probeOutroEnergyEndMs(path, durationMs);
+    for (int retry = 0;
+        energyEnd < 0 &&
+            retry < 100 &&
+            gen == _outroProbeGen &&
+            _outroPlanToken == token &&
+            state.currentTrackPath == path;
+        retry++) {
+      await Future.delayed(const Duration(milliseconds: 150));
+      energyEnd = await _probeOutroEnergyEndMs(path, durationMs);
+    }
     if (energyEnd < 0 ||
         gen != _outroProbeGen ||
         _outroPlanToken != token ||
@@ -1470,8 +1483,11 @@ class AutomixNotifier extends Notifier<AutomixState> {
         return;
       }
 
+      // Red de seguridad: si el plan no quedó listo, igual se mezcla al pasar
+      // el punto de salida (nunca antes), en vez de llegar al final de la pista.
       if (state.autoMixArmed &&
-          _mixPlanReady &&
+          (_mixPlanReady ||
+              (state.customMixOutMs > 0 && posMs >= state.customMixOutMs)) &&
           state.customMixOutMs > 0 &&
           state.nextTrackPath != null) {
         // DAWN arranca 5 s antes del SET OUT; la cola se consume después de él.

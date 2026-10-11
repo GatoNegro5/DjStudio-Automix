@@ -43,7 +43,13 @@ class AudioInterruptionGuard {
     try {
       final session = await AudioSession.instance;
       if (_disposed) return;
-      await session.configure(const AudioSessionConfiguration.music());
+      // Foco "transitorio": las otras apps (TikTok, Facebook…) lo reciben de
+      // vuelta al pausar/cerrar; con foco permanente algunas quedan en mute.
+      await session.configure(
+        const AudioSessionConfiguration.music().copyWith(
+          androidAudioFocusGainType: AndroidAudioFocusGainType.gainTransient,
+        ),
+      );
       _session = session;
       _interruptionSub = session.interruptionEventStream.listen(
         _onInterruption,

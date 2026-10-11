@@ -397,7 +397,8 @@ class _YoutubeSearchAndDownloadWorkspaceState
       final process = await Process.start(ytdlpPath, [
         '--rm-cache-dir',
         '-f',
-        '140/bestaudio[ext=m4a]/bestaudio',
+        // De mejor a peor calidad entre los AAC/M4A que Rust decodifica.
+        'bestaudio[ext=m4a]/141/140/bestaudio',
         '-o',
         tempRawPath,
         targetUrl,
