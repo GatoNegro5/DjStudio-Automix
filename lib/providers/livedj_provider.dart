@@ -229,7 +229,23 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
   }
 
   // 🎛️ INYECCIÓN ADN DJ: Ahora el Cartridge aplica la regla 65%-80%
+  // Se consulta en CADA tick de posición: se memoriza por pista/fórmula para
+  // no repetir regex + búsquedas de texto decenas de veces por segundo (CPU).
+  String? _mixOutCacheKey;
+  int _mixOutCacheVal = 0;
+
   int _calculateRadioMixOut(int durationMs, String? path) {
+    final String key =
+        '$durationMs|$path|${ref.read(mixFormulaProvider)}|'
+        '${TrackTags.peek(path)?.tailMs ?? 0}|${TrackTags.peek(path)?.bpm ?? 0}';
+    if (key == _mixOutCacheKey) return _mixOutCacheVal;
+    final int v = _calculateRadioMixOutRaw(durationMs, path);
+    _mixOutCacheKey = key;
+    _mixOutCacheVal = v;
+    return v;
+  }
+
+  int _calculateRadioMixOutRaw(int durationMs, String? path) {
     if (_isMixTrack(durationMs)) {
       return durationMs - 4000;
     }
@@ -737,7 +753,7 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
       final posMs = pos.inMilliseconds;
       final durMs = state.duration.inMilliseconds;
 
-      if ((posMs - _lastUiPosMs).abs() >= 120) {
+      if ((posMs - _lastUiPosMs).abs() >= 250) {
         _lastUiPosMs = posMs;
         state = state.copyWith(position: pos);
       }

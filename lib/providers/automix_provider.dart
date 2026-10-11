@@ -1519,7 +1519,7 @@ class AutomixNotifier extends Notifier<AutomixState> {
         newLyricIndex = i;
       }
 
-      final bool uiTick = (posMs - _lastUiPosMs).abs() >= 120;
+      final bool uiTick = (posMs - _lastUiPosMs).abs() >= 250;
       final bool lyricTick = newLyricIndex != _lastLyricIndex;
       if (uiTick || lyricTick) {
         _lastUiPosMs = posMs;
