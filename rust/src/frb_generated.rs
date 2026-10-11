@@ -38,7 +38,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.12.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -998955986;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -378390165;
 
 // Section: executor
 
@@ -76,6 +76,51 @@ fn wire__crate__api__core_dsp__auto_detect_and_inject_bpm_impl(
                         let output_ok =
                             crate::api::core_dsp::auto_detect_and_inject_bpm(api_input_path)
                                 .await?;
+                        Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__core_dsp__beat_grid_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "beat_grid",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_input_path = <String>::sse_decode(&mut deserializer);
+            let api_from_ms = <u64>::sse_decode(&mut deserializer);
+            let api_span_secs = <u32>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, ()>(
+                    (move || async move {
+                        let output_ok = Result::<_, ()>::Ok(
+                            crate::api::core_dsp::beat_grid(
+                                api_input_path,
+                                api_from_ms,
+                                api_span_secs,
+                            )
+                            .await,
+                        )?;
                         Ok(output_ok)
                     })()
                     .await,
@@ -869,6 +914,20 @@ impl SseDecode for String {
     }
 }
 
+impl SseDecode for crate::api::core_dsp::BeatGrid {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_ok = <bool>::sse_decode(deserializer);
+        let mut var_bpm = <f64>::sse_decode(deserializer);
+        let mut var_beatMs = <f64>::sse_decode(deserializer);
+        return crate::api::core_dsp::BeatGrid {
+            ok: var_ok,
+            bpm: var_bpm,
+            beat_ms: var_beatMs,
+        };
+    }
+}
+
 impl SseDecode for bool {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -977,51 +1036,52 @@ fn pde_ffi_dispatcher_primary_impl(
             rust_vec_len,
             data_len,
         ),
-        2 => wire__crate__api__core_dsp__check_watermark_impl(port, ptr, rust_vec_len, data_len),
-        3 => wire__crate__api__core_dsp__clear_watermark_impl(port, ptr, rust_vec_len, data_len),
-        4 => wire__crate__api__core_dsp__decode_mono_pcm_impl(port, ptr, rust_vec_len, data_len),
-        5 => wire__crate__api__core_dsp__encode_to_mp3_impl(port, ptr, rust_vec_len, data_len),
-        6 => wire__crate__api__core_dsp__exact_duration_ms_impl(port, ptr, rust_vec_len, data_len),
-        7 => wire__crate__api__core_dsp__get_audio_duration_ms_impl(
+        2 => wire__crate__api__core_dsp__beat_grid_impl(port, ptr, rust_vec_len, data_len),
+        3 => wire__crate__api__core_dsp__check_watermark_impl(port, ptr, rust_vec_len, data_len),
+        4 => wire__crate__api__core_dsp__clear_watermark_impl(port, ptr, rust_vec_len, data_len),
+        5 => wire__crate__api__core_dsp__decode_mono_pcm_impl(port, ptr, rust_vec_len, data_len),
+        6 => wire__crate__api__core_dsp__encode_to_mp3_impl(port, ptr, rust_vec_len, data_len),
+        7 => wire__crate__api__core_dsp__exact_duration_ms_impl(port, ptr, rust_vec_len, data_len),
+        8 => wire__crate__api__core_dsp__get_audio_duration_ms_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        8 => wire__crate__api__core_dsp__init_app_impl(port, ptr, rust_vec_len, data_len),
-        9 => wire__crate__api__core_dsp__inject_watermark_impl(port, ptr, rust_vec_len, data_len),
-        10 => {
+        9 => wire__crate__api__core_dsp__init_app_impl(port, ptr, rust_vec_len, data_len),
+        10 => wire__crate__api__core_dsp__inject_watermark_impl(port, ptr, rust_vec_len, data_len),
+        11 => {
             wire__crate__api__core_dsp__is_master_recording_impl(port, ptr, rust_vec_len, data_len)
         }
-        11 => wire__crate__api__core_dsp__karaoke_cancel_impl(port, ptr, rust_vec_len, data_len),
-        12 => wire__crate__api__core_dsp__karaoke_progress_impl(port, ptr, rust_vec_len, data_len),
-        13 => wire__crate__api__core_dsp__karaoke_separate_impl(port, ptr, rust_vec_len, data_len),
-        14 => wire__crate__api__core_dsp__normalize_lufs_impl(port, ptr, rust_vec_len, data_len),
-        15 => {
+        12 => wire__crate__api__core_dsp__karaoke_cancel_impl(port, ptr, rust_vec_len, data_len),
+        13 => wire__crate__api__core_dsp__karaoke_progress_impl(port, ptr, rust_vec_len, data_len),
+        14 => wire__crate__api__core_dsp__karaoke_separate_impl(port, ptr, rust_vec_len, data_len),
+        15 => wire__crate__api__core_dsp__normalize_lufs_impl(port, ptr, rust_vec_len, data_len),
+        16 => {
             wire__crate__api__core_dsp__outro_energy_end_ms_impl(port, ptr, rust_vec_len, data_len)
         }
-        16 => wire__crate__api__core_dsp__process_auto_trim_impl(port, ptr, rust_vec_len, data_len),
-        17 => wire__crate__api__core_dsp__process_full_pipeline_impl(
+        17 => wire__crate__api__core_dsp__process_auto_trim_impl(port, ptr, rust_vec_len, data_len),
+        18 => wire__crate__api__core_dsp__process_full_pipeline_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        18 => wire__crate__api__core_metadata__process_metadata_impl(
+        19 => wire__crate__api__core_metadata__process_metadata_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        19 => wire__crate__api__core_dsp__read_audio_genre_impl(port, ptr, rust_vec_len, data_len),
-        20 => wire__crate__api__core_dsp__read_master_tags_impl(port, ptr, rust_vec_len, data_len),
-        21 => wire__crate__api__core_dsp__start_master_recording_impl(
+        20 => wire__crate__api__core_dsp__read_audio_genre_impl(port, ptr, rust_vec_len, data_len),
+        21 => wire__crate__api__core_dsp__read_master_tags_impl(port, ptr, rust_vec_len, data_len),
+        22 => wire__crate__api__core_dsp__start_master_recording_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        22 => wire__crate__api__core_dsp__stop_master_recording_impl(
+        23 => wire__crate__api__core_dsp__stop_master_recording_impl(
             port,
             ptr,
             rust_vec_len,
@@ -1045,6 +1105,28 @@ fn pde_ffi_dispatcher_sync_impl(
 
 // Section: rust2dart
 
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::core_dsp::BeatGrid {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.ok.into_into_dart().into_dart(),
+            self.bpm.into_into_dart().into_dart(),
+            self.beat_ms.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::core_dsp::BeatGrid
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::core_dsp::BeatGrid>
+    for crate::api::core_dsp::BeatGrid
+{
+    fn into_into_dart(self) -> crate::api::core_dsp::BeatGrid {
+        self
+    }
+}
 // Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::core_dsp::MasterTags {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
@@ -1076,6 +1158,15 @@ impl SseEncode for String {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <Vec<u8>>::sse_encode(self.into_bytes(), serializer);
+    }
+}
+
+impl SseEncode for crate::api::core_dsp::BeatGrid {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.ok, serializer);
+        <f64>::sse_encode(self.bpm, serializer);
+        <f64>::sse_encode(self.beat_ms, serializer);
     }
 }
 

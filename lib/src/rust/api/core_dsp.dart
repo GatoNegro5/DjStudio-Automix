@@ -6,7 +6,7 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `analyze_and_tag`, `analyze_file`, `dbg_err`, `decode_channels`, `detect_bpm`, `edge_silence_ms`, `ext_text`, `finish`, `forward`, `integrated_lufs`, `inverse`, `is_mp3`, `k_weight`, `lame_bitrate`, `new`, `new`, `new`, `num_from`, `open_format`, `process`, `push`, `rec_stream`, `run`, `set_ext`, `to_mono`
+// These functions are ignored because they are not marked as `pub`: `analyze_and_tag`, `analyze_file`, `dbg_err`, `decode_channels`, `detect_bpm`, `edge_silence_ms`, `ext_text`, `finish`, `forward`, `integrated_lufs`, `inverse`, `is_mp3`, `k_weight`, `karaoke_backend`, `lame_bitrate`, `new`, `new`, `new`, `num_from`, `open_format`, `process`, `push`, `rec_stream`, `run`, `set_ext`, `to_mono`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Analysis`, `Biquad`, `Decoded`, `KStft`, `Mp3Sink`, `RecHandle`, `Resampler`
 
 /// Decodifica un tramo a PCM mono s16le a `target_rate` Hz (EQ adaptativa).
@@ -34,6 +34,18 @@ Future<BigInt> getAudioDurationMs({required String inputPath}) => RustLib
     .instance
     .api
     .crateApiCoreDspGetAudioDurationMs(inputPath: inputPath);
+
+/// Mide BPM y fase de golpes en `span_secs` segundos a partir de `from_ms`.
+/// Sirve para que la mezcla de Live DJ entre "en el golpe" (no solo igualar BPM).
+Future<BeatGrid> beatGrid({
+  required String inputPath,
+  required BigInt fromMs,
+  required int spanSecs,
+}) => RustLib.instance.api.crateApiCoreDspBeatGrid(
+  inputPath: inputPath,
+  fromMs: fromMs,
+  spanSecs: spanSecs,
+);
 
 /// Lee lo que dejó el masterizado (sin decodificar). Sirve a Live DJ y Automix.
 Future<MasterTags> readMasterTags({required String inputPath}) =>
@@ -137,6 +149,28 @@ Future<bool> karaokeSeparate({
   modelPath: modelPath,
   outputPath: outputPath,
 );
+
+/// Rejilla de golpes de un tramo: BPM medido y posición (ms absolutos en la
+/// pista) de un golpe fuerte. Los demás golpes: `beat_ms + k * 60000 / bpm`.
+class BeatGrid {
+  final bool ok;
+  final double bpm;
+  final double beatMs;
+
+  const BeatGrid({required this.ok, required this.bpm, required this.beatMs});
+
+  @override
+  int get hashCode => ok.hashCode ^ bpm.hashCode ^ beatMs.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BeatGrid &&
+          runtimeType == other.runtimeType &&
+          ok == other.ok &&
+          bpm == other.bpm &&
+          beatMs == other.beatMs;
+}
 
 /// Resultado leído de las etiquetas de una pista (sin decodificar).
 class MasterTags {

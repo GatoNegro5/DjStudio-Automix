@@ -436,6 +436,73 @@ fn detect_bpm(mono: &[f32], rate: u32) -> Option<f64> {
     Some(bpm)
 }
 
+/// Rejilla de golpes de un tramo: BPM medido y posición (ms absolutos en la
+/// pista) de un golpe fuerte. Los demás golpes: `beat_ms + k * 60000 / bpm`.
+pub struct BeatGrid {
+    pub ok: bool,
+    pub bpm: f64,
+    pub beat_ms: f64,
+}
+
+/// Mide BPM y fase de golpes en `span_secs` segundos a partir de `from_ms`.
+/// Sirve para que la mezcla de Live DJ entre "en el golpe" (no solo igualar BPM).
+pub async fn beat_grid(input_path: String, from_ms: u64, span_secs: u32) -> BeatGrid {
+    let none = BeatGrid { ok: false, bpm: 0.0, beat_ms: 0.0 };
+    let d = match decode_channels(&input_path, (from_ms / 1000) as u32, span_secs.clamp(4, 30), 2) {
+        Ok(d) => d,
+        Err(_) => return none,
+    };
+    let mono = to_mono(&d);
+    let bpm = match detect_bpm(&mono, d.rate) {
+        Some(b) if b > 40.0 => b,
+        _ => return none,
+    };
+    let hop = (d.rate as usize / 200).max(1); // 5 ms
+    let env_rate = d.rate as f64 / hop as f64;
+    let n = mono.len() / hop;
+    if n < 400 {
+        return none;
+    }
+    let mut env: Vec<f64> = Vec::with_capacity(n);
+    for i in 0..n {
+        let s = &mono[i * hop..(i + 1) * hop];
+        let mut e = 0.0;
+        let mut prev = if i == 0 { 0.0 } else { mono[i * hop - 1] as f64 };
+        for v in s {
+            let dv = *v as f64 - prev;
+            e += dv * dv;
+            prev = *v as f64;
+        }
+        env.push((1.0 + 1000.0 * e / hop as f64).ln());
+    }
+    let flux: Vec<f64> = (0..n).map(|i| if i == 0 { 0.0 } else { (env[i] - env[i - 1]).max(0.0) }).collect();
+    let period = env_rate * 60.0 / bpm; // en cuadros de 5 ms
+    let steps = period.ceil() as usize;
+    let mut best_p = 0usize;
+    let mut best = f64::MIN;
+    for p in 0..steps {
+        let mut sc = 0.0;
+        let mut k = 0.0f64;
+        loop {
+            let c = p as f64 + k * period;
+            let i = c.round() as usize;
+            if i + 1 >= n {
+                break;
+            }
+            // tolerancia ±1 cuadro (5 ms)
+            let m = flux[i].max(flux[i.saturating_sub(1)]).max(flux[i + 1]);
+            sc += m;
+            k += 1.0;
+        }
+        if sc > best {
+            best = sc;
+            best_p = p;
+        }
+    }
+    let beat_ms = d.start_ms as f64 + best_p as f64 * hop as f64 * 1000.0 / d.rate as f64;
+    BeatGrid { ok: true, bpm, beat_ms }
+}
+
 struct Analysis {
     lufs: f64,
     peak: f64,

@@ -1412,9 +1412,40 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
         ? LiveDjMixMode.longBypass
         : LiveDjMixMode.activeSync;
 
-    final fadingBpm = _extractBpm(state.currentTrackPath);
-    final incomingBpm = _extractBpm(nextTrack);
+    double fadingBpm = _extractBpm(state.currentTrackPath);
+    double incomingBpm = _extractBpm(nextTrack);
     double incomingRate = 1.0;
+
+    // Rejilla de golpes de ambas pistas (Rust): BPM medido si no hay etiqueta y
+    // fase del golpe, para que el entrante arranque EN el golpe del saliente.
+    rust_dsp.BeatGrid? gridOut;
+    rust_dsp.BeatGrid? gridIn;
+    if (!isManualSkip && nextMode != LiveDjMixMode.longBypass) {
+      try {
+        final String? outPath = state.currentTrackPath;
+        if (outPath != null) {
+          final int outPos = fadingPlayer.state.position.inMilliseconds;
+          final res = await Future.wait([
+            rust_dsp.beatGrid(
+              inputPath: outPath,
+              fromMs: BigInt.from(outPos + 1000),
+              spanSecs: 12,
+            ),
+            rust_dsp.beatGrid(
+              inputPath: nextTrack,
+              fromMs: BigInt.from(cueInMs),
+              spanSecs: 12,
+            ),
+          ]).timeout(const Duration(seconds: 5));
+          if (res[0].ok && res[1].ok) {
+            gridOut = res[0];
+            gridIn = res[1];
+            if (fadingBpm <= 60) fadingBpm = gridOut.bpm;
+            if (incomingBpm <= 60) incomingBpm = gridIn.bpm;
+          }
+        }
+      } catch (_) {}
+    }
 
     if (fadingBpm > 60 && incomingBpm > 60) {
       final ratio = fadingBpm / incomingBpm;
@@ -1424,12 +1455,39 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
     }
 
     try {
-      if (cueInMs > 0) {
-        await incomingPlayer.seek(Duration(milliseconds: cueInMs));
+      // Punto de arranque del entrante: su golpe más cercano a partir del cue.
+      int startMs = cueInMs;
+      if (gridIn != null) {
+        final double pIn = 60000.0 / gridIn.bpm;
+        final double ki = ((cueInMs - gridIn.beatMs) / pIn).ceilToDouble();
+        startMs = (gridIn.beatMs + ki * pIn).round();
+      }
+      if (startMs > 0) {
+        await incomingPlayer.seek(Duration(milliseconds: startMs));
         await Future.delayed(const Duration(milliseconds: 150));
       }
+      // Filtros y corrección de tono ANTES de sonar: cambiarlos con el deck ya
+      // andando reinicia la cadena de audio y el tempo tarda 2-3 s en asentarse.
+      _prepareIncomingDeck(incomingPlayer, nextMode);
       await incomingPlayer.setRate(incomingRate);
       await incomingPlayer.setVolume(0.0);
+      if (gridOut != null && gridIn != null) {
+        // Espera al próximo golpe del saliente (≤ 1 compás de pulso) y arranca ahí.
+        final Duration fresh = await fadingPlayer.stream.position.first
+            .timeout(const Duration(seconds: 1));
+        final Stopwatch sw = Stopwatch()..start();
+        final double pOut = 60000.0 / gridOut.bpm;
+        final double nowOut = fresh.inMilliseconds.toDouble();
+        final double kOut = ((nowOut + 60 - gridOut.beatMs) / pOut)
+            .ceilToDouble();
+        final double nextBeat = gridOut.beatMs + kOut * pOut;
+        // 20 ms: latencia de arranque del deck entrante.
+        final int waitMs = (nextBeat - nowOut).round() - 20;
+        final int left = waitMs - sw.elapsedMilliseconds;
+        if (left > 0 && left < 1500) {
+          await Future.delayed(Duration(milliseconds: left));
+        }
+      }
       await incomingPlayer.play();
     } catch (e) {
       _isCrossfading = false;
@@ -1479,6 +1537,25 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
     );
   }
 
+  /// Deja el deck entrante listo ANTES de `play()`: corrección de tono y cadena
+  /// `af` (con corte de graves en modo activeSync). Mismos valores que antes
+  /// ponía el motor de mezcla ya con el deck sonando.
+  void _prepareIncomingDeck(Player incoming, LiveDjMixMode mode) {
+    try {
+      final eqN = ref.read(liveDjEqualizerProvider.notifier);
+      final String base = eqN.filterFor(incoming);
+      final String lowCut = AfCaps.sanitize(
+        [base, _bassKillFilter].where((s) => s.isNotEmpty).join(','),
+      );
+      final dynamic platform = incoming.platform;
+      platform?.setProperty('audio-pitch-correction', 'yes');
+      platform?.setProperty(
+        'af',
+        mode == LiveDjMixMode.activeSync ? lowCut : base,
+      );
+    } catch (_) {}
+  }
+
   Future<void> _executeMixEngine({
     required Player fadingPlayer,
     required Player incomingPlayer,
@@ -1503,12 +1580,8 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
     bool bassSwapped = false;
 
     try {
-      platformIn?.setProperty('audio-pitch-correction', 'yes');
+      // El deck entrante ya quedó preparado antes de sonar (_prepareIncomingDeck).
       platformOut?.setProperty('audio-pitch-correction', 'yes');
-      platformIn?.setProperty(
-        'af',
-        useBassSwap ? lowCutIn : inBase(),
-      );
       platformOut?.setProperty('af', outBase());
 
       await incomingPlayer.setVolume(0.0);
