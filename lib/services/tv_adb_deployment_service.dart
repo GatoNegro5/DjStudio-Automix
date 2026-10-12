@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import '../core/net/safe_download.dart';
+
 enum TvAdbTargetState { connected, discoverable, pairingRequired }
 
 class TvAdbTarget {
@@ -75,7 +77,86 @@ class TvAdbDeploymentService {
           : '$root/platform-tools/adb';
       if (File(candidate).existsSync()) return candidate;
     }
-    throw StateError('ADB no encontrado. Instala Android SDK Platform-Tools.');
+
+    // adb en el PATH.
+    try {
+      final r = await Process.run(Platform.isWindows ? 'where' : 'which', [
+        Platform.isWindows ? 'adb.exe' : 'adb',
+      ]);
+      if (r.exitCode == 0) {
+        final first = const LineSplitter()
+            .convert('${r.stdout}')
+            .map((e) => e.trim())
+            .firstWhere((e) => e.isNotEmpty, orElse: () => '');
+        if (first.isNotEmpty && File(first).existsSync()) return first;
+      }
+    } catch (_) {}
+
+    // platform-tools propio de la app (se baja una sola vez, gratis, de Google).
+    final own = '${_appDataDir()}${Platform.pathSeparator}platform-tools'
+        '${Platform.pathSeparator}${Platform.isWindows ? 'adb.exe' : 'adb'}';
+    if (File(own).existsSync()) return own;
+    return _installPlatformTools(own);
+  }
+
+  /// Carpeta de datos propia de DJ Studio para herramientas descargadas.
+  String _appDataDir() {
+    final base = Platform.isWindows
+        ? (Platform.environment['LOCALAPPDATA'] ??
+              Directory.systemTemp.path)
+        : '${Platform.environment['HOME'] ?? Directory.systemTemp.path}'
+              '${Platform.isMacOS ? '/Library/Application Support' : '/.local/share'}';
+    final dir = Directory('$base${Platform.pathSeparator}DJStudio');
+    dir.createSync(recursive: true);
+    return dir.path;
+  }
+
+  Future<String> _installPlatformTools(String expectedAdb) async {
+    final os = Platform.isWindows
+        ? 'windows'
+        : (Platform.isMacOS ? 'darwin' : 'linux');
+    final dir = _appDataDir();
+    final zip = '$dir${Platform.pathSeparator}platform-tools.zip';
+    onStatus?.call('Descargando ADB (platform-tools de Google)…');
+    await downloadFileRobust(
+      'https://dl.google.com/android/repository/platform-tools-latest-$os.zip',
+      zip,
+    );
+    onStatus?.call('Instalando ADB…');
+    final ProcessResult r;
+    if (Platform.isWindows) {
+      r = await Process.run('powershell', [
+        '-NoProfile',
+        '-Command',
+        "Expand-Archive -Force -Path '$zip' -DestinationPath '$dir'",
+      ]);
+    } else {
+      r = await Process.run('unzip', ['-o', '-q', zip, '-d', dir]);
+      if (File(expectedAdb).existsSync()) {
+        await Process.run('chmod', ['+x', expectedAdb]);
+      }
+    }
+    try {
+      File(zip).deleteSync();
+    } catch (_) {}
+    if (!File(expectedAdb).existsSync()) {
+      throw StateError(
+        'No se pudo instalar ADB automáticamente: ${r.stderr}'.trim(),
+      );
+    }
+    return expectedAdb;
+  }
+
+  /// Mensajes de progreso para la UI (descarga de ADB, etc.).
+  void Function(String message)? onStatus;
+
+  /// Conexión manual por IP[:puerto] (sin puerto = 5555). Devuelve el
+  /// resultado REAL de `adb connect` para mostrarlo tal cual.
+  Future<String> connectManual(String input) async {
+    var endpoint = input.trim();
+    if (!endpoint.contains(':')) endpoint = '$endpoint:5555';
+    final result = await _adb(['connect', endpoint]);
+    return '${result.stdout}\n${result.stderr}'.trim();
   }
 
   Future<ProcessResult> _adb(List<String> arguments) async {
@@ -376,14 +457,18 @@ class TvAdbDeploymentService {
     if (alreadyInstalled) {
       onProgress('APK ya instalado. Abriendo…');
     } else {
-      final project = _resolveTvProject();
-      final apk = File(
-        '${project.path}${Platform.pathSeparator}build${Platform.pathSeparator}'
-        'app${Platform.pathSeparator}outputs${Platform.pathSeparator}'
-        'flutter-apk${Platform.pathSeparator}app-release.apk',
-      );
+      // Con el proyecto djstudio_tv local se compila como siempre; sin él
+      // (laptop sin Flutter) se baja el APK ya compilado del último release.
+      final Directory? project = _tryResolveTvProject();
+      final File apk = project == null
+          ? await _downloadTvApk(onProgress)
+          : File(
+              '${project.path}${Platform.pathSeparator}build${Platform.pathSeparator}'
+              'app${Platform.pathSeparator}outputs${Platform.pathSeparator}'
+              'flutter-apk${Platform.pathSeparator}app-release.apk',
+            );
 
-      if (_requiresBuild(project, apk)) {
+      if (project != null && _requiresBuild(project, apk)) {
         onProgress('Compilando DJ Studio Karaoke TV…');
         final build = await Process.start(
           Platform.isWindows ? 'flutter.bat' : 'flutter',
@@ -405,7 +490,7 @@ class TvAdbDeploymentService {
         if (buildExit != 0 || !apk.existsSync()) {
           throw StateError('Falló la compilación del APK para Google TV.');
         }
-      } else {
+      } else if (project != null) {
         onProgress('APK release vigente; omitiendo recompilación.');
       }
 
@@ -474,6 +559,27 @@ class TvAdbDeploymentService {
       return source.existsSync() &&
           source.lastModifiedSync().isAfter(apkModified);
     });
+  }
+
+  Directory? _tryResolveTvProject() {
+    try {
+      return _resolveTvProject();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// APK de Karaoke TV ya compilado por el CI (release más reciente).
+  Future<File> _downloadTvApk(void Function(String) onProgress) async {
+    final dir = Directory('${_appDataDir()}${Platform.pathSeparator}tv');
+    dir.createSync(recursive: true);
+    final apk = File('${dir.path}${Platform.pathSeparator}djstudio-tv.apk');
+    onProgress('Descargando DJ Studio Karaoke TV (APK)…');
+    await downloadFileRobust(
+      'https://github.com/GatoNegro5/DjStudio-Automix/releases/latest/download/djstudio-tv.apk',
+      apk.path,
+    );
+    return apk;
   }
 
   Directory _resolveTvProject() {

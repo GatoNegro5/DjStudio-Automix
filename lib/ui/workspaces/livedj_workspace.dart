@@ -8,6 +8,7 @@ import '../../providers/livedj_provider.dart';
 import '../../providers/mix_formula.dart';
 import 'automix_workspace.dart';
 import 'livedj_bpm_badge.dart';
+import 'livedj_artist_card.dart';
 import '../../core/audio/cue_preview.dart';
 
 /// Texto del buscador de la cola (solo filtra la vista; la cola real no cambia).
@@ -357,11 +358,18 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
 
     // Controlador de GÉNERO: visible solo con la Radio encendida.
     // Ningún chip marcado = Todo.
-    Widget genreChip(String label, bool selected, VoidCallback onTap) {
+    Widget genreChip(
+      String label,
+      bool selected,
+      VoidCallback onTap, {
+      bool enabled = true,
+    }) {
       return Padding(
         padding: const EdgeInsets.only(right: 6),
-        child: GestureDetector(
-          onTap: onTap,
+        child: Opacity(
+          opacity: enabled ? 1.0 : 0.3,
+          child: GestureDetector(
+          onTap: enabled ? onTap : null,
           child: Container(
             padding: EdgeInsets.symmetric(
               horizontal: compact ? 8 : 10,
@@ -387,6 +395,7 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
             ),
           ),
         ),
+        ),
       );
     }
 
@@ -411,6 +420,7 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
                         () => ref
                             .read(liveDjProvider.notifier)
                             .toggleRadioGenre(id),
+                        enabled: state.radioGenresAvailable.contains(id),
                       ),
                   ],
                 ),
@@ -467,6 +477,13 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
               path: state.currentTrackPath ??
                   (state.queue.isNotEmpty ? state.queue.first.path : null),
               fontSize: compact ? 10 : 12,
+            ),
+            Flexible(
+              child: LiveDjArtistCard(
+                path: state.currentTrackPath ??
+                    (state.queue.isNotEmpty ? state.queue.first.path : null),
+                compact: compact,
+              ),
             ),
             if (compact) ...[
               const SizedBox(width: 8),

@@ -49,6 +49,8 @@ class LiveDjState {
   final Set<String> radioGenres;
   // Pista que la Radio ya eligió para sonar a continuación (null = sin elegir).
   final String? radioNextPath;
+  // Géneros que SÍ tienen carpeta con pistas (el resto de chips se apaga).
+  final Set<String> radioGenresAvailable;
 
   LiveDjState({
     this.isPlaying = false,
@@ -63,6 +65,7 @@ class LiveDjState {
     this.radioOn = false,
     this.radioGenres = const <String>{},
     this.radioNextPath,
+    this.radioGenresAvailable = const <String>{},
   });
 
   LiveDjState copyWith({
@@ -80,8 +83,10 @@ class LiveDjState {
     Set<String>? radioGenres,
     String? radioNextPath,
     bool clearRadioNextPath = false,
+    Set<String>? radioGenresAvailable,
   }) {
     return LiveDjState(
+      radioGenresAvailable: radioGenresAvailable ?? this.radioGenresAvailable,
       isPlaying: isPlaying ?? this.isPlaying,
       position: position ?? this.position,
       duration: duration ?? this.duration,
@@ -1136,8 +1141,10 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
   }
 
   Future<void> _radioEnsureIndex() {
-    if (_radioIndex != null) return Future.value();
-    return _radioIndexing ??= _radioBuildIndex();
+    if (_radioIndex != null && _radioIndex!.isNotEmpty) return Future.value();
+    return _radioIndexing ??= _radioBuildIndex().whenComplete(() {
+      _radioIndexing = null;
+    });
   }
 
   Future<void> _radioBuildIndex() async {
@@ -1174,7 +1181,40 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
     } catch (e) {
       debugPrint("🔴 [RADIO] Índice: $e");
     }
+    // Sin carpetas con nombre de género (p. ej. una sola carpeta con todo):
+    // todo el contenido de Música es el universo "Todo" y la radio no se para.
+    if (index.isEmpty) {
+      try {
+        final root = Directory(_radioMusicRoot());
+        if (root.existsSync()) {
+          final kFile = RegExp(r'_k\.[a-z0-9]+$', caseSensitive: false);
+          final Map<String, List<String>> byDir = <String, List<String>>{};
+          await for (final f in root.list(recursive: true, followLinks: false)) {
+            if (f is! File) continue;
+            final fname = f.path.replaceAll('\\', '/').split('/').last;
+            final dot = fname.lastIndexOf('.');
+            if (dot < 0) continue;
+            if (!_radioExt.contains(fname.substring(dot + 1).toLowerCase())) {
+              continue;
+            }
+            if (kFile.hasMatch(fname)) continue;
+            byDir.putIfAbsent(f.parent.path, () => <String>[]).add(f.path);
+          }
+          byDir.forEach((dir, files) {
+            index[dir] = files;
+            _radioFolderGenre[dir] = 'todo';
+          });
+        }
+      } catch (e) {
+        debugPrint("🔴 [RADIO] Índice (respaldo): $e");
+      }
+    }
     _radioIndex = index;
+    final Set<String> avail = <String>{
+      for (final id in index.keys)
+        if (_radioFolderGenre[id] != null) _radioFolderGenre[id]!,
+    }..remove('todo');
+    state = state.copyWith(radioGenresAvailable: avail);
     debugPrint(
       "📻 [RADIO] Índice: ${index.length} carpetas, "
       "${index.values.fold<int>(0, (a, b) => a + b.length)} pistas.",
@@ -1214,14 +1254,16 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
     final already = _radioPending;
     if (already != null && File(already).existsSync()) return already;
     final idx = _radioIndex;
-    if (idx == null || idx.isEmpty) return null;
+    if (idx == null || idx.isEmpty) return _radioQueueFallback();
 
     final genres = state.radioGenres;
-    final folders = <String>[
+    var folders = <String>[
       for (final e in idx.entries)
         if (genres.isEmpty || genres.contains(_radioFolderGenre[e.key])) e.key,
     ];
-    if (folders.isEmpty) return null;
+    // Géneros elegidos que no existen en esta biblioteca: suena todo, no se para.
+    if (folders.isEmpty) folders = idx.keys.toList();
+    if (folders.isEmpty) return _radioQueueFallback();
 
     // La carpeta seleccionada en el Explorador queda fuera de la radio.
     String selPrefix = '';
@@ -1232,13 +1274,15 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
         if (Platform.isWindows) selPrefix = selPrefix.toLowerCase();
       }
     } catch (_) {}
+    bool relaxSel = false; // nivel 3: la carpeta del Explorador también vale
     bool outsideSel(String p) {
-      if (selPrefix.isEmpty) return true;
+      if (relaxSel || selPrefix.isEmpty) return true;
       return !(Platform.isWindows ? p.toLowerCase() : p).startsWith(selPrefix);
     }
 
     // nivel 0: estricto · 1: sin regla de artista · 2: historial reiniciado
-    for (int level = 0; level < 3; level++) {
+    for (int level = 0; level < 4; level++) {
+      if (level == 3) relaxSel = true;
       if (level == 2) {
         _radioHistory.clear();
         _saveRadioHistory();
@@ -1278,6 +1322,15 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
       _radioPendingFolder = folder;
       state = state.copyWith(radioNextPath: pick);
       return pick;
+    }
+    return _radioQueueFallback();
+  }
+
+  /// Último recurso: la radio nunca se para; suena una pista de la cola.
+  String? _radioQueueFallback() {
+    final cur = state.currentTrackPath;
+    for (final f in state.queue) {
+      if (f.path != cur && File(f.path).existsSync()) return f.path;
     }
     return null;
   }

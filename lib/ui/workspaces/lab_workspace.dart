@@ -4,7 +4,7 @@ import 'package:djstudio_player/services/karaoke_engine.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
-import 'package:http/http.dart' as http;
+import '../../core/net/safe_download.dart';
 
 import 'package:djstudio_player/src/rust/api/core_dsp.dart' as rust_dsp;
 import '../../providers/automix_provider.dart';
@@ -548,11 +548,10 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
 
       if (Platform.isWindows && !File(ytdlpPath).existsSync()) {
         statusNotifier.value = "Descargando motor extractor yt-dlp...";
-        final dlUrl = Uri.parse(
+        await downloadFileRobust(
           'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe',
+          ytdlpPath,
         );
-        final response = await http.get(dlUrl);
-        await File(ytdlpPath).writeAsBytes(response.bodyBytes);
       }
 
       statusNotifier.value =

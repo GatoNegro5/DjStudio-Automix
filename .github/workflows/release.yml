@@ -160,6 +160,44 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # APK de Karaoke para Google TV: la app de escritorio lo baja del release
+  # cuando la laptop no tiene Flutter ni la carpeta djstudio_tv.
+  djstudio_tv:
+    name: Build DJ Studio Karaoke TV APK
+    needs: release
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Build TV APK
+        working-directory: djstudio_tv
+        run: |
+          flutter pub get
+          flutter build apk --release
+          cp build/app/outputs/flutter-apk/app-release.apk ../djstudio-tv.apk
+
+      - name: Publish djstudio-tv.apk
+        uses: softprops/action-gh-release@v2
+        with:
+          files: djstudio-tv.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   djiphone:
     name: Build DjIphone IPA
     needs: release

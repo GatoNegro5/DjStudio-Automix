@@ -1268,6 +1268,9 @@ class _TvDeploymentDialogState extends State<TvDeploymentDialog> {
   @override
   void initState() {
     super.initState();
+    widget.service.onStatus = (m) {
+      if (mounted) setState(() => _status = m);
+    };
     unawaited(_scan());
   }
 
@@ -1446,17 +1449,38 @@ class _TvDeploymentDialogState extends State<TvDeploymentDialog> {
       ),
     );
     controller.dispose();
-    if (endpoint == null || !endpoint.contains(':')) return;
+    if (endpoint == null || endpoint.trim().isEmpty) return;
+    // Sin puerto se asume 5555 (el que usa la TV en depuración por red).
+    final String full = endpoint.contains(':')
+        ? endpoint.trim()
+        : '${endpoint.trim()}:5555';
     setState(() {
-      _targets = [
-        ..._targets,
-        TvAdbTarget(
-          endpoint: endpoint.trim(),
-          name: 'Google TV manual',
-          state: TvAdbTargetState.discoverable,
-        ),
-      ];
+      _busy = true;
+      _status = 'Conectando con $full…';
     });
+    bool connected = false;
+    try {
+      final String result = await widget.service.connectManual(full);
+      connected = result.toLowerCase().contains('connected to') &&
+          !result.toLowerCase().contains('failed');
+      if (!mounted) return;
+      setState(() {
+        _targets = [
+          ..._targets.where((t) => t.endpoint != full),
+          TvAdbTarget(
+            endpoint: full,
+            name: 'Google TV manual',
+            state: TvAdbTargetState.discoverable,
+          ),
+        ];
+        _status = result.isEmpty ? 'Añadida $full.' : result;
+      });
+    } catch (e) {
+      if (mounted) setState(() => _status = 'No se pudo conectar: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+    if (mounted && connected) await _scan();
   }
 
   Future<void> _install(TvAdbTarget target) async {
