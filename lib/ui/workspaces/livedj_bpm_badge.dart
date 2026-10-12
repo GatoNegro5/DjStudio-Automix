@@ -168,6 +168,41 @@ Future<double> _liveDjBpmFor(String path) {
   });
 }
 
+/// Info de la canción (BPM) a la derecha del título en NOW PLAYING.
+class LiveDjBpmChip extends StatelessWidget {
+  final String? path;
+  final double fontSize;
+  const LiveDjBpmChip({super.key, required this.path, this.fontSize = 12});
+
+  @override
+  Widget build(BuildContext context) {
+    final p = path;
+    if (p == null) return const SizedBox.shrink();
+    return FutureBuilder<double>(
+      future: _liveDjBpmFor(p),
+      builder: (context, snap) {
+        final bpm = snap.data ?? 0.0;
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+          decoration: BoxDecoration(
+            border: Border.all(color: Colors.white24),
+            borderRadius: BorderRadius.circular(4),
+          ),
+          child: Text(
+            bpm > 0 ? '${bpm.round()} BPM' : '– BPM',
+            maxLines: 1,
+            style: TextStyle(
+              color: bpm > 0 ? Colors.white : Colors.white38,
+              fontWeight: FontWeight.bold,
+              fontSize: fontSize,
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
 /// BPM de la canción, mostrado a la izquierda de cada fila del Cartridge.
 class LiveDjBpmBadge extends StatelessWidget {
   final String path;

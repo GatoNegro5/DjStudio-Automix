@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'dart:convert';
 import 'package:djstudio_player/services/karaoke_engine.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -279,28 +278,38 @@ class _YoutubeSearchAndDownloadWorkspaceState
       final targetUrl = 'https://youtube.com/watch?v=$videoId';
 
       // 🛠️ FIX ARQUITECTÓNICO: Extracción estricta sin advertencias de consola
-      final process = await Process.run(ytdlpPath, [
-        '--no-warnings',
-        '--print', 'url', // Mucho más estable que -g
-        '-f', 'bestaudio',
-        targetUrl,
-      ]);
-
-      if (process.exitCode != 0) {
-        throw Exception("yt-dlp: ${process.stderr.toString().trim()}");
-      }
-
-      // Filtramos la basura y nos quedamos solo con la línea HTTP
-      final outputLines = process.stdout.toString().trim().split('\n');
-      final directStreamUrl = outputLines.lastWhere(
-        (line) => line.trim().startsWith('http'),
-        orElse: () => '',
-      );
-
-      if (directStreamUrl.isEmpty) {
-        throw Exception(
-          "No se extrajo una URL válida. Salida: ${process.stdout}",
+      String directStreamUrl;
+      if (Platform.isAndroid || Platform.isIOS) {
+        // Móvil: sin binarios; la URL directa sale de youtube_explode_dart.
+        final manifest = await _yt.videos.streamsClient.getManifest(
+          VideoId(videoId),
         );
+        directStreamUrl = manifest.audioOnly.withHighestBitrate().url
+            .toString();
+      } else {
+        final process = await Process.run(ytdlpPath, [
+          '--no-warnings',
+          '--print', 'url', // Mucho más estable que -g
+          '-f', 'bestaudio',
+          targetUrl,
+        ]);
+
+        if (process.exitCode != 0) {
+          throw Exception("yt-dlp: ${process.stderr.toString().trim()}");
+        }
+
+        // Filtramos la basura y nos quedamos solo con la línea HTTP
+        final outputLines = process.stdout.toString().trim().split('\n');
+        directStreamUrl = outputLines.lastWhere(
+          (line) => line.trim().startsWith('http'),
+          orElse: () => '',
+        );
+
+        if (directStreamUrl.isEmpty) {
+          throw Exception(
+            "No se extrajo una URL válida. Salida: ${process.stdout}",
+          );
+        }
       }
 
       // 🛠️ INYECCIÓN: Disfrazamos al motor nativo como si fuera Google Chrome
@@ -394,26 +403,45 @@ class _YoutubeSearchAndDownloadWorkspaceState
         () => _statusText = "Descargando stream crudo de máxima calidad...",
       );
 
-      final process = await Process.start(ytdlpPath, [
-        '--rm-cache-dir',
-        '-f',
-        // De mejor a peor calidad entre los AAC/M4A que Rust decodifica.
-        'bestaudio[ext=m4a]/141/140/bestaudio',
-        '-o',
-        tempRawPath,
-        targetUrl,
-      ]);
+      if (Platform.isAndroid || Platform.isIOS) {
+        // Móvil: no se pueden ejecutar binarios (yt-dlp → "permission
+        // denied"). Se baja el AAC/M4A con youtube_explode_dart.
+        final manifest = await _yt.videos.streamsClient.getManifest(videoId);
+        final m4a = manifest.audioOnly
+            .where((s) => s.container == StreamContainer.mp4)
+            .toList();
+        if (m4a.isEmpty) {
+          throw Exception("Sin stream AAC/M4A disponible para este video.");
+        }
+        m4a.sort((a, b) => b.bitrate.compareTo(a.bitrate));
+        final sink = File(tempRawPath).openWrite();
+        await _yt.videos.streamsClient.get(m4a.first).pipe(sink);
+        if (!File(tempRawPath).existsSync() ||
+            File(tempRawPath).lengthSync() == 0) {
+          throw Exception("Fallo al bajar el audio (archivo vacío).");
+        }
+      } else {
+        final process = await Process.start(ytdlpPath, [
+          '--rm-cache-dir',
+          '-f',
+          // De mejor a peor calidad entre los AAC/M4A que Rust decodifica.
+          'bestaudio[ext=m4a]/141/140/bestaudio',
+          '-o',
+          tempRawPath,
+          targetUrl,
+        ]);
 
-      String errorTrace = "";
-      process.stdout.listen((_) {});
-      process.stderr.listen((bytes) {
-        errorTrace += String.fromCharCodes(bytes);
-      });
+        String errorTrace = "";
+        process.stdout.listen((_) {});
+        process.stderr.listen((bytes) {
+          errorTrace += String.fromCharCodes(bytes);
+        });
 
-      final exitCode = await process.exitCode;
+        final exitCode = await process.exitCode;
 
-      if (exitCode != 0 || !File(tempRawPath).existsSync()) {
-        throw Exception("Fallo CLI Extractor. Traza: $errorTrace");
+        if (exitCode != 0 || !File(tempRawPath).existsSync()) {
+          throw Exception("Fallo CLI Extractor. Traza: $errorTrace");
+        }
       }
 
       setState(() => _statusText = "Codificando a MP3 320k (motor Rust/LAME)...");

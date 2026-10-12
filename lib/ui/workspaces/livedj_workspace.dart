@@ -8,6 +8,10 @@ import '../../providers/livedj_provider.dart';
 import '../../providers/mix_formula.dart';
 import 'automix_workspace.dart';
 import 'livedj_bpm_badge.dart';
+import '../../core/audio/cue_preview.dart';
+
+/// Texto del buscador de la cola (solo filtra la vista; la cola real no cambia).
+final liveDjQueueSearchProvider = StateProvider<String>((ref) => '');
 
 class LiveDjWorkspace extends ConsumerWidget {
   const LiveDjWorkspace({super.key});
@@ -459,7 +463,13 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
                 ],
               ),
             ),
+            LiveDjBpmChip(
+              path: state.currentTrackPath ??
+                  (state.queue.isNotEmpty ? state.queue.first.path : null),
+              fontSize: compact ? 10 : 12,
+            ),
             if (compact) ...[
+              const SizedBox(width: 8),
               onAirBadge,
               const SizedBox(width: 8),
               Flexible(child: studioTitle),
@@ -846,6 +856,7 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
           ),
           const SizedBox(width: 10),
           Expanded(
+            flex: 3,
             child: GestureDetector(
               onTap: isMixBypass
                   ? null
@@ -885,6 +896,48 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            flex: 2,
+            child: SizedBox(
+              height: compact ? 26 : 30,
+              child: TextField(
+                onChanged: (v) =>
+                    ref.read(liveDjQueueSearchProvider.notifier).state = v,
+                style: const TextStyle(color: Colors.white, fontSize: 11),
+                decoration: InputDecoration(
+                  hintText: 'Buscar en la cola',
+                  hintStyle: const TextStyle(
+                    color: Colors.white38,
+                    fontSize: 11,
+                  ),
+                  prefixIcon: const Icon(
+                    Icons.search,
+                    size: 14,
+                    color: Colors.white38,
+                  ),
+                  prefixIconConstraints: const BoxConstraints(
+                    minWidth: 26,
+                    minHeight: 20,
+                  ),
+                  isDense: true,
+                  contentPadding: const EdgeInsets.symmetric(vertical: 6),
+                  filled: true,
+                  fillColor: DjStudioTheme.bgDark,
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(4),
+                    borderSide: const BorderSide(color: Colors.white24),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(4),
+                    borderSide: const BorderSide(
+                      color: DjStudioTheme.syncActive,
+                    ),
+                  ),
+                ),
               ),
             ),
           ),
@@ -967,6 +1020,17 @@ class LiveDjCartridgePanel extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final queue = ref.watch(liveDjProvider.select((s) => s.queue));
+    final query = ref.watch(liveDjQueueSearchProvider).trim().toLowerCase();
+    final visible = <int>[
+      for (int i = 0; i < queue.length; i++)
+        if (query.isEmpty ||
+            queue[i].uri.pathSegments.last.toLowerCase().contains(query))
+          i,
+    ];
+    // Pre-escucha (flecha roja): solo Windows; activa solo con audífono.
+    final cue = CuePreviewNotifier.supported
+        ? ref.watch(cuePreviewProvider)
+        : const CueState();
 
     return Column(
       children: [
@@ -1051,8 +1115,9 @@ class LiveDjCartridgePanel extends ConsumerWidget {
                 )
               : ListView.builder(
                   physics: const BouncingScrollPhysics(),
-                  itemCount: queue.length,
-                  itemBuilder: (context, index) {
+                  itemCount: visible.length,
+                  itemBuilder: (context, vi) {
+                    final index = visible[vi];
                     final file = queue[index];
                     final fileName = file.uri.pathSegments.last;
 
@@ -1091,6 +1156,32 @@ class LiveDjCartridgePanel extends ConsumerWidget {
                         trailing: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
+                            if (CuePreviewNotifier.supported)
+                              IconButton(
+                                icon: Icon(
+                                  cue.playingPath == file.path
+                                      ? Icons.stop
+                                      : Icons.play_arrow,
+                                  color: cue.available
+                                      ? Colors.redAccent
+                                      : Colors.white24,
+                                  size: 18,
+                                ),
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints.tightFor(
+                                  width: 28,
+                                  height: 28,
+                                ),
+                                visualDensity: VisualDensity.compact,
+                                tooltip: cue.available
+                                    ? "Pre-escucha (solo audífono)"
+                                    : "Conecta un audífono para pre-escuchar",
+                                onPressed: cue.available
+                                    ? () => ref
+                                          .read(cuePreviewProvider.notifier)
+                                          .toggle(file.path)
+                                    : null,
+                              ),
                             IconButton(
                               icon: const Icon(
                                 Icons.play_arrow,
@@ -1104,9 +1195,14 @@ class LiveDjCartridgePanel extends ConsumerWidget {
                               ),
                               visualDensity: VisualDensity.compact,
                               tooltip: "Play",
-                              onPressed: () => ref
-                                  .read(liveDjProvider.notifier)
-                                  .playTrackFromQueue(index),
+                              onPressed: () {
+                                if (CuePreviewNotifier.supported) {
+                                  ref.read(cuePreviewProvider.notifier).stop();
+                                }
+                                ref
+                                    .read(liveDjProvider.notifier)
+                                    .playTrackFromQueue(index);
+                              },
                             ),
                             IconButton(
                               icon: const Icon(
