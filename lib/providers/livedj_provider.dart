@@ -20,6 +20,21 @@ import '../djiphone/iphone_library.dart';
 
 enum LiveDjMixStrategy { sequential, random }
 
+/// Bitácora de decisiones del mezclador (solo diagnóstico, no toca el audio).
+/// Archivo: <temp>/djstudio_livedj_trace.txt (se recorta solo al pasar 300 KB).
+void _djTrace(String msg) {
+  try {
+    final f = File(
+      '${Directory.systemTemp.path}${Platform.pathSeparator}djstudio_livedj_trace.txt',
+    );
+    if (f.existsSync() && f.lengthSync() > 300000) f.writeAsStringSync('');
+    f.writeAsStringSync(
+      '${DateTime.now().toIso8601String()} $msg\n',
+      mode: FileMode.append,
+    );
+  } catch (_) {}
+}
+
 enum LiveDjMixMode { activeSync, longBypass }
 
 // 🎚️ Corte de graves de la permuta de bajos: Butterworth de 2 polos a 140 Hz.
@@ -142,6 +157,7 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
   bool _isCrossfading = false;
   bool _parking = false;
   bool _isStandbyArmed = false;
+  bool _nextFromCompletion = false;
   // Pista realmente precargada en el deck standby. Si la cola cambia
   // (quitar, shuffle, otra pista) antes del cruce, se vuelve a cargar.
   String? _standbyArmedPath;
@@ -257,7 +273,13 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
 
   int _calculateRadioMixOutRaw(int durationMs, String? path) {
     if (_isMixTrack(durationMs)) {
-      return durationMs - 4000;
+      // Un Mix ya no se escucha hasta el final: la mezcla sale 30 s antes del
+      // fin (sin el silencio final medido por el masterizado).
+      final int mixTail = TrackTags.peek(path)?.tailMs ?? 0;
+      final int mixEff = (mixTail > 0 && mixTail < durationMs ~/ 3)
+          ? durationMs - mixTail
+          : durationMs;
+      return mixEff - 30000;
     }
     if (durationMs <= 0) return 0;
 
@@ -839,8 +861,15 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
           ref.read(liveDjEqualizerProvider.notifier).adapt(_standbyPlayer, armPath);
         }
 
-        if (posMs >= triggerMs) {
+        // Red de seguridad: si por una duración/BPM mal leído el punto de mezcla
+        // quedara más allá del final real, igual se mezcla a ~25 s del final.
+        final bool nearEnd = durMs > 60000 && (durMs - posMs) <= 25000;
+        if (posMs >= triggerMs || nearEnd) {
           if (!_isCrossfading && !_isPrepModeBypass) {
+            _djTrace(
+              'TRIGGER pos=$posMs dur=$durMs trigger=$triggerMs nearEnd=$nearEnd '
+              'cur=${state.currentTrackPath} armed=$_standbyArmedPath q0=${state.queue.isNotEmpty ? state.queue.first.path : null}',
+            );
             _triggerCrossfade();
           }
         }
@@ -918,7 +947,13 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
       if (!completed || !_sessionHydrated) return;
       _isPrepModeBypass = false;
       _isCrossfading = false;
+      _djTrace(
+        'COMPLETED SIN MEZCLA pos=${state.position.inMilliseconds} '
+        'dur=${state.duration.inMilliseconds} trigger=${state.customMixOutMs} '
+        'cur=${state.currentTrackPath} armed=$_standbyArmedPath radio=${state.radioOn}',
+      );
       if (state.queue.isNotEmpty || state.radioOn) {
+        _nextFromCompletion = true;
         forceNext();
       } else {
         unawaited(_stopWhenNoNext());
@@ -1424,7 +1459,15 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
       }
       nextTrack = picked;
     } else {
-      final int nextIdx = queueIndex ?? _nextQueueIndex();
+      int nextIdx = queueIndex ?? _nextQueueIndex();
+      // Fin natural sin mezcla: suena la pista que ya estaba precargada (la que
+      // la pantalla mostraba como "siguiente"), no una recalculada.
+      if (queueIndex == null && _nextFromCompletion && _standbyArmedPath != null) {
+        final int ai = state.queue.indexWhere((f) => f.path == _standbyArmedPath);
+        if (ai >= 0) nextIdx = ai;
+      }
+      _nextFromCompletion = false;
+      _djTrace('NEXT elegido idx=$nextIdx de ${state.queue.length} jit=$forceJit');
       if (nextIdx < 0 || nextIdx >= state.queue.length) {
         _isCrossfading = false;
         await _stopWhenNoNext();
