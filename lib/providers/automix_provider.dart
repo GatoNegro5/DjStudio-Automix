@@ -1378,8 +1378,8 @@ class AutomixNotifier extends Notifier<AutomixState> {
     } finally {
       // 🛡️ FIX: el glide de tempo arranca en incomingRate. Fijar aquí el rate a
       // 1.0 provocaba un salto de velocidad hacia atrás al iniciar la rampa.
-      // Mucha corrección de tempo: NO se vuelve de golpe al BPM real; se queda
-      // y TempoDrift lo acerca 1-2 BPM en la mitad, al 75 % y antes de la mezcla.
+      // Mucha corrección: se queda en el BPM de entrada y TempoDrift reparte
+      // la diferencia en 5 pasos (10 %–50 %) hasta su BPM real.
       _drift.begin(_extractBpm(state.currentTrackPath), incomingRate);
       final bool keepRate = _drift.active && incomingRate != 1.0;
       final bool willGlideRate = incomingRate != 1.0 && !keepRate;

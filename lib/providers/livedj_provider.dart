@@ -453,15 +453,51 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
     } catch (_) {}
   }
 
+  // Grupos de 20 al azar, ordenados por BPM. El primero sube (menor → mayor);
+  // el siguiente baja desde su BPM más alto; y así. Sin BPM van al final.
+  List<String> _bpmGroupOrder(List<String> paths, int salt) {
+    final rng = Random(salt * 9973 + paths.length * 13);
+    final known = <String>[];
+    final unknown = <String>[];
+    for (final path in paths) {
+      final double bpm = _extractBpm(path);
+      if (bpm >= 60) {
+        known.add(path);
+      } else {
+        unknown.add(path);
+      }
+    }
+    known.shuffle(rng);
+    unknown.shuffle(rng);
+    const int size = 20;
+    final out = <String>[];
+    var groupIndex = 0;
+    for (var i = 0; i < known.length; i += size) {
+      final int end = min(i + size, known.length);
+      final group = known.sublist(i, end);
+      final bool up = groupIndex.isEven;
+      group.sort((a, b) {
+        final double ba = _extractBpm(a);
+        final double bb = _extractBpm(b);
+        final int cmp = up ? ba.compareTo(bb) : bb.compareTo(ba);
+        if (cmp != 0) return cmp;
+        return a.compareTo(b);
+      });
+      out.addAll(group);
+      groupIndex++;
+    }
+    out.addAll(unknown);
+    return out;
+  }
+
   List<List<String>> _buildTenLiveShuffleBanks(List<String> paths) {
     final banks = <List<String>>[];
     final seen = <String>{};
     var salt = 1;
     while (banks.length < 10 && salt < 400) {
-      final copy = List<String>.from(paths);
-      copy.shuffle(Random(salt * 9973 + paths.length * 13));
-      final sig = copy.join('\n');
-      if (seen.add(sig)) banks.add(copy);
+      final order = _bpmGroupOrder(paths, salt);
+      final sig = order.join('\n');
+      if (seen.add(sig)) banks.add(order);
       salt++;
     }
     while (banks.length < 10) {
@@ -505,12 +541,19 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
           final b = List<String>.from(paths)..sort();
           return listEquals(a, b);
         });
-    if (!sameSet) {
+    // 2 = grupos de 20 por BPM. Los bancos viejos (solo azar) se rehacen.
+    const int shuffleAlgo = 2;
+    final int algo = (entry['algo'] as int?) ?? 0;
+    if (!sameSet || algo != shuffleAlgo) {
       banks = _buildTenLiveShuffleBanks(paths);
       final int previous = (entry['cursor'] as int?) ?? -1;
       final int carried = previous >= 0 ? previous : (spin % 10) - 1;
       if (previous < 0) all['spin'] = (spin + 1) % 10;
-      entry = <String, dynamic>{'cursor': carried, 'banks': banks};
+      entry = <String, dynamic>{
+        'cursor': carried,
+        'banks': banks,
+        'algo': shuffleAlgo,
+      };
     }
 
     final int last = (entry['cursor'] as int?) ?? -1;
@@ -663,7 +706,14 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
       // Cola estable: solo se mezcla el lote nuevo (y solo en modo shuffle);
       // lo ya cargado conserva su orden.
       if (state.mixStrategy == LiveDjMixStrategy.random) {
-        newFiles.shuffle(Random());
+        final ordered = _bpmGroupOrder(
+          newFiles.map((f) => f.path).toList(),
+          Random().nextInt(1 << 30),
+        );
+        final byPath = {for (final f in newFiles) f.path: f};
+        newFiles
+          ..clear()
+          ..addAll(ordered.map((p) => byPath[p]!));
       }
       final bool wasEmpty = state.queue.isEmpty;
       state = state.copyWith(queue: [...state.queue, ...newFiles]);
@@ -730,7 +780,14 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
               .where((f) => !currentPaths.contains(f.path))
               .toList();
           if (state.mixStrategy == LiveDjMixStrategy.random) {
-            fresh.shuffle(Random());
+            final ordered = _bpmGroupOrder(
+              fresh.map((f) => f.path).toList(),
+              Random().nextInt(1 << 30),
+            );
+            final byPath = {for (final f in fresh) f.path: f};
+            fresh
+              ..clear()
+              ..addAll(ordered.map((p) => byPath[p]!));
           }
           if (fresh.isNotEmpty) {
             final bool wasEmpty = state.queue.isEmpty;
@@ -1751,8 +1808,8 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
     } catch (e) {
       debugPrint("🔴 [ERROR DSP]: $e");
     } finally {
-      // Mucha corrección de tempo: NO se vuelve de golpe al BPM real; se queda
-      // y TempoDrift lo acerca 1-2 BPM en la mitad, al 75 % y antes de la mezcla.
+      // La diferencia entre el BPM de entrada y el real se reparte en 5
+      // (10 %–50 %). Al 50 % la canción va en su BPM. Vale para Stealth.
       _drift.begin(_incomingNatBpm, incomingRate);
       final bool keepRate = _drift.active && incomingRate != 1.0;
       final bool willGlideRate = incomingRate != 1.0 && !keepRate;
