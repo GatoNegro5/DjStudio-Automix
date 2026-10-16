@@ -453,13 +453,16 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
     } catch (_) {}
   }
 
-  // Grupos de 20 al azar, ordenados por BPM. El primero sube (menor → mayor);
-  // el siguiente baja desde su BPM más alto; y así. Sin BPM van al final.
+  // Cada canción entra en un solo grupo. El grupo aguanta hasta 20 pistas y
+  // no abre más de 10 BPM entre la más baja y la más alta. El primero sube,
+  // el siguiente baja desde su BPM más alto. Sin BPM van al final, una vez.
   List<String> _bpmGroupOrder(List<String> paths, int salt) {
     final rng = Random(salt * 9973 + paths.length * 13);
+    final seen = <String>{};
     final known = <String>[];
     final unknown = <String>[];
     for (final path in paths) {
+      if (!seen.add(path)) continue;
       final double bpm = _extractBpm(path);
       if (bpm >= 60) {
         known.add(path);
@@ -467,25 +470,67 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
         unknown.add(path);
       }
     }
-    known.shuffle(rng);
-    unknown.shuffle(rng);
-    const int size = 20;
+    known.sort((a, b) {
+      final int cmp = _extractBpm(a).compareTo(_extractBpm(b));
+      if (cmp != 0) return cmp;
+      return a.compareTo(b);
+    });
+    // Bandas de a lo más 10 BPM. Si una banda trae más de 20, se rota con la
+    // semilla y se parte de 20 en 20: cada trozo sigue dentro de esos 10.
+    const int maxSize = 20;
+    const double maxSpan = 10;
+    final bands = <List<String>>[];
+    var band = <String>[];
+    double bandMin = 0;
+    for (final path in known) {
+      final double bpm = _extractBpm(path);
+      final bool fits = band.isNotEmpty && (bpm - bandMin) <= maxSpan;
+      if (band.isEmpty) {
+        band = <String>[path];
+        bandMin = bpm;
+      } else if (fits) {
+        band.add(path);
+      } else {
+        bands.add(band);
+        band = <String>[path];
+        bandMin = bpm;
+      }
+    }
+    if (band.isNotEmpty) bands.add(band);
+
+    final groups = <List<String>>[];
+    for (final raw in bands) {
+      final List<String> turned = List<String>.from(raw);
+      if (turned.length > maxSize) {
+        final int shift = rng.nextInt(turned.length);
+        final List<String> rot = <String>[
+          ...turned.sublist(shift),
+          ...turned.sublist(0, shift),
+        ];
+        for (var i = 0; i < rot.length; i += maxSize) {
+          final int end = min(i + maxSize, rot.length);
+          groups.add(rot.sublist(i, end));
+        }
+      } else {
+        groups.add(turned);
+      }
+    }
+
+    final bool startUp = salt.isOdd;
     final out = <String>[];
-    var groupIndex = 0;
-    for (var i = 0; i < known.length; i += size) {
-      final int end = min(i + size, known.length);
-      final group = known.sublist(i, end);
-      final bool up = groupIndex.isEven;
+    for (var g = 0; g < groups.length; g++) {
+      final group = List<String>.from(groups[g]);
+      final bool up = startUp ? g.isEven : g.isOdd;
       group.sort((a, b) {
-        final double ba = _extractBpm(a);
-        final double bb = _extractBpm(b);
-        final int cmp = up ? ba.compareTo(bb) : bb.compareTo(ba);
+        final int cmp = up
+            ? _extractBpm(a).compareTo(_extractBpm(b))
+            : _extractBpm(b).compareTo(_extractBpm(a));
         if (cmp != 0) return cmp;
         return a.compareTo(b);
       });
       out.addAll(group);
-      groupIndex++;
     }
+    unknown.shuffle(rng);
     out.addAll(unknown);
     return out;
   }
@@ -500,8 +545,12 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
       if (seen.add(sig)) banks.add(order);
       salt++;
     }
-    while (banks.length < 10) {
+    if (banks.isEmpty) {
       banks.add(List<String>.from(paths));
+    }
+    final int got = banks.length;
+    while (banks.length < 10) {
+      banks.add(List<String>.from(banks[banks.length % got]));
     }
     return banks;
   }
@@ -541,8 +590,8 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
           final b = List<String>.from(paths)..sort();
           return listEquals(a, b);
         });
-    // 2 = grupos de 20 por BPM. Los bancos viejos (solo azar) se rehacen.
-    const int shuffleAlgo = 2;
+    // 3 = grupos de a lo más 20, separados como máximo 10 BPM, sin repetir.
+    const int shuffleAlgo = 3;
     final int algo = (entry['algo'] as int?) ?? 0;
     if (!sameSet || algo != shuffleAlgo) {
       banks = _buildTenLiveShuffleBanks(paths);
@@ -844,6 +893,7 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
 
     _positionSub = player.stream.position.listen((Duration pos) async {
       final posMs = pos.inMilliseconds;
+      final String? tickPath = state.currentTrackPath;
       final durMs = state.duration.inMilliseconds;
 
       if ((posMs - _lastUiPosMs).abs() >= 250) {
@@ -878,14 +928,16 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
       if (durMs > 0 &&
           state.currentTrackPath != null &&
           (state.queue.isNotEmpty || state.radioOn)) {
-        final triggerMs = _calculateRadioMixOut(durMs, state.currentTrackPath);
+        final int barMixOut = state.customMixOutMs > 10000
+            ? state.customMixOutMs
+            : _calculateRadioMixOut(durMs, state.currentTrackPath);
 
         if (!_isCrossfading) {
           final double curRate = player.state.rate;
           final double? tgt = _drift.tick(
             posMs: posMs,
             durMs: durMs,
-            mixOutMs: triggerMs,
+            mixOutMs: barMixOut,
             rate: curRate,
             nextBpm: _extractBpm(_standbyArmedPath),
           );
@@ -896,8 +948,8 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
         // (saliendo); recargarlo mete pistas fantasma y deja el armado huérfano.
         if (!_isStandbyArmed &&
             !_isCrossfading &&
-            posMs >= (triggerMs - 10000) &&
-            triggerMs > 10000) {
+            posMs >= (barMixOut - 10000) &&
+            barMixOut > 10000) {
           _isStandbyArmed = true;
           _standbyArmedPath = null;
           // Radio encendida: la pista sale del universo de géneros, no de la cola.
@@ -908,23 +960,46 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
                     : null);
           if (armPathOrNull == null) return;
           final String armPath = armPathOrNull;
+          if (!state.radioOn && armPath == tickPath) {
+            _isStandbyArmed = false;
+            return;
+          }
           await _standbyPlayer.setVolume(0.0);
           await _standbyPlayer.open(
             Media(armPath),
             play: false,
           );
+          // Si durante la carga cambió la pista o empezó un cruce, este armado
+          // ya no vale: si no, se recarga el deck que está sonando.
+          if (state.currentTrackPath != tickPath ||
+              _isCrossfading ||
+              player != _activePlayer) {
+            return;
+          }
           // Solo se da por precargada cuando la carga terminó de verdad.
           _standbyArmedPath = armPath;
           ref.read(liveDjEqualizerProvider.notifier).adapt(_standbyPlayer, armPath);
         }
 
-        // Red de seguridad: si por una duración/BPM mal leído el punto de mezcla
-        // quedara más allá del final real, igual se mezcla a ~25 s del final.
-        final bool nearEnd = durMs > 60000 && (durMs - posMs) <= 25000;
-        if (posMs >= triggerMs || nearEnd) {
+        if (state.currentTrackPath != tickPath || player != _activePlayer) {
+          return;
+        }
+        // Red de seguridad: si el deck va a acabar antes que la duración de la
+        // barra (cabecera larga), se mezcla ~25 s antes de ese final real.
+        // Una estimación corta de arranque (menor que la mitad) no cuenta.
+        int endMs = durMs;
+        final int deckDur = player.state.duration.inMilliseconds;
+        if (deckDur > 45000 &&
+            deckDur + 1500 < durMs &&
+            deckDur > durMs ~/ 2) {
+          endMs = deckDur;
+        }
+        final bool nearEnd =
+            endMs > 60000 && posMs >= endMs - 25000 && posMs > 20000;
+        if ((posMs >= barMixOut && barMixOut > 10000) || nearEnd) {
           if (!_isCrossfading && !_isPrepModeBypass) {
             _djTrace(
-              'TRIGGER pos=$posMs dur=$durMs trigger=$triggerMs nearEnd=$nearEnd '
+              'TRIGGER pos=$posMs dur=$durMs end=$endMs bar=$barMixOut nearEnd=$nearEnd '
               'cur=${state.currentTrackPath} armed=$_standbyArmedPath q0=${state.queue.isNotEmpty ? state.queue.first.path : null}',
             );
             _triggerCrossfade();
@@ -934,17 +1009,21 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
     });
 
     _durationSub = player.stream.duration.listen((mpvDur) async {
-      state = state.copyWith(duration: mpvDur);
-      // libmpv ESTIMA la duración de algunos MP3 (sin Xing / con carátula) y se
-      // pasa: la barra acaba al 70-80 % y la mezcla nunca llega. Se corrige.
+      // No publicar la estimación corta de libmpv antes de la duración real:
+      // si no, el punto de mezcla cae a los pocos segundos y el cruce arranca.
       final String? durPath = state.currentTrackPath;
       Duration dur = mpvDur;
       if (durPath != null && mpvDur.inMilliseconds > 0) {
         dur = await _trueDuration(durPath, mpvDur);
         if (state.currentTrackPath != durPath) return;
-        if (dur != mpvDur) state = state.copyWith(duration: dur);
       }
-      if (dur.inMilliseconds > 0 && state.currentTrackPath != null) {
+      if (dur.inMilliseconds <= 0 || state.currentTrackPath == null) return;
+      // Una estimación posterior más corta no achica la duración ya corregida.
+      if (state.currentTrackPath == durPath &&
+          state.duration.inMilliseconds > dur.inMilliseconds + 1500) {
+        dur = state.duration;
+      }
+      state = state.copyWith(duration: dur);
         globalAudioHandler.syncOs(
           owner: 'livedj',
           path: state.currentTrackPath,
@@ -969,7 +1048,6 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
           customMixOutMs: triggerMs,
           currentMixMode: mode,
         );
-      }
     });
 
     _playingSub = player.stream.playing.listen((playing) {
@@ -1002,8 +1080,10 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
 
     _completedSub = player.stream.completed.listen((completed) {
       if (!completed || !_sessionHydrated) return;
+      // El deck que sale también puede marcar fin durante un cruce. Si se
+      // anula el cruce y se pide otra pista, la que suena se mezcla consigo.
+      if (_isCrossfading) return;
       _isPrepModeBypass = false;
-      _isCrossfading = false;
       _djTrace(
         'COMPLETED SIN MEZCLA pos=${state.position.inMilliseconds} '
         'dur=${state.duration.inMilliseconds} trigger=${state.customMixOutMs} '
@@ -1132,7 +1212,7 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
       final want = norm(path);
       return loaded == want || loaded.endsWith(want) || want.endsWith(loaded);
     } catch (_) {
-      return true;
+      return false;
     }
   }
 
@@ -1531,6 +1611,15 @@ class LiveDjNotifier extends Notifier<LiveDjState> {
         return;
       }
       nextTrack = state.queue[nextIdx].path;
+    }
+    if (!radioPick &&
+        state.currentTrackPath != null &&
+        nextTrack == state.currentTrackPath) {
+      _djTrace('ABORT mezcla contra la misma pista $nextTrack');
+      _isCrossfading = false;
+      _isStandbyArmed = false;
+      _standbyArmedPath = null;
+      return;
     }
     final Player fadingPlayer = _activePlayer;
     final Player incomingPlayer = _standbyPlayer;
