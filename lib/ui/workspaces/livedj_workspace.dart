@@ -33,7 +33,7 @@ class LiveDjWorkspace extends ConsumerWidget {
             const Positioned.fill(child: LiveDjFolderPlaylist()),
             Positioned(
               top: 8,
-              right: 8,
+              right: 56,
               child: Tooltip(
                 message: 'Volver a DJ Studio',
                 child: GestureDetector(
@@ -1033,6 +1033,25 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
                   expand: false,
                   onTap: () => ref.read(mobileNavOpenProvider.notifier).state =
                       !menuOpen,
+                ),
+                Tooltip(
+                  message: playlistOn
+                      ? 'Volver a DJ Studio'
+                      : 'Vista de la carpeta',
+                  child: GestureDetector(
+                    onTap: () {
+                      ref.read(liveDjPlaylistViewProvider.notifier).state =
+                          !playlistOn;
+                    },
+                    child: const Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 8),
+                      child: Icon(
+                        Icons.album,
+                        size: 26,
+                        color: DjStudioTheme.syncActive,
+                      ),
+                    ),
+                  ),
                 ),
                 Expanded(child: routingBar),
               ],
