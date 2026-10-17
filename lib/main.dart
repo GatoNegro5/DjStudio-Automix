@@ -408,14 +408,17 @@ class _MainWorkspaceState extends ConsumerState<MainWorkspace> {
       compactSheet: isMobileOS,
     );
 
+    final bool playlistFull =
+        currentRoute == 5 && ref.watch(liveDjPlaylistViewProvider);
     if (!isMobileOS) {
       return Scaffold(
         body: Row(
           children: [
-            Material(
-              color: DjStudioTheme.bgDark,
-              child: SizedBox(width: 160, child: nav),
-            ),
+            if (!playlistFull)
+              Material(
+                color: DjStudioTheme.bgDark,
+                child: SizedBox(width: 160, child: nav),
+              ),
             Expanded(child: _stage(currentRoute)),
           ],
         ),

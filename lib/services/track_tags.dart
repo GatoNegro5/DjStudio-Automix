@@ -34,7 +34,7 @@ class TrackTags {
         analyzed: m.analyzed,
         leadMs: m.leadMs.toInt(),
         tailMs: m.tailMs.toInt(),
-        bpm: m.bpm,
+        bpm: TrackTags.musicalBpm(m.bpm),
         gainDb: m.gainDb,
       );
     } catch (_) {}
@@ -44,4 +44,15 @@ class TrackTags {
 
   /// Olvida una ruta (p. ej. tras volver a masterizar).
   static void forget(String path) => _cache.remove(path);
+
+  /// BPM de una canción: entre 40 y 250. Si el archivo lo guardó × 100
+  /// (14109 = 141.09), se divide. Un valor fuera de eso no es un BPM.
+  static double musicalBpm(double v) {
+    if (v >= 40 && v <= 250) return v;
+    if (v >= 4000 && v <= 25000) {
+      final double scaled = v / 100.0;
+      if (scaled >= 40 && scaled <= 250) return scaled;
+    }
+    return 0.0;
+  }
 }

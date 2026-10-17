@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'package:djstudio_player/services/track_tags.dart';
 import 'package:flutter/material.dart';
 
 /// BPM para el Cartridge de Live DJ. Código propio: no comparte caché con
@@ -43,10 +44,12 @@ Future<_BpmIndex?> _loadIndex(String dir) {
         } else if (value is Map && value['bpm'] is num) {
           bpm = (value['bpm'] as num).toDouble();
         }
-        if (bpm == null || bpm <= 0) return;
+        if (bpm == null) return;
+        final double musical = TrackTags.musicalBpm(bpm);
+        if (musical <= 0) return;
         final k = key.toString();
-        idx.byPath[_normPath(k)] = bpm;
-        idx.byName[_baseName(k).toLowerCase()] = bpm;
+        idx.byPath[_normPath(k)] = musical;
+        idx.byName[_baseName(k).toLowerCase()] = musical;
       });
       return idx;
     } catch (_) {
@@ -59,11 +62,16 @@ int _syncsafe(List<int> b, int o) =>
     (b[o] << 21) | (b[o + 1] << 14) | (b[o + 2] << 7) | b[o + 3];
 
 double _parseBpmText(List<int> bytes) {
-  final sb = StringBuffer();
-  for (final b in bytes) {
-    if (b == 0x2E || (b >= 0x30 && b <= 0x39)) sb.writeCharCode(b);
-  }
-  return double.tryParse(sb.toString()) ?? 0.0;
+  final String text = String.fromCharCodes(
+    bytes.where(
+      (b) => b == 0x2C || b == 0x2E || (b >= 0x30 && b <= 0x39),
+    ),
+  );
+  final match = RegExp(r'(\d{1,6}(?:[.,]\d+)?)').firstMatch(text);
+  if (match == null) return 0.0;
+  final double raw =
+      double.tryParse(match.group(1)!.replaceAll(',', '.')) ?? 0.0;
+  return TrackTags.musicalBpm(raw);
 }
 
 /// Lee la etiqueta ID3v2 `TBPM` saltando frames grandes (carátulas).
@@ -148,7 +156,8 @@ Future<double> _resolveBpm(String path) async {
     r'(?:\b|_|-)(\d{2,3}(?:\.\d+)?)\s*bpm\b',
     caseSensitive: false,
   ).firstMatch(_baseName(path));
-  return match != null ? double.parse(match.group(1)!) : 0.0;
+  if (match == null) return 0.0;
+  return TrackTags.musicalBpm(double.parse(match.group(1)!));
 }
 
 Future<double> _liveDjBpmFor(String path) {

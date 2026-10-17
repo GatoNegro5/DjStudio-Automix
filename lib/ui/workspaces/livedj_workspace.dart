@@ -9,10 +9,14 @@ import '../../providers/mix_formula.dart';
 import 'automix_workspace.dart';
 import 'livedj_bpm_badge.dart';
 import 'livedj_artist_card.dart';
+import 'livedj_folder_playlist.dart';
 import '../../core/audio/cue_preview.dart';
 
 /// Texto del buscador de la cola (solo filtra la vista; la cola real no cambia).
 final liveDjQueueSearchProvider = StateProvider<String>((ref) => '');
+
+/// Vista grande de la carpeta. Apagada: Explorador + carpeta + Cartridge.
+final liveDjPlaylistViewProvider = StateProvider<bool>((ref) => false);
 
 class LiveDjWorkspace extends ConsumerWidget {
   const LiveDjWorkspace({super.key});
@@ -20,6 +24,37 @@ class LiveDjWorkspace extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final compact = Platform.isAndroid || Platform.isIOS;
+    final bool playlist = ref.watch(liveDjPlaylistViewProvider);
+    if (playlist) {
+      return Scaffold(
+        backgroundColor: DjStudioTheme.bgDark,
+        body: Stack(
+          children: [
+            const Positioned.fill(child: LiveDjFolderPlaylist()),
+            Positioned(
+              top: 8,
+              right: 8,
+              child: Tooltip(
+                message: 'Volver a DJ Studio',
+                child: GestureDetector(
+                  onTap: () => ref
+                      .read(liveDjPlaylistViewProvider.notifier)
+                      .state = false,
+                  child: const Padding(
+                    padding: EdgeInsets.all(6),
+                    child: Icon(
+                      Icons.album,
+                      size: 28,
+                      color: DjStudioTheme.syncActive,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
     return Scaffold(
       backgroundColor: DjStudioTheme.bgDark,
       body: Row(
@@ -310,6 +345,7 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
 
     final isShuffle = state.mixStrategy == LiveDjMixStrategy.random;
     final compact = Platform.isAndroid || Platform.isIOS;
+    final bool playlistOn = ref.watch(liveDjPlaylistViewProvider);
     final bool menuOpen = compact ? ref.watch(mobileNavOpenProvider) : false;
     final gap = compact ? 4.0 : 10.0;
     final titleSize = compact ? 13.0 : 16.0;
@@ -490,6 +526,27 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
               onAirBadge,
               const SizedBox(width: 8),
               Flexible(child: studioTitle),
+            ],
+            if (!compact) ...[
+              const SizedBox(width: 6),
+              Tooltip(
+                message: playlistOn
+                    ? 'Volver a Explorador y Cartridge'
+                    : 'Vista de la carpeta',
+                child: GestureDetector(
+                  onTap: () {
+                    ref.read(liveDjPlaylistViewProvider.notifier).state =
+                        !playlistOn;
+                  },
+                  child: Icon(
+                    Icons.album,
+                    size: 28,
+                    color: playlistOn
+                        ? DjStudioTheme.syncActive
+                        : Colors.white70,
+                  ),
+                ),
+              ),
             ],
           ],
         ),
@@ -1007,18 +1064,47 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
                       border: Border.all(color: Colors.white10),
                     ),
                     child: Padding(
-                      padding: const EdgeInsets.fromLTRB(10, 6, 10, 4),
-                      child: LayoutBuilder(
-                        builder: (context, c) {
-                          return FittedBox(
-                            fit: BoxFit.scaleDown,
-                            alignment: Alignment.centerLeft,
-                            child: SizedBox(
-                              width: c.maxWidth,
-                              child: nowPlayingBody,
+                      padding: const EdgeInsets.fromLTRB(10, 6, 4, 4),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(
+                            child: LayoutBuilder(
+                              builder: (context, c) {
+                                return FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  alignment: Alignment.centerLeft,
+                                  child: SizedBox(
+                                    width: c.maxWidth,
+                                    child: nowPlayingBody,
+                                  ),
+                                );
+                              },
                             ),
-                          );
-                        },
+                          ),
+                          Tooltip(
+                            message: playlistOn
+                                ? 'Volver a Explorador y Cartridge'
+                                : 'Vista de la carpeta',
+                            child: GestureDetector(
+                              onTap: () {
+                                ref
+                                    .read(liveDjPlaylistViewProvider.notifier)
+                                    .state = !playlistOn;
+                              },
+                              child: Padding(
+                                padding: const EdgeInsets.all(6),
+                                child: Icon(
+                                  Icons.album,
+                                  size: 26,
+                                  color: playlistOn
+                                      ? DjStudioTheme.syncActive
+                                      : Colors.white70,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ),
