@@ -12,6 +12,7 @@ import '../../providers/mix_formula.dart';
 import '../../providers/theme_provider.dart';
 import '../../services/id3_title_artist.dart';
 import 'livedj_bpm_badge.dart';
+import 'livedj_deck_relevo.dart';
 
 /// Pantalla grande de la canción que está sonando. No usa la carpeta
 /// marcada en el Explorador: sigue `currentTrackPath`.
@@ -43,10 +44,74 @@ class _PlayerPane extends ConsumerStatefulWidget {
   ConsumerState<_PlayerPane> createState() => _PlayerPaneState();
 }
 
-class _PlayerPaneState extends ConsumerState<_PlayerPane> {
+class _PlayerPaneState extends ConsumerState<_PlayerPane>
+    with TickerProviderStateMixin {
   double? _dragPosition;
   String? _stealthNextName;
   String? _stealthCacheKey;
+  late final AnimationController _relevo;
+  late final AnimationController _beat;
+  String? _handoffFrom;
+  String? _handoffTo;
+  bool _activeIsA = true;
+  Color _outDeck = DjStudioTheme.deckA;
+  Color _inDeck = DjStudioTheme.deckB;
+
+  @override
+  void initState() {
+    super.initState();
+    _relevo = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 700),
+    );
+    _beat = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 500),
+    );
+    _relevo.addStatusListener(_onRelevo);
+  }
+
+  @override
+  void dispose() {
+    _relevo.removeStatusListener(_onRelevo);
+    _relevo.dispose();
+    _beat.dispose();
+    super.dispose();
+  }
+
+  void _onRelevo(AnimationStatus status) {
+    if (status != AnimationStatus.completed || !mounted) return;
+    _beat.stop();
+    _beat.value = 0;
+    setState(() => _handoffFrom = null);
+  }
+
+  void _beginRelevo(String prev, String next) {
+    final LiveDjState live = ref.read(liveDjProvider);
+    final MixFormula formula = ref.read(mixFormulaProvider);
+    final double bpm = relevoBpm(next);
+    final int ms = relevoDurationMs(
+      derive: true,
+      mode: live.currentMixMode,
+      formula: formula,
+      bpm: bpm,
+      durationMs: live.duration.inMilliseconds,
+    );
+    setState(() {
+      _handoffFrom = prev;
+      _handoffTo = next;
+      _outDeck = _activeIsA ? DjStudioTheme.deckA : DjStudioTheme.deckB;
+      _inDeck = _activeIsA ? DjStudioTheme.deckB : DjStudioTheme.deckA;
+      _activeIsA = !_activeIsA;
+    });
+    _beat.duration = Duration(milliseconds: relevoBeatMs(bpm));
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _handoffFrom != prev) return;
+      _beat.repeat();
+      _relevo.duration = Duration(milliseconds: ms);
+      _relevo.forward(from: 0);
+    });
+  }
 
   String? _nextName(LiveDjState state, MixFormula mixFormula) {
     if (state.radioOn) {
@@ -95,6 +160,19 @@ class _PlayerPaneState extends ConsumerState<_PlayerPane> {
 
   @override
   Widget build(BuildContext context) {
+    ref.listen<String?>(liveDjProvider.select((s) => s.currentTrackPath), (
+      String? prev,
+      String? next,
+    ) {
+      if (prev == null ||
+          prev.isEmpty ||
+          next == null ||
+          next.isEmpty ||
+          prev == next) {
+        return;
+      }
+      _beginRelevo(prev, next);
+    });
     final state = ref.watch(liveDjProvider);
     final mixFormula = ref.watch(mixFormulaProvider);
     final track = state.currentTrackPath;
@@ -219,25 +297,22 @@ class _PlayerPaneState extends ConsumerState<_PlayerPane> {
               ),
             ],
           ),
-          if (nextName != null)
-            Container(
-              width: double.infinity,
-              margin: const EdgeInsets.only(bottom: 4),
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-              color: const Color(0xFF00FFFF).withValues(alpha: 0.14),
-              child: Text(
-                nextName,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: const Color(0xFF00FFFF),
-                  fontFamily: 'Consolas',
-                  fontSize: wide ? 12 : 11,
-                ),
-              ),
-            ),
         ],
       ),
+    );
+    final bool handoff = _handoffFrom != null;
+    final String? faceOut = handoff ? _handoffFrom : track;
+    final String? faceIn = handoff ? _handoffTo : null;
+    final TrackDisplay entering = (faceIn == null || faceIn.isEmpty)
+        ? const TrackDisplay(headline: '', subtitle: '', artist: '')
+        : resolveTrackDisplay(file: parseTrackFileName(faceIn));
+    final String following = nextName ?? '';
+    final Listenable motion = Listenable.merge([_relevo, _beat]);
+    final Widget outgoingFace = _SongFace(path: faceOut, wide: wide);
+    final Widget incomingFace = _SongFace(
+      path: faceIn,
+      wide: wide,
+      controls: false,
     );
 
     return LayoutBuilder(
@@ -251,7 +326,25 @@ class _PlayerPaneState extends ConsumerState<_PlayerPane> {
         return Column(
           children: [
             Expanded(
-              child: _NowHeader(track: track, wide: wide),
+              child: RepaintBoundary(
+                child: AnimatedBuilder(
+                  animation: motion,
+                  builder: (context, _) {
+                    return DeckRelevo(
+                      t: handoff ? _relevo.value : 0,
+                      handoff: handoff,
+                      outgoing: outgoingFace,
+                      incoming: incomingFace,
+                      cardTitle: entering.headline,
+                      cardSubtitle: entering.subtitle,
+                      followingTitle: following,
+                      outgoingDeck: _outDeck,
+                      incomingDeck: _inDeck,
+                      beatPhase: _beat.value,
+                    );
+                  },
+                ),
+              ),
             ),
             ConstrainedBox(
               constraints: BoxConstraints(
@@ -270,119 +363,122 @@ class _PlayerPaneState extends ConsumerState<_PlayerPane> {
   }
 }
 
-class _NowHeader extends StatelessWidget {
-  final String? track;
+class _SongFace extends StatelessWidget {
+  final String? path;
   final bool wide;
+  final bool controls;
 
-  const _NowHeader({required this.track, required this.wide});
+  const _SongFace({
+    required this.path,
+    required this.wide,
+    this.controls = true,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final String? path = track;
+    final String? facePath = path;
     return FutureBuilder<Id3Names>(
-      future: (path == null || path.isEmpty) ? null : loadId3TitleArtist(path),
+      future: (facePath == null || facePath.isEmpty)
+          ? null
+          : loadId3TitleArtist(facePath),
       builder: (context, snap) {
         final Id3Names id3 = snap.data ?? const Id3Names();
-        final TrackDisplay display = (path == null || path.isEmpty)
+        final TrackDisplay display = (facePath == null || facePath.isEmpty)
             ? const TrackDisplay(
                 headline: 'Nada sonando',
                 subtitle: '',
                 artist: '',
               )
             : resolveTrackDisplay(
-                file: parseTrackFileName(path),
+                file: parseTrackFileName(facePath),
                 id3Artist: id3.artist,
                 id3Title: id3.title,
               );
         final String headline = display.headline.isEmpty
             ? 'Nada sonando'
             : display.headline;
-        return Container(
-          width: double.infinity,
+        return Align(
           alignment: Alignment.bottomLeft,
-          padding: EdgeInsets.fromLTRB(
-            wide ? 24 : 12,
-            wide ? 16 : 8,
-            wide ? 16 : 10,
-            wide ? 8 : 4,
-          ),
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [Color(0xFF1B3A4B), DjStudioTheme.bgDark],
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(
+              wide ? 24 : 12,
+              wide ? 16 : 8,
+              wide ? 16 : 10,
+              wide ? 8 : 4,
             ),
-          ),
-          child: LayoutBuilder(
-            builder: (context, inner) {
-              final double side = _coverSide(inner.maxHeight, inner.maxWidth);
-              return Row(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  _NowCover(artist: _coverQuery(display.artist), side: side),
-                  SizedBox(width: wide ? 20 : 12),
-                  Expanded(
-                    child: LayoutBuilder(
-                      builder: (context, textBox) {
-                        return FittedBox(
-                          fit: BoxFit.scaleDown,
-                          alignment: Alignment.bottomLeft,
-                          child: SizedBox(
-                            width: math.max(1, textBox.maxWidth),
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  headline,
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: wide ? 36 : 22,
-                                    height: 1.05,
-                                  ),
-                                ),
-                                if (display.subtitle.isNotEmpty) ...[
-                                  const SizedBox(height: 4),
+            child: LayoutBuilder(
+              builder: (context, inner) {
+                final double side = _coverSide(inner.maxHeight, inner.maxWidth);
+                return Row(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    _NowCover(artist: _coverQuery(display.artist), side: side),
+                    SizedBox(width: wide ? 20 : 12),
+                    Expanded(
+                      child: LayoutBuilder(
+                        builder: (context, textBox) {
+                          return FittedBox(
+                            fit: BoxFit.scaleDown,
+                            alignment: Alignment.bottomLeft,
+                            child: SizedBox(
+                              width: math.max(1, textBox.maxWidth),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
                                   Text(
-                                    display.subtitle,
-                                    maxLines: 1,
+                                    headline,
+                                    maxLines: 2,
                                     overflow: TextOverflow.ellipsis,
                                     style: TextStyle(
-                                      color: Colors.white70,
-                                      fontSize: wide ? 16 : 13,
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: wide ? 36 : 22,
+                                      height: 1.05,
                                     ),
                                   ),
-                                ],
-                                const SizedBox(height: 6),
-                                SizedBox(
-                                  height: 28,
-                                  child: ListView(
-                                    scrollDirection: Axis.horizontal,
-                                    physics: const ClampingScrollPhysics(),
-                                    children: [
-                                      LiveDjBpmChip(
-                                        path: path,
-                                        fontSize: wide ? 12 : 10,
+                                  if (display.subtitle.isNotEmpty) ...[
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      display.subtitle,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        color: Colors.white70,
+                                        fontSize: wide ? 16 : 13,
                                       ),
-                                      const SizedBox(width: 8),
-                                      _OnAirBadge(compact: !wide),
-                                    ],
-                                  ),
-                                ),
-                                _RadioSlot(compact: !wide),
-                              ],
+                                    ),
+                                  ],
+                                  if (controls) ...[
+                                    const SizedBox(height: 6),
+                                    SizedBox(
+                                      height: 28,
+                                      child: ListView(
+                                        scrollDirection: Axis.horizontal,
+                                        physics: const ClampingScrollPhysics(),
+                                        children: [
+                                          LiveDjBpmChip(
+                                            path: facePath,
+                                            fontSize: wide ? 12 : 10,
+                                          ),
+                                          const SizedBox(width: 8),
+                                          _OnAirBadge(compact: !wide),
+                                        ],
+                                      ),
+                                    ),
+                                    _RadioSlot(compact: !wide),
+                                  ],
+                                ],
+                              ),
                             ),
-                          ),
-                        );
-                      },
+                          );
+                        },
+                      ),
                     ),
-                  ),
-                ],
-              );
-            },
+                  ],
+                );
+              },
+            ),
           ),
         );
       },
