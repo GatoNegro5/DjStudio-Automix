@@ -679,16 +679,13 @@ class _GatoMixNavColumn extends ConsumerWidget {
       mainAxisSize: compactSheet ? MainAxisSize.min : MainAxisSize.max,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Padding(
-          padding: EdgeInsets.fromLTRB(12, 10, 12, 4),
-          child: Text(
-            "GatoMix",
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-              color: GatoMixTheme.textMain,
-              letterSpacing: 1.2,
-            ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+          child: Image.asset(
+            'assets/branding/gatomix_wordmark.png',
+            height: 44,
+            fit: BoxFit.contain,
+            alignment: Alignment.centerLeft,
           ),
         ),
         const AppVersionLabel(),
