@@ -43,15 +43,8 @@ void main() {
     expect(find.text('CANCION-C'), findsNothing);
     expect(_scale(tester, 'relevo-outgoing-scale'), closeTo(1, 0.001));
     expect(_scale(tester, 'relevo-incoming-scale'), closeTo(0.55, 0.001));
-    expect(
-      _wash(tester),
-      relevoWash(
-        outgoing: DjStudioTheme.deckA,
-        incoming: DjStudioTheme.deckB,
-        t: 0,
-        handoff: true,
-      ),
-    );
+    _expectSpill(tester, 0);
+    expect(find.byKey(const Key('relevo-shimmer')), findsOneWidget);
   });
 
   testWidgets('t=0.5 B empuja a A hacia arriba y el color va a medias', (
@@ -63,17 +56,16 @@ void main() {
     expect(tops.incoming - tops.stage, closeTo(0.5 * tops.main, 1));
     expect(tops.incoming, greaterThan(tops.outgoing));
     expect(find.text('ENTRANDO'), findsOneWidget);
+    expect(find.text('CANCION-C'), findsNothing);
     expect(_scale(tester, 'relevo-outgoing-scale'), closeTo(0.925, 0.001));
-    expect(_scale(tester, 'relevo-incoming-scale'), closeTo(0.775, 0.001));
     expect(
-      _wash(tester),
-      relevoWash(
-        outgoing: DjStudioTheme.deckA,
-        incoming: DjStudioTheme.deckB,
-        t: 0.5,
-        handoff: true,
-      ),
+      _scale(tester, 'relevo-incoming-scale'),
+      closeTo(relevoIncomingScale(0.5), 0.001),
     );
+    _expectSpill(tester, 0.5);
+    expect(find.byKey(const Key('relevo-ring')), findsOneWidget);
+    expect(find.byType(ImageFiltered), findsWidgets);
+    expect(_flash(tester), 0);
   });
 
   testWidgets('t=1 A salió por arriba, B ocupa su lugar y sigue la cola', (
@@ -87,28 +79,62 @@ void main() {
     expect(find.text('CANCION-C'), findsOneWidget);
     expect(_scale(tester, 'relevo-outgoing-scale'), closeTo(0.85, 0.001));
     expect(_scale(tester, 'relevo-incoming-scale'), closeTo(1, 0.001));
-    expect(
-      _wash(tester),
-      relevoWash(
-        outgoing: DjStudioTheme.deckA,
-        incoming: DjStudioTheme.deckB,
-        t: 1,
-        handoff: true,
-      ),
-    );
+    _expectSpill(tester, 1);
+    expect(_flash(tester), 0);
+    expect(find.byKey(const Key('relevo-shimmer')), findsNothing);
+  });
+
+  test('el derrame, el flash y el blur no mueven el cruce', () {
+    expect(relevoIncomingScale(0), closeTo(0.55, 0.0001));
+    expect(relevoIncomingScale(1), closeTo(1, 0.0001));
+    expect(relevoOutgoingScale(0.5), closeTo(0.925, 0.0001));
+    expect(relevoPeek(0.5), 0);
+    expect(relevoPeek(1), 1);
+    expect(relevoFlashOpacity(0), 0);
+    expect(relevoFlashOpacity(0.5), 0);
+    expect(relevoFlashOpacity(0.95), greaterThan(0));
+    expect(relevoFlashOpacity(1), 0);
+    expect(relevoWave(0.5), 0);
+    expect(relevoWave(1), 1);
+    expect(relevoBlurEnabled(360), isFalse);
+    expect(relevoBlurEnabled(500), isTrue);
+    final double y0 = relevoSpill(
+      outgoing: DjStudioTheme.deckA,
+      incoming: DjStudioTheme.deckB,
+      t: 0,
+      handoff: true,
+      viewport: 500,
+    ).center.y;
+    final double y1 = relevoSpill(
+      outgoing: DjStudioTheme.deckA,
+      incoming: DjStudioTheme.deckB,
+      t: 1,
+      handoff: true,
+      viewport: 500,
+    ).center.y;
+    expect(y0, greaterThan(y1));
+  });
+
+  testWidgets('móvil corto no desenfoca y el empuje sigue', (tester) async {
+    await _pump(tester, 0.5, height: 360);
+    final _Tops tops = _tops(tester, 360);
+    expect(tops.outgoing - tops.stage, closeTo(-0.5 * tops.main, 1));
+    expect(tops.incoming - tops.stage, closeTo(0.5 * tops.main, 1));
+    expect(find.byType(ImageFiltered), findsNothing);
+    expect(find.text('ENTRANDO'), findsOneWidget);
   });
 }
 
 const double _viewH = 500;
 
-Future<void> _pump(WidgetTester tester, double t) {
+Future<void> _pump(WidgetTester tester, double t, {double height = _viewH}) {
   return tester.pumpWidget(
     MaterialApp(
       home: Scaffold(
         body: Center(
           child: SizedBox(
             width: 800,
-            height: _viewH,
+            height: height,
             child: DeckRelevo(
               t: t,
               handoff: true,
@@ -135,12 +161,12 @@ class _Tops {
   const _Tops(this.stage, this.outgoing, this.incoming, this.main);
 }
 
-_Tops _tops(WidgetTester tester) {
+_Tops _tops(WidgetTester tester, [double height = _viewH]) {
   return _Tops(
     tester.getTopLeft(find.byKey(const Key('relevo-stage'))).dy,
     tester.getTopLeft(find.byKey(const Key('relevo-outgoing'))).dy,
     tester.getTopLeft(find.byKey(const Key('relevo-incoming'))).dy,
-    relevoMainHeight(_viewH),
+    relevoMainHeight(height),
   );
 }
 
@@ -149,9 +175,25 @@ double _scale(WidgetTester tester, String key) {
   return widget.transform.storage[0];
 }
 
-Color _wash(WidgetTester tester) {
+void _expectSpill(WidgetTester tester, double t) {
   final DecoratedBox box = tester.widget<DecoratedBox>(
     find.byKey(const Key('relevo-wash')),
   );
-  return (box.decoration as BoxDecoration).color!;
+  final RadialGradient gradient =
+      (box.decoration as BoxDecoration).gradient! as RadialGradient;
+  final RelevoSpill spill = relevoSpill(
+    outgoing: DjStudioTheme.deckA,
+    incoming: DjStudioTheme.deckB,
+    t: t,
+    handoff: true,
+    viewport: _viewH,
+  );
+  expect(gradient.center, spill.center);
+  expect(gradient.radius, closeTo(spill.radius, 0.0001));
+  expect(gradient.colors, spill.colors);
+  expect(gradient.stops, spill.stops);
+}
+
+double _flash(WidgetTester tester) {
+  return tester.widget<Opacity>(find.byKey(const Key('relevo-flash'))).opacity;
 }
