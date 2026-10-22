@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
@@ -28,31 +30,52 @@ android {
         }
     }
 
-    // Llave fija de release (CI): misma firma en cada versión => el celular
-    // actualiza encima sin desinstalar. Sin variables (build local) cae a debug.
-    // Sin variables: llave fija incluida en el repo (android/app/djstudio.jks),
-    // sin secretos: todas las compilaciones (CI o local) llevan la misma firma.
-    val ksPath = System.getenv("ANDROID_KEYSTORE_PATH")
-    val hasEnvKey = ksPath != null && file(ksPath).exists()
+    // Firma de release. La contraseña NO vive en el repo.
+    // CI: ANDROID_KEYSTORE_PATH / ANDROID_KEYSTORE_PASSWORD /
+    // ANDROID_KEY_ALIAS / ANDROID_KEY_PASSWORD (secretos de GitHub).
+    // Local: android/key.properties (ver key.properties.example).
+    // Sin ninguna de las dos, el release se firma en debug.
+    val keyProps = Properties()
+    val keyPropsFile = rootProject.file("key.properties")
+    if (keyPropsFile.exists()) {
+        keyPropsFile.inputStream().use { keyProps.load(it) }
+    }
+    val envStore = System.getenv("ANDROID_KEYSTORE_PATH")
+    val propStore = keyProps.getProperty("storeFile")
+    val storePath = when {
+        !envStore.isNullOrBlank() && file(envStore).exists() -> envStore
+        !propStore.isNullOrBlank() && file(propStore).exists() -> file(propStore).path
+        else -> null
+    }
+    val storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+        ?: keyProps.getProperty("storePassword")
+    val keyAlias = System.getenv("ANDROID_KEY_ALIAS")
+        ?: keyProps.getProperty("keyAlias")
+    val keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+        ?: keyProps.getProperty("keyPassword")
+    val hasReleaseKey = storePath != null &&
+        !storePassword.isNullOrBlank() &&
+        !keyAlias.isNullOrBlank() &&
+        !keyPassword.isNullOrBlank()
+
     signingConfigs {
-        create("djstudioRelease") {
-            if (hasEnvKey) {
-                storeFile = file(ksPath!!)
-                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
-                keyAlias = System.getenv("ANDROID_KEY_ALIAS")
-                keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
-            } else {
-                storeFile = file("djstudio.jks")
-                storePassword = "djstudio"
-                keyAlias = "djstudio"
-                keyPassword = "djstudio"
+        if (hasReleaseKey) {
+            create("gatomixRelease") {
+                storeFile = file(storePath!!)
+                this.storePassword = storePassword
+                this.keyAlias = keyAlias
+                this.keyPassword = keyPassword
             }
         }
     }
 
     buildTypes {
         release {
-            signingConfig = signingConfigs.getByName("djstudioRelease")
+            signingConfig = if (hasReleaseKey) {
+                signingConfigs.getByName("gatomixRelease")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 }

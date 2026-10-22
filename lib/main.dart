@@ -8,7 +8,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 // 🛠️ INYECCIÓN: El puente de memoria FFI (Rust <> Dart)
-import 'package:djstudio_player/src/rust/frb_generated.dart';
+import 'package:gatomix_player/src/rust/frb_generated.dart';
 
 // --- IMPORTACIÓN DE MÓDULOS Y PROVIDERS ---
 import 'providers/automix_provider.dart';
@@ -129,7 +129,7 @@ Future<void> main() async {
     // 🛠️ BINDING 3: Inicialización del Motor de Reproducción de Audio (libmpv)
     MediaKit.ensureInitialized();
 
-    runApp(const ProviderScope(child: DjStudioApp()));
+    runApp(const ProviderScope(child: GatoMixApp()));
   } catch (e, stackTrace) {
     // 🛠️ TRACKER DE KERNEL: Si algo falla a nivel binario, no mostramos pantalla gris.
     debugPrint("🔴 [FATAL BOOT ERROR]: $e");
@@ -159,8 +159,8 @@ Future<void> main() async {
   }
 }
 
-class DjStudioApp extends ConsumerWidget {
-  const DjStudioApp({super.key});
+class GatoMixApp extends ConsumerWidget {
+  const GatoMixApp({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -311,19 +311,23 @@ class _BootloaderScreenState extends State<BootloaderScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: DjStudioTheme.bgDark,
+      backgroundColor: GatoMixTheme.bgDark,
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.album, color: DjStudioTheme.syncActive, size: 70),
+            Image.asset(
+              'assets/branding/gatomix_logo.png',
+              width: 96,
+              height: 96,
+            ),
             const SizedBox(height: 30),
-            const CircularProgressIndicator(color: DjStudioTheme.deckA),
+            const CircularProgressIndicator(color: GatoMixTheme.deckA),
             const SizedBox(height: 20),
             Text(
               _statusText,
               style: const TextStyle(
-                color: DjStudioTheme.textMuted,
+                color: GatoMixTheme.textMuted,
                 fontFamily: 'Consolas',
                 fontSize: 12,
               ),
@@ -360,7 +364,7 @@ class _MainWorkspaceState extends ConsumerState<MainWorkspace> {
         gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [DjStudioTheme.bgPanel, DjStudioTheme.bgDark],
+          colors: [GatoMixTheme.bgPanel, GatoMixTheme.bgDark],
         ),
       ),
       child: IndexedStack(
@@ -401,7 +405,7 @@ class _MainWorkspaceState extends ConsumerState<MainWorkspace> {
     final bool menuOpen = ref.watch(mobileNavOpenProvider);
     final bool inlineChrome =
         isMobileOS && (currentRoute == 0 || currentRoute == 5);
-    final nav = _DjStudioNavColumn(
+    final nav = _GatoMixNavColumn(
       currentRoute: currentRoute,
       isMobileOS: isMobileOS,
       onAfterSelect: isMobileOS ? _closeMenu : null,
@@ -416,7 +420,7 @@ class _MainWorkspaceState extends ConsumerState<MainWorkspace> {
           children: [
             if (!playlistFull)
               Material(
-                color: DjStudioTheme.bgDark,
+                color: GatoMixTheme.bgDark,
                 child: SizedBox(width: 160, child: nav),
               ),
             Expanded(child: _stage(currentRoute)),
@@ -426,12 +430,12 @@ class _MainWorkspaceState extends ConsumerState<MainWorkspace> {
     }
 
     return Scaffold(
-      backgroundColor: DjStudioTheme.bgDark,
+      backgroundColor: GatoMixTheme.bgDark,
       body: SafeArea(
         child: Column(
           children: [
             if (!inlineChrome)
-              DjStudioMobileModeBar(
+              GatoMixMobileModeBar(
                 title: _moduleTitle(currentRoute, isMobileOS),
                 accent: _moduleAccent(currentRoute),
                 open: menuOpen,
@@ -465,7 +469,7 @@ class _MainWorkspaceState extends ConsumerState<MainWorkspace> {
                       top: inlineChrome ? 40 : 6,
                       width: 228,
                       child: Material(
-                        color: DjStudioTheme.bgDark,
+                        color: GatoMixTheme.bgDark,
                         elevation: 18,
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(8),
@@ -517,31 +521,31 @@ String _moduleTitle(int route, bool mobile) {
 Color _moduleAccent(int route) {
   switch (route) {
     case 0:
-      return DjStudioTheme.deckA;
+      return GatoMixTheme.deckA;
     case 1:
-      return DjStudioTheme.deckB;
+      return GatoMixTheme.deckB;
     case 2:
-      return DjStudioTheme.cyanAccent;
+      return GatoMixTheme.cyanAccent;
     case 3:
-      return DjStudioTheme.alertCritical;
+      return GatoMixTheme.alertCritical;
     case 4:
-      return DjStudioTheme.masterPeak;
+      return GatoMixTheme.masterPeak;
     case 5:
-      return DjStudioTheme.syncActive;
+      return GatoMixTheme.syncActive;
     case 6:
       return const Color(0xFF39FF14);
     default:
-      return DjStudioTheme.textMain;
+      return GatoMixTheme.textMain;
   }
 }
 
-class _DjStudioNavColumn extends ConsumerWidget {
+class _GatoMixNavColumn extends ConsumerWidget {
   final int currentRoute;
   final bool isMobileOS;
   final VoidCallback? onAfterSelect;
   final bool compactSheet;
 
-  const _DjStudioNavColumn({
+  const _GatoMixNavColumn({
     required this.currentRoute,
     required this.isMobileOS,
     this.onAfterSelect,
@@ -596,37 +600,37 @@ class _DjStudioNavColumn extends ConsumerWidget {
           icon: Icons.album,
           label: "Automix",
           route: 0,
-          accent: DjStudioTheme.deckA,
+          accent: GatoMixTheme.deckA,
         ),
         tile(
           icon: Icons.radio,
           label: "Live DJ",
           route: 5,
-          accent: DjStudioTheme.syncActive,
+          accent: GatoMixTheme.syncActive,
         ),
         tile(
           icon: Icons.cloud_download,
           label: "Descargas YT",
           route: 2,
-          accent: DjStudioTheme.cyanAccent,
+          accent: GatoMixTheme.cyanAccent,
         ),
         tile(
           icon: Icons.science,
           label: "Laboratorio",
           route: 3,
-          accent: DjStudioTheme.alertCritical,
+          accent: GatoMixTheme.alertCritical,
         ),
         tile(
           icon: Icons.settings,
           label: "Masterizar",
           route: 1,
-          accent: DjStudioTheme.deckB,
+          accent: GatoMixTheme.deckB,
         ),
         tile(
           icon: Icons.wifi_tethering,
           label: "LAN Sync",
           route: 4,
-          accent: DjStudioTheme.masterPeak,
+          accent: GatoMixTheme.masterPeak,
         ),
         tile(
           icon: Icons.mic_external_on,
@@ -642,7 +646,7 @@ class _DjStudioNavColumn extends ConsumerWidget {
         : Container(
             padding: EdgeInsets.all(compactSheet ? 10 : 15),
             decoration: const BoxDecoration(
-              color: DjStudioTheme.bgPanel,
+              color: GatoMixTheme.bgPanel,
               border: Border(top: BorderSide(color: Colors.white10)),
             ),
             width: double.infinity,
@@ -652,7 +656,7 @@ class _DjStudioNavColumn extends ConsumerWidget {
                 const Text(
                   "MOTOR AUDIO",
                   style: TextStyle(
-                    color: DjStudioTheme.textHidden,
+                    color: GatoMixTheme.textHidden,
                     fontSize: 10,
                     fontWeight: FontWeight.bold,
                   ),
@@ -661,7 +665,7 @@ class _DjStudioNavColumn extends ConsumerWidget {
                 Text(
                   currentTrackPath.replaceAll('\\', '/').split('/').last,
                   style: const TextStyle(
-                    color: DjStudioTheme.syncActive,
+                    color: GatoMixTheme.syncActive,
                     fontSize: 11,
                   ),
                   maxLines: 2,
@@ -682,7 +686,7 @@ class _DjStudioNavColumn extends ConsumerWidget {
             style: TextStyle(
               fontSize: 18,
               fontWeight: FontWeight.bold,
-              color: DjStudioTheme.textMain,
+              color: GatoMixTheme.textMain,
               letterSpacing: 1.2,
             ),
           ),

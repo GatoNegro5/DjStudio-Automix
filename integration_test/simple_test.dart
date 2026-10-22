@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:djstudio_player/main.dart';
-import 'package:djstudio_player/src/rust/frb_generated.dart';
+import 'package:gatomix_player/main.dart';
+import 'package:gatomix_player/src/rust/frb_generated.dart';
 import 'package:integration_test/integration_test.dart';
 
 void main() {

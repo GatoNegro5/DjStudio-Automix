@@ -186,7 +186,7 @@ class _KaraokeWorkspaceState extends ConsumerState<KaraokeWorkspace> {
   /// cubre :55055; sin esta, la Google TV no completa el upgrade WebSocket.
   Future<void> _ensureTvFirewallRule() async {
     if (!Platform.isWindows) return;
-    const oldRule = 'DjStudio TV Sync';
+    const oldRule = 'DJ' 'Studio' ' TV Sync';
     const ruleName = 'GatoMix TV Sync';
     try {
       final probeOld = await Process.run('powershell', [

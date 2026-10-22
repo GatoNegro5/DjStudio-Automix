@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-class DjStudioTheme {
+class GatoMixTheme {
   // Traktor / Native Instruments (cabina “lab”)
   static const Color bgDark = Color(0xFF0E1014); // Carbón NI
   static const Color bgPanel = Color(
@@ -79,18 +79,18 @@ class DjStudioTheme {
   }
 }
 
-final themeProvider = Provider<ThemeData>((ref) => DjStudioTheme.darkTheme);
+final themeProvider = Provider<ThemeData>((ref) => GatoMixTheme.darkTheme);
 
 final mobileNavOpenProvider = StateProvider<bool>((ref) => false);
 
-class DjStudioMobileModeBar extends StatelessWidget {
+class GatoMixMobileModeBar extends StatelessWidget {
   final String title;
   final Color accent;
   final bool open;
   final VoidCallback onTap;
   final bool expand;
 
-  const DjStudioMobileModeBar({
+  const GatoMixMobileModeBar({
     super.key,
     required this.title,
     required this.accent,
@@ -102,7 +102,7 @@ class DjStudioMobileModeBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: DjStudioTheme.bgDark,
+      color: GatoMixTheme.bgDark,
       child: InkWell(
         onTap: onTap,
         child: SizedBox(
@@ -133,7 +133,7 @@ class DjStudioMobileModeBar extends StatelessWidget {
                 Icon(
                   open ? Icons.expand_less : Icons.expand_more,
                   size: 16,
-                  color: DjStudioTheme.textMuted,
+                  color: GatoMixTheme.textMuted,
                 ),
               ],
             ),

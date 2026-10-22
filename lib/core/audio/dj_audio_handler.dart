@@ -6,7 +6,7 @@ Future<void> initGlobalAudioService() async {
   globalAudioHandler = await AudioService.init(
     builder: () => DjAudioHandler(),
     config: const AudioServiceConfig(
-      androidNotificationChannelId: 'com.djstudio.player.channel.audio',
+      androidNotificationChannelId: 'com.gatonegro5.gatomix.channel.audio',
       androidNotificationChannelName: 'GatoMix',
       // 🛠️ FIX ARQUITECTÓNICO: Se elimina androidNotificationOngoing.
       // Al mantener StopForegroundOnPause en false, la notificación

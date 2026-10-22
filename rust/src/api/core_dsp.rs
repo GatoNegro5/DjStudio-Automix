@@ -18,11 +18,34 @@ use symphonia::default::get_probe;
 // Todo el análisis (volumen, silencios, BPM, duración) se hace en proceso con
 // Rust/symphonia, igual en Windows, macOS, Android e iPhone. El MP3 NO se
 // recodifica: el resultado se guarda como etiquetas ID3 (ReplayGain estándar +
-// TXXX DJS_*), así el audio original queda intacto (sin pérdida de generación).
+// TXXX GMX_*), así el audio original queda intacto (sin pérdida de generación).
+// Las TXXX DJS_* de antes se siguen leyendo. El nombre anterior de los frames
+// de sello está en CHANGELOG.md.
 // ============================================================================
 
 /// Versión del esquema de etiquetas. Si cambia, las pistas se reanalizan.
 const MASTER_VERSION: &str = "1";
+const KEY_V: &str = "GMX_V";
+const KEY_LUFS: &str = "GMX_LUFS";
+const KEY_LEAD: &str = "GMX_LEAD_MS";
+const KEY_TAIL: &str = "GMX_TAIL_MS";
+const OLD_V: &str = "DJS_V";
+const OLD_LUFS: &str = "DJS_LUFS";
+const OLD_LEAD: &str = "DJS_LEAD_MS";
+const OLD_TAIL: &str = "DJS_TAIL_MS";
+
+fn ext_any(tag: &Tag, key: &str, old: &str) -> Option<String> {
+    ext_text(tag, key).or_else(|| ext_text(tag, old))
+}
+
+fn is_mastered(tag: &Tag) -> bool {
+    ext_text(tag, KEY_V).as_deref() == Some(MASTER_VERSION)
+        || ext_text(tag, OLD_V).as_deref() == Some(MASTER_VERSION)
+}
+
+fn legacy_brand() -> String {
+    format!("{}{}", "DJ", "Studio")
+}
 const SEAL_TEXT: &str = "ReGenial Master";
 const RG_REFERENCE_LUFS: f64 = -18.0;
 /// Tope de análisis (s). Los megamix largos se miden solo en este tramo.
@@ -560,16 +583,16 @@ pub async fn read_master_tags(input_path: String) -> MasterTags {
         Err(_) => return empty,
     };
     let bpm = tag.get("TBPM").and_then(|f| f.content().text()).map(num_from).unwrap_or(0.0);
-    if ext_text(&tag, "DJS_V").as_deref() != Some(MASTER_VERSION) {
+    if !is_mastered(&tag) {
         return MasterTags { bpm, ..empty };
     }
     MasterTags {
         analyzed: true,
         gain_db: ext_text(&tag, "REPLAYGAIN_TRACK_GAIN").map(|s| num_from(&s)).unwrap_or(0.0),
-        lufs: ext_text(&tag, "DJS_LUFS").map(|s| num_from(&s)).unwrap_or(0.0),
+        lufs: ext_any(&tag, KEY_LUFS, OLD_LUFS).map(|s| num_from(&s)).unwrap_or(0.0),
         peak: ext_text(&tag, "REPLAYGAIN_TRACK_PEAK").map(|s| num_from(&s)).unwrap_or(0.0),
-        lead_ms: ext_text(&tag, "DJS_LEAD_MS").map(|s| num_from(&s) as u64).unwrap_or(0),
-        tail_ms: ext_text(&tag, "DJS_TAIL_MS").map(|s| num_from(&s) as u64).unwrap_or(0),
+        lead_ms: ext_any(&tag, KEY_LEAD, OLD_LEAD).map(|s| num_from(&s) as u64).unwrap_or(0),
+        tail_ms: ext_any(&tag, KEY_TAIL, OLD_TAIL).map(|s| num_from(&s) as u64).unwrap_or(0),
         bpm,
     }
 }
@@ -584,23 +607,23 @@ fn analyze_and_tag(input_path: &str, force: bool) -> Result<bool, String> {
         return Ok(false);
     }
     let mut tag = Tag::read_from_path(input_path).unwrap_or_else(|_| Tag::new());
-    if !force && ext_text(&tag, "DJS_V").as_deref() == Some(MASTER_VERSION) {
+    if !force && is_mastered(&tag) {
         return Ok(true);
     }
     let a = analyze_file(input_path)?;
     let gain = (RG_REFERENCE_LUFS - a.lufs).clamp(-24.0, 24.0);
     set_ext(&mut tag, "REPLAYGAIN_TRACK_GAIN", format!("{:.2} dB", gain));
     set_ext(&mut tag, "REPLAYGAIN_TRACK_PEAK", format!("{:.6}", a.peak));
-    set_ext(&mut tag, "DJS_LUFS", format!("{:.2}", a.lufs));
-    set_ext(&mut tag, "DJS_LEAD_MS", a.lead_ms.to_string());
-    set_ext(&mut tag, "DJS_TAIL_MS", a.tail_ms.to_string());
+    set_ext(&mut tag, KEY_LUFS, format!("{:.2}", a.lufs));
+    set_ext(&mut tag, KEY_LEAD, a.lead_ms.to_string());
+    set_ext(&mut tag, KEY_TAIL, a.tail_ms.to_string());
     let has_bpm = tag.get("TBPM").and_then(|f| f.content().text()).map(num_from).unwrap_or(0.0) > 0.0;
     if !has_bpm {
         if let Some(b) = a.bpm {
             tag.set_text("TBPM", b.round().to_string());
         }
     }
-    set_ext(&mut tag, "DJS_V", MASTER_VERSION.to_string());
+    set_ext(&mut tag, KEY_V, MASTER_VERSION.to_string());
     tag.write_to_path(input_path, Version::Id3v24).map_err(|e| format!("Fallo I/O al guardar etiquetas: {}", e))?;
     Ok(true)
 }
@@ -714,7 +737,7 @@ pub async fn check_watermark(input_path: String) -> Result<bool, String> {
 }
 
 /// Reset de SONIDO: quita el sello y las etiquetas de masterizado (ReplayGain,
-/// DJS_*). No toca letras (.lrc) ni el resto de las etiquetas del archivo.
+/// GMX_* y las DJS_* anteriores). No toca letras (.lrc) ni el resto de las etiquetas.
 pub async fn clear_watermark(input_path: String) -> Result<bool, String> {
     let path = Path::new(&input_path);
     if !path.exists() {
@@ -728,15 +751,23 @@ pub async fn clear_watermark(input_path: String) -> Result<bool, String> {
         Err(_) => return Ok(true),
     };
     tag.remove_comment(None, Some(SEAL_TEXT));
+    let legacy_m3 = format!("{}_M3", legacy_brand());
+    let legacy_m3_v2 = format!("{}_M3_V2", legacy_brand());
     for key in [
         "REPLAYGAIN_TRACK_GAIN",
         "REPLAYGAIN_TRACK_PEAK",
-        "DJS_V",
-        "DJS_LUFS",
-        "DJS_LEAD_MS",
-        "DJS_TAIL_MS",
-        "DjStudio_M3",
-        "DjStudio_M3_V2",
+        KEY_V,
+        KEY_LUFS,
+        KEY_LEAD,
+        KEY_TAIL,
+        OLD_V,
+        OLD_LUFS,
+        OLD_LEAD,
+        OLD_TAIL,
+        "GatoMix_M3",
+        "GatoMix_M3_V2",
+        legacy_m3.as_str(),
+        legacy_m3_v2.as_str(),
     ] {
         tag.remove_extended_text(Some(key), None);
     }

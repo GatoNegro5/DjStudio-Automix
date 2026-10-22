@@ -49,7 +49,7 @@ jobs:
       - name: Cache Rust Dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "djstudio-rust-${{ matrix.os }}"
+          shared-key: "gatomix-rust-${{ matrix.os }}"
 
       # 🛠️ INYECCIÓN 2: Descarga Binaria Precompilada (0 minutos de delay)
       - name: Install cargo-binstall
@@ -98,8 +98,8 @@ jobs:
           KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
           if [ -n "$KS_B64" ]; then
-            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/djstudio-release.jks"
-            echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/djstudio-release.jks" >> "$GITHUB_ENV"
+            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/gatomix-release.jks"
+            echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/gatomix-release.jks" >> "$GITHUB_ENV"
           fi
 
       - name: Build Platform
@@ -153,6 +153,7 @@ jobs:
       - name: Deploy to GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
+          name: GatoMix ${{ github.ref_name }}
           files: |
             artifacts/app-release.apk
             artifacts/GatoMix-Installer.exe
@@ -161,8 +162,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # APK de Karaoke para Google TV: la app de escritorio lo baja del release
-  # cuando la laptop no tiene Flutter ni la carpeta djstudio_tv.
-  djstudio_tv:
+  # cuando la laptop no tiene Flutter ni la carpeta gatomix_tv.
+  gatomix_tv:
     name: Build GatoMix Karaoke APK
     needs: release
     runs-on: ubuntu-latest
@@ -185,16 +186,17 @@ jobs:
           channel: stable
 
       - name: Build TV APK
-        working-directory: djstudio_tv
+        working-directory: gatomix_tv
         run: |
           flutter pub get
           flutter build apk --release
-          cp build/app/outputs/flutter-apk/app-release.apk ../djstudio-tv.apk
+          cp build/app/outputs/flutter-apk/app-release.apk ../gatomix-tv.apk
 
-      - name: Publish djstudio-tv.apk
+      - name: Publish gatomix-tv.apk
         uses: softprops/action-gh-release@v2
         with:
-          files: djstudio-tv.apk
+          name: GatoMix ${{ github.ref_name }}
+          files: gatomix-tv.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -216,7 +218,7 @@ jobs:
       - name: Cache Rust Dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: djstudio-rust-ios-ipa
+          shared-key: gatomix-rust-ios-ipa
 
       - name: Install cargo-binstall
         uses: cargo-bins/cargo-binstall@main
@@ -241,9 +243,9 @@ jobs:
         run: |
           cp ios/Runner/Info.plist "$RUNNER_TEMP/DjIphone-Info.plist"
           flutter config --no-enable-swift-package-manager
-          flutter create --platforms=ios --org com.djstudio .
+          flutter create --platforms=ios --org com.gatonegro5 .
           cp "$RUNNER_TEMP/DjIphone-Info.plist" ios/Runner/Info.plist
-          perl -pi -e 's/PRODUCT_BUNDLE_IDENTIFIER = com\.djstudio\.djstudioPlayer;/PRODUCT_BUNDLE_IDENTIFIER = com.gatonegro5.gatomix;/g' ios/Runner.xcodeproj/project.pbxproj
+          perl -pi -e 's/PRODUCT_BUNDLE_IDENTIFIER = com\.gatonegro5\.gatomixPlayer;/PRODUCT_BUNDLE_IDENTIFIER = com.gatonegro5.gatomix;/g' ios/Runner.xcodeproj/project.pbxproj
           perl -pi -e 's/IPHONEOS_DEPLOYMENT_TARGET = 13\.0;/IPHONEOS_DEPLOYMENT_TARGET = 15.0;/g' ios/Runner.xcodeproj/project.pbxproj
           cd ios
           perl -pi -e "s/^# (platform :ios, '[0-9.]+')/\$1/" Podfile
@@ -270,6 +272,7 @@ jobs:
       - name: Publish DjIphone.ipa
         uses: softprops/action-gh-release@v2
         with:
+          name: GatoMix ${{ github.ref_name }}
           files: DjIphone.ipa
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

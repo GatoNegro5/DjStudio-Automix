@@ -1,6 +1,8 @@
 # GatoMix
 
-A new Flutter project.
+![GatoMix](assets/branding/gatomix_logo.png)
+
+Mezcla automática, Live DJ y karaoke para Windows, Android, macOS e iPhone. La app de TV es GatoMix Karaoke.
 
 ## Getting Started
 

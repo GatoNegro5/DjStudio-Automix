@@ -180,7 +180,7 @@ class TvSyncServer {
         request.response
           ..statusCode = HttpStatus.ok
           ..headers.contentType = ContentType.json
-          ..write(jsonEncode({'role': 'djstudio-karaoke', 'service': 'tv-sync'}));
+          ..write(jsonEncode({'role': 'gatomix-karaoke', 'service': 'tv-sync'}));
         await request.response.close();
         return;
       }

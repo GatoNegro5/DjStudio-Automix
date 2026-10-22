@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/foundation.dart';
 // 🛠️ INYECTADO: Backend FFI Nativo
-import 'package:djstudio_player/src/rust/api/core_dsp.dart' as rust_dsp;
+import 'package:gatomix_player/src/rust/api/core_dsp.dart' as rust_dsp;
 import 'pipeline_provider.dart';
 import 'db_provider.dart'; // 🛠️ FIX: Enlace al controlador de ISAR
 

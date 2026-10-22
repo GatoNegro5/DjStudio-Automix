@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import '../core/brand_paths.dart';
 import '../core/net/safe_download.dart';
 
 enum TvAdbTargetState { connected, discoverable, pairingRequired }
@@ -106,9 +107,7 @@ class TvAdbDeploymentService {
               Directory.systemTemp.path)
         : '${Platform.environment['HOME'] ?? Directory.systemTemp.path}'
               '${Platform.isMacOS ? '/Library/Application Support' : '/.local/share'}';
-    final dir = Directory('$base${Platform.pathSeparator}DJStudio');
-    dir.createSync(recursive: true);
-    return dir.path;
+    return ensureBrandDataDir(base).path;
   }
 
   Future<String> _installPlatformTools(String expectedAdb) async {
@@ -457,7 +456,7 @@ class TvAdbDeploymentService {
     if (alreadyInstalled) {
       onProgress('APK ya instalado. Abriendo…');
     } else {
-      // Con el proyecto djstudio_tv local se compila como siempre; sin él
+      // Con el proyecto gatomix_tv local se compila como siempre; sin él
       // (laptop sin Flutter) se baja el APK ya compilado del último release.
       final Directory? project = _tryResolveTvProject();
       final File apk = project == null
@@ -573,10 +572,10 @@ class TvAdbDeploymentService {
   Future<File> _downloadTvApk(void Function(String) onProgress) async {
     final dir = Directory('${_appDataDir()}${Platform.pathSeparator}tv');
     dir.createSync(recursive: true);
-    final apk = File('${dir.path}${Platform.pathSeparator}djstudio-tv.apk');
+    final apk = File('${dir.path}${Platform.pathSeparator}gatomix-tv.apk');
     onProgress('Descargando GatoMix Karaoke (APK)…');
     await downloadFileRobust(
-      'https://github.com/GatoNegro5/DjStudio-Automix/releases/latest/download/djstudio-tv.apk',
+      'https://github.com/GatoNegro5/GatoMix/releases/latest/download/gatomix-tv.apk',
       apk.path,
     );
     return apk;
@@ -591,7 +590,7 @@ class TvAdbDeploymentService {
       var cursor = root;
       for (int depth = 0; depth < 10; depth++) {
         final candidate = Directory(
-          '${cursor.path}${Platform.pathSeparator}djstudio_tv',
+          '${cursor.path}${Platform.pathSeparator}gatomix_tv',
         );
         if (File(
           '${candidate.path}${Platform.pathSeparator}pubspec.yaml',
@@ -603,7 +602,7 @@ class TvAdbDeploymentService {
       }
     }
     throw StateError(
-      'No se encontró djstudio_tv/. Ejecuta desde el repositorio de GatoMix.',
+      'No se encontró gatomix_tv/. Ejecuta desde el repositorio de GatoMix.',
     );
   }
 }

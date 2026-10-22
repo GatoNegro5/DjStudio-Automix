@@ -1,0 +1,4 @@
+storePassword=PON_AQUI_LA_CONTRASENA
+keyPassword=PON_AQUI_LA_CONTRASENA
+keyAlias=gatomix
+storeFile=gatomix.jks

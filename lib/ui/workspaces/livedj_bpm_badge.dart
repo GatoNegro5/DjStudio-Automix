@@ -1,6 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
-import 'package:djstudio_player/services/track_tags.dart';
+import 'package:gatomix_player/services/track_tags.dart';
 import 'package:flutter/material.dart';
 
 /// BPM para el Cartridge de Live DJ. Código propio: no comparte caché con

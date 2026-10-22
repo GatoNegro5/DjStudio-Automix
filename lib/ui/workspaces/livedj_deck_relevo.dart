@@ -187,14 +187,14 @@ RelevoSpill relevoSpill({
     viewport,
   );
   final double ay = ((anchor / viewport) * 2 - 1).clamp(-1.0, 1.0);
-  final Color hot = Color.lerp(DjStudioTheme.bgDark, incoming, 0.78)!;
+  final Color hot = Color.lerp(GatoMixTheme.bgDark, incoming, 0.78)!;
   final Color mid = Color.lerp(
-    DjStudioTheme.bgDark,
+    GatoMixTheme.bgDark,
     Color.lerp(outgoing, incoming, u)!,
     0.50,
   )!;
   final Color edge = Color.lerp(
-    DjStudioTheme.bgDark,
+    GatoMixTheme.bgDark,
     outgoing,
     0.36 * (1 - u),
   )!;
@@ -276,7 +276,7 @@ class DeckRelevo extends StatelessWidget {
               gradient: LinearGradient(
                 begin: Alignment.topCenter,
                 end: Alignment.bottomCenter,
-                colors: [Color(0xFF1B3A4B), DjStudioTheme.bgDark],
+                colors: [Color(0xFF1B3A4B), GatoMixTheme.bgDark],
               ),
             ),
             child: Stack(
@@ -385,7 +385,7 @@ class DeckRelevo extends StatelessWidget {
                       opacity: flash,
                       child: ColoredBox(
                         color: Color.lerp(
-                          DjStudioTheme.bgDark,
+                          GatoMixTheme.bgDark,
                           incomingDeck,
                           0.85,
                         )!,
@@ -627,13 +627,13 @@ class _RelevoCard extends StatelessWidget {
   Widget build(BuildContext context) {
     if (!entering && followingTitle.isEmpty) return const SizedBox.shrink();
     final Color fill = entering
-        ? Color.lerp(DjStudioTheme.bgPanel, deck, 0.55)!
-        : DjStudioTheme.bgPanel;
+        ? Color.lerp(GatoMixTheme.bgPanel, deck, 0.55)!
+        : GatoMixTheme.bgPanel;
     return DecoratedBox(
       decoration: BoxDecoration(
         color: fill,
         borderRadius: BorderRadius.circular(4),
-        border: Border.all(color: entering ? deck : DjStudioTheme.textHidden),
+        border: Border.all(color: entering ? deck : GatoMixTheme.textHidden),
       ),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(4),
@@ -726,7 +726,7 @@ class _CardCopy extends StatelessWidget {
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: const TextStyle(
-              color: DjStudioTheme.textMain,
+              color: GatoMixTheme.textMain,
               fontWeight: FontWeight.w600,
               fontSize: 13,
             ),
@@ -737,7 +737,7 @@ class _CardCopy extends StatelessWidget {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
-                color: DjStudioTheme.textMuted,
+                color: GatoMixTheme.textMuted,
                 fontSize: 11,
               ),
             ),
@@ -774,7 +774,7 @@ class _ShimmerBand extends StatelessWidget {
                       colors: [
                         deck.withValues(alpha: 0),
                         deck.withValues(alpha: 0.55),
-                        DjStudioTheme.textMain.withValues(alpha: 0.20),
+                        GatoMixTheme.textMain.withValues(alpha: 0.20),
                         deck.withValues(alpha: 0),
                       ],
                     ),

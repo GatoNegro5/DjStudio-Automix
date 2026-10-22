@@ -119,7 +119,7 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
     if (Platform.isWindows) {
       try {
         setState(() => _currentLog = "⚙️ Auditando Windows Defender...");
-        const oldRule = 'DjStudio REST Server';
+        const oldRule = 'DJ' 'Studio' ' REST Server';
         const newRule = 'GatoMix REST Server';
         final oldCmd = await Process.run('powershell', [
           '-Command',

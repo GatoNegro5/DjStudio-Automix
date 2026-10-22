@@ -1,7 +1,7 @@
-import 'package:djstudio_player/providers/livedj_provider.dart';
-import 'package:djstudio_player/providers/mix_formula.dart';
-import 'package:djstudio_player/providers/theme_provider.dart';
-import 'package:djstudio_player/ui/workspaces/livedj_deck_relevo.dart';
+import 'package:gatomix_player/providers/livedj_provider.dart';
+import 'package:gatomix_player/providers/mix_formula.dart';
+import 'package:gatomix_player/providers/theme_provider.dart';
+import 'package:gatomix_player/ui/workspaces/livedj_deck_relevo.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -99,15 +99,15 @@ void main() {
     expect(relevoBlurEnabled(360), isFalse);
     expect(relevoBlurEnabled(500), isTrue);
     final double y0 = relevoSpill(
-      outgoing: DjStudioTheme.deckA,
-      incoming: DjStudioTheme.deckB,
+      outgoing: GatoMixTheme.deckA,
+      incoming: GatoMixTheme.deckB,
       t: 0,
       handoff: true,
       viewport: 500,
     ).center.y;
     final double y1 = relevoSpill(
-      outgoing: DjStudioTheme.deckA,
-      incoming: DjStudioTheme.deckB,
+      outgoing: GatoMixTheme.deckA,
+      incoming: GatoMixTheme.deckB,
       t: 1,
       handoff: true,
       viewport: 500,
@@ -138,8 +138,8 @@ Future<void> _pump(WidgetTester tester, double t, {double height = _viewH}) {
             child: DeckRelevo(
               t: t,
               handoff: true,
-              outgoingDeck: DjStudioTheme.deckA,
-              incomingDeck: DjStudioTheme.deckB,
+              outgoingDeck: GatoMixTheme.deckA,
+              incomingDeck: GatoMixTheme.deckB,
               cardTitle: 'CANCION-B',
               cardSubtitle: 'Entra',
               followingTitle: 'CANCION-C',
@@ -182,8 +182,8 @@ void _expectSpill(WidgetTester tester, double t) {
   final RadialGradient gradient =
       (box.decoration as BoxDecoration).gradient! as RadialGradient;
   final RelevoSpill spill = relevoSpill(
-    outgoing: DjStudioTheme.deckA,
-    incoming: DjStudioTheme.deckB,
+    outgoing: GatoMixTheme.deckA,
+    incoming: GatoMixTheme.deckB,
     t: t,
     handoff: true,
     viewport: _viewH,

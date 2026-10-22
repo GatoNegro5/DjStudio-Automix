@@ -24,7 +24,7 @@ class LiveDjFolderPlaylist extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return const ColoredBox(
-      color: DjStudioTheme.bgDark,
+      color: GatoMixTheme.bgDark,
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -54,8 +54,8 @@ class _PlayerPaneState extends ConsumerState<_PlayerPane>
   String? _handoffFrom;
   String? _handoffTo;
   bool _activeIsA = true;
-  Color _outDeck = DjStudioTheme.deckA;
-  Color _inDeck = DjStudioTheme.deckB;
+  Color _outDeck = GatoMixTheme.deckA;
+  Color _inDeck = GatoMixTheme.deckB;
 
   @override
   void initState() {
@@ -100,8 +100,8 @@ class _PlayerPaneState extends ConsumerState<_PlayerPane>
     setState(() {
       _handoffFrom = prev;
       _handoffTo = next;
-      _outDeck = _activeIsA ? DjStudioTheme.deckA : DjStudioTheme.deckB;
-      _inDeck = _activeIsA ? DjStudioTheme.deckB : DjStudioTheme.deckA;
+      _outDeck = _activeIsA ? GatoMixTheme.deckA : GatoMixTheme.deckB;
+      _inDeck = _activeIsA ? GatoMixTheme.deckB : GatoMixTheme.deckA;
       _activeIsA = !_activeIsA;
     });
     _beat.duration = Duration(milliseconds: relevoBeatMs(bpm));
@@ -194,7 +194,7 @@ class _PlayerPaneState extends ConsumerState<_PlayerPane>
               Text(
                 "${pos.inMinutes.toString().padLeft(2, '0')}:${(pos.inSeconds % 60).toString().padLeft(2, '0')}",
                 style: TextStyle(
-                  color: DjStudioTheme.cyanAccent,
+                  color: GatoMixTheme.cyanAccent,
                   fontFamily: 'Consolas',
                   fontSize: wide ? 16 : 13,
                   fontWeight: FontWeight.bold,
@@ -218,7 +218,7 @@ class _PlayerPaneState extends ConsumerState<_PlayerPane>
                 trackHeight: 3,
                 thumbShape: RoundSliderThumbShape(enabledThumbRadius: 6),
                 overlayShape: RoundSliderOverlayShape(overlayRadius: 12),
-                activeTrackColor: DjStudioTheme.syncActive,
+                activeTrackColor: GatoMixTheme.syncActive,
                 inactiveTrackColor: Colors.white10,
                 thumbColor: Colors.white,
               ),
@@ -515,20 +515,20 @@ class _QueuePane extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final List<File> queue = ref.watch(liveDjProvider.select((s) => s.queue));
     return ColoredBox(
-      color: DjStudioTheme.bgDark,
+      color: GatoMixTheme.bgDark,
       child: Column(
         children: [
           Container(
             height: 52,
             padding: const EdgeInsets.only(left: 12, right: 108),
             alignment: Alignment.centerLeft,
-            color: DjStudioTheme.bgPanel,
+            color: GatoMixTheme.bgPanel,
             child: Text(
               'COLA (${queue.length})',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
-                color: DjStudioTheme.deckB,
+                color: GatoMixTheme.deckB,
                 fontWeight: FontWeight.bold,
                 fontSize: 12,
                 letterSpacing: 1.2,
@@ -541,7 +541,7 @@ class _QueuePane extends ConsumerWidget {
                     child: Text(
                       'COLA VACÍA',
                       style: TextStyle(
-                        color: DjStudioTheme.textHidden,
+                        color: GatoMixTheme.textHidden,
                         fontSize: 12,
                       ),
                     ),
@@ -596,7 +596,7 @@ class _QueueLine extends StatelessWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
-                        color: DjStudioTheme.textMain,
+                        color: GatoMixTheme.textMain,
                         fontWeight: FontWeight.w600,
                         fontSize: 13,
                       ),
@@ -607,7 +607,7 @@ class _QueueLine extends StatelessWidget {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
-                          color: DjStudioTheme.textMuted,
+                          color: GatoMixTheme.textMuted,
                           fontSize: 11,
                         ),
                       ),
@@ -673,7 +673,7 @@ class _OnAirBadge extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final radioOn = ref.watch(liveDjProvider.select((s) => s.radioOn));
     final color = radioOn
-        ? DjStudioTheme.alertCritical
+        ? GatoMixTheme.alertCritical
         : const Color(0xFF7A2E3E);
     return GestureDetector(
       onTap: () => ref.read(liveDjProvider.notifier).toggleRadio(),
@@ -733,17 +733,17 @@ class _RadioChips extends ConsumerWidget {
               ),
               decoration: BoxDecoration(
                 color: selected
-                    ? DjStudioTheme.syncActive.withValues(alpha: 0.18)
+                    ? GatoMixTheme.syncActive.withValues(alpha: 0.18)
                     : Colors.transparent,
                 border: Border.all(
-                  color: selected ? DjStudioTheme.syncActive : Colors.white24,
+                  color: selected ? GatoMixTheme.syncActive : Colors.white24,
                 ),
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Text(
                 label,
                 style: TextStyle(
-                  color: selected ? DjStudioTheme.syncActive : Colors.white54,
+                  color: selected ? GatoMixTheme.syncActive : Colors.white54,
                   fontWeight: FontWeight.bold,
                   fontSize: compact ? 10 : 11,
                 ),

@@ -1,8 +1,8 @@
 #define MyAppName "GatoMix"
-#define MyAppVersion "3.0.1"
+#define MyAppVersion "1.0.0"
 #define MyAppPublisher "Gabriel Calle"
-#define MyAppExeName "djstudio_player.exe"
-#define BuildPath "C:\Python\djstudio_player\build\windows\x64\runner\Release"
+#define MyAppExeName "gatomix_player.exe"
+#define BuildPath "C:\Python\gatomix_player\build\windows\x64\runner\Release"
 
 [Setup]
 ; ID único para que Windows sepa cómo actualizar o desinstalar la app
@@ -13,8 +13,8 @@ AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\{#MyAppName}
 DisableProgramGroupPage=yes
 ; El instalador final aparecerá en esta carpeta
-OutputDir=C:\Python\djstudio_player\Instalador
-OutputBaseFilename=DjStudio_Setup_v1.0
+OutputDir=C:\Python\gatomix_player\Instalador
+OutputBaseFilename=GatoMix_Setup_v1.0.0
 Compression=lzma2/ultra
 SolidCompression=yes
 WizardStyle=modern

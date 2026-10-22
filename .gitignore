@@ -52,10 +52,13 @@ build/
 jdk17_aislado.zip
 jdk_aislado/
 
+# Contraseña de firma. El ejemplo sí se versiona.
+/android/key.properties
+
 # Build tooling vendido y artefactos locales (no se versionan)
 windows/tooling/
 tooling/
-djstudio_tv/releases/
+gatomix_tv/releases/
 .aider*
 # Temporales de diagnostico (no versionar)
 _ignore_check.txt

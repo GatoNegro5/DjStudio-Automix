@@ -7,18 +7,18 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:media_kit/media_kit.dart';
 
-import 'package:djstudio_player/src/rust/frb_generated.dart';
-import 'package:djstudio_player/core/audio/dj_audio_handler.dart';
-import 'package:djstudio_player/djiphone/iphone_library.dart';
-import 'package:djstudio_player/providers/automix_provider.dart';
-import 'package:djstudio_player/providers/livedj_provider.dart';
-import 'package:djstudio_player/providers/pipeline_provider.dart';
-import 'package:djstudio_player/providers/theme_provider.dart';
-import 'package:djstudio_player/services/audio_interruption.dart';import 'package:djstudio_player/ui/widgets/app_version_label.dart';
-import 'package:djstudio_player/ui/workspaces/automix_workspace.dart';
-import 'package:djstudio_player/ui/workspaces/dsp_workspace.dart';
-import 'package:djstudio_player/ui/workspaces/lan_sync_workspace.dart';
-import 'package:djstudio_player/ui/workspaces/livedj_workspace.dart';
+import 'package:gatomix_player/src/rust/frb_generated.dart';
+import 'package:gatomix_player/core/audio/dj_audio_handler.dart';
+import 'package:gatomix_player/djiphone/iphone_library.dart';
+import 'package:gatomix_player/providers/automix_provider.dart';
+import 'package:gatomix_player/providers/livedj_provider.dart';
+import 'package:gatomix_player/providers/pipeline_provider.dart';
+import 'package:gatomix_player/providers/theme_provider.dart';
+import 'package:gatomix_player/services/audio_interruption.dart';import 'package:gatomix_player/ui/widgets/app_version_label.dart';
+import 'package:gatomix_player/ui/workspaces/automix_workspace.dart';
+import 'package:gatomix_player/ui/workspaces/dsp_workspace.dart';
+import 'package:gatomix_player/ui/workspaces/lan_sync_workspace.dart';
+import 'package:gatomix_player/ui/workspaces/livedj_workspace.dart';
 /// Entrada de DjIphone. No es lib/main.dart.
 /// Pantallas: Automix, Live DJ, Masterizar, LAN Sync.
 /// Índices iguales al player de escritorio (0, 5, 1, 4).
@@ -254,20 +254,24 @@ class _DjIphoneBootState extends State<_DjIphoneBoot> {
 
   @override
   Widget build(BuildContext context) {
-    return const Scaffold(
-      backgroundColor: DjStudioTheme.bgDark,
+    return Scaffold(
+      backgroundColor: GatoMixTheme.bgDark,
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.album, color: DjStudioTheme.syncActive, size: 70),
-            SizedBox(height: 30),
-            CircularProgressIndicator(color: DjStudioTheme.deckA),
-            SizedBox(height: 20),
-            Text(
+            Image.asset(
+              'assets/branding/gatomix_logo.png',
+              width: 96,
+              height: 96,
+            ),
+            const SizedBox(height: 30),
+            const CircularProgressIndicator(color: GatoMixTheme.deckA),
+            const SizedBox(height: 20),
+            const Text(
               'GatoMix',
               style: TextStyle(
-                color: DjStudioTheme.textMuted,
+                color: GatoMixTheme.textMuted,
                 fontFamily: 'Consolas',
                 fontSize: 12,
               ),
@@ -319,12 +323,12 @@ class _DjIphoneHomeState extends ConsumerState<_DjIphoneHome> {
     final inlineChrome = currentRoute == 0 || currentRoute == 5;
 
     return Scaffold(
-      backgroundColor: DjStudioTheme.bgDark,
+      backgroundColor: GatoMixTheme.bgDark,
       body: SafeArea(
         child: Column(
           children: [
             if (!inlineChrome)
-              DjStudioMobileModeBar(
+              GatoMixMobileModeBar(
                 title: _title(currentRoute),
                 accent: _accent(currentRoute),
                 open: menuOpen,
@@ -358,7 +362,7 @@ class _DjIphoneHomeState extends ConsumerState<_DjIphoneHome> {
                       top: inlineChrome ? 40 : 6,
                       width: 228,
                       child: Material(
-                        color: DjStudioTheme.bgDark,
+                        color: GatoMixTheme.bgDark,
                         elevation: 18,
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(8),
@@ -402,7 +406,7 @@ class _DjIphoneStage extends ConsumerWidget {
         gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [DjStudioTheme.bgPanel, DjStudioTheme.bgDark],
+          colors: [GatoMixTheme.bgPanel, GatoMixTheme.bgDark],
         ),
       ),
       child: IndexedStack(
@@ -439,15 +443,15 @@ String _title(int route) {
 Color _accent(int route) {
   switch (route) {
     case 0:
-      return DjStudioTheme.deckA;
+      return GatoMixTheme.deckA;
     case 1:
-      return DjStudioTheme.deckB;
+      return GatoMixTheme.deckB;
     case 4:
-      return DjStudioTheme.masterPeak;
+      return GatoMixTheme.masterPeak;
     case 5:
-      return DjStudioTheme.syncActive;
+      return GatoMixTheme.syncActive;
     default:
-      return DjStudioTheme.textMain;
+      return GatoMixTheme.textMain;
   }
 }
 
@@ -503,7 +507,7 @@ class _DjIphoneNav extends ConsumerWidget {
         : Container(
             padding: const EdgeInsets.all(10),
             decoration: const BoxDecoration(
-              color: DjStudioTheme.bgPanel,
+              color: GatoMixTheme.bgPanel,
               border: Border(top: BorderSide(color: Colors.white10)),
             ),
             width: double.infinity,
@@ -513,7 +517,7 @@ class _DjIphoneNav extends ConsumerWidget {
                 const Text(
                   'MOTOR AUDIO',
                   style: TextStyle(
-                    color: DjStudioTheme.textHidden,
+                    color: GatoMixTheme.textHidden,
                     fontSize: 10,
                     fontWeight: FontWeight.bold,
                   ),
@@ -522,7 +526,7 @@ class _DjIphoneNav extends ConsumerWidget {
                 Text(
                   currentTrackPath.replaceAll('\\', '/').split('/').last,
                   style: const TextStyle(
-                    color: DjStudioTheme.syncActive,
+                    color: GatoMixTheme.syncActive,
                     fontSize: 11,
                   ),
                   maxLines: 2,
@@ -543,7 +547,7 @@ class _DjIphoneNav extends ConsumerWidget {
             style: TextStyle(
               fontSize: 18,
               fontWeight: FontWeight.bold,
-              color: DjStudioTheme.textMain,
+              color: GatoMixTheme.textMain,
               letterSpacing: 1.2,
             ),
           ),

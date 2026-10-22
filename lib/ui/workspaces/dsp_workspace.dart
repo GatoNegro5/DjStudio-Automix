@@ -3,8 +3,9 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import 'package:djstudio_player/src/rust/api/core_dsp.dart' as rust_dsp;
+import 'package:gatomix_player/src/rust/api/core_dsp.dart' as rust_dsp;
 
+import '../../core/brand_paths.dart';
 import '../../djiphone/iphone_library.dart';
 import '../../providers/directory_provider.dart';
 import '../../providers/pipeline_provider.dart';
@@ -718,9 +719,7 @@ class DspNlpWorkspace extends ConsumerWidget {
 
           try {
             final baseDir = Directory(targetPath).parent;
-            final labDir = Directory(
-              '${baseDir.path}${Platform.pathSeparator}DjStudio_LAB',
-            );
+            final labDir = Directory(labFolder(baseDir.path));
             if (!labDir.existsSync()) labDir.createSync(recursive: true);
 
             final registryFile = File(
@@ -1651,9 +1650,7 @@ class DspNlpWorkspace extends ConsumerWidget {
     if (badPaths.isEmpty) return;
 
     final baseDir = Directory(targetPath).parent;
-    final labDir = Directory(
-      '${baseDir.path}${Platform.pathSeparator}DjStudio_LAB',
-    );
+    final labDir = Directory(labFolder(baseDir.path));
     if (!labDir.existsSync()) labDir.createSync(recursive: true);
 
     final registryFile = File(

@@ -3,6 +3,8 @@ import 'dart:io';
 
 import 'package:http/http.dart' as http;
 
+import '../brand_paths.dart';
+
 /// Info pública del artista (foto, fans, mini biografía). Fuentes gratuitas
 /// sin clave: Deezer (foto y fans) y Wikipedia (biografía). Con caché en disco:
 /// sin internet se ve igual lo ya consultado; sin dato devuelve null y la UI
@@ -53,8 +55,9 @@ Directory _cacheDir() {
   final base = Platform.isWindows
       ? (Platform.environment['LOCALAPPDATA'] ?? Directory.systemTemp.path)
       : Directory.systemTemp.path;
-  final d = Directory('$base${Platform.pathSeparator}DJStudio'
-      '${Platform.pathSeparator}artists');
+  final d = Directory(
+    '${ensureBrandDataDir(base).path}${Platform.pathSeparator}artists',
+  );
   d.createSync(recursive: true);
   return d;
 }

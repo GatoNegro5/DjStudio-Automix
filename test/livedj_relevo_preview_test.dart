@@ -2,8 +2,8 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
-import 'package:djstudio_player/providers/theme_provider.dart';
-import 'package:djstudio_player/ui/workspaces/livedj_deck_relevo.dart';
+import 'package:gatomix_player/providers/theme_provider.dart';
+import 'package:gatomix_player/ui/workspaces/livedj_deck_relevo.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -164,14 +164,14 @@ class _Stage extends StatelessWidget {
             outgoing: const _Face(
               mark: 'A',
               base: Color(0xFF143A66),
-              accent: DjStudioTheme.deckA,
+              accent: GatoMixTheme.deckA,
               headline: 'NOCHE LARGA',
               subtitle: 'A. Rivera',
             ),
             incoming: const _Face(
               mark: 'B',
               base: Color(0xFF5A2414),
-              accent: DjStudioTheme.deckB,
+              accent: GatoMixTheme.deckB,
               headline: 'FUEGO',
               subtitle: 'B. Sol',
               bpm: true,
@@ -180,8 +180,8 @@ class _Stage extends StatelessWidget {
             cardSubtitle: '124 BPM',
             followingTitle: 'DESPUES',
             followingSubtitle: 'C. Mar',
-            outgoingDeck: DjStudioTheme.deckA,
-            incomingDeck: DjStudioTheme.deckB,
+            outgoingDeck: GatoMixTheme.deckA,
+            incomingDeck: GatoMixTheme.deckB,
             beatPhase: beat,
           )
         : RelevoAntes(
@@ -190,21 +190,21 @@ class _Stage extends StatelessWidget {
             outgoing: const _Face(
               mark: 'A',
               base: Color(0xFF143A66),
-              accent: DjStudioTheme.deckA,
+              accent: GatoMixTheme.deckA,
               headline: 'NOCHE LARGA',
               subtitle: 'A. Rivera',
             ),
             incoming: const _Face(
               mark: 'B',
               base: Color(0xFF5A2414),
-              accent: DjStudioTheme.deckB,
+              accent: GatoMixTheme.deckB,
               headline: 'FUEGO',
               subtitle: 'B. Sol',
               bpm: true,
             ),
           );
     return ColoredBox(
-      color: DjStudioTheme.bgDark,
+      color: GatoMixTheme.bgDark,
       child: SizedBox(
         width: width,
         height: height,
@@ -219,7 +219,7 @@ class _Stage extends StatelessWidget {
                 right: 10,
                 child: DecoratedBox(
                   decoration: BoxDecoration(
-                    color: DjStudioTheme.bgPanel.withValues(alpha: 0.92),
+                    color: GatoMixTheme.bgPanel.withValues(alpha: 0.92),
                     borderRadius: BorderRadius.circular(3),
                   ),
                   child: Padding(
@@ -230,7 +230,7 @@ class _Stage extends StatelessWidget {
                     child: Text(
                       label,
                       style: const TextStyle(
-                        color: DjStudioTheme.textMain,
+                        color: GatoMixTheme.textMain,
                         fontSize: 12,
                         fontWeight: FontWeight.w700,
                         letterSpacing: 0.6,
@@ -387,13 +387,13 @@ class _ArtPainter extends CustomPainter {
     );
     canvas.drawRect(
       Rect.fromLTWH(0, size.height * 0.62, size.width, size.height * 0.38),
-      Paint()..color = DjStudioTheme.bgDark.withValues(alpha: 0.55),
+      Paint()..color = GatoMixTheme.bgDark.withValues(alpha: 0.55),
     );
     final TextPainter big = TextPainter(
       text: TextSpan(
         text: mark,
         style: TextStyle(
-          color: DjStudioTheme.textMain,
+          color: GatoMixTheme.textMain,
           fontSize: size.width * 0.34,
           fontWeight: FontWeight.w800,
         ),
@@ -406,7 +406,7 @@ class _ArtPainter extends CustomPainter {
       text: TextSpan(
         text: '124',
         style: TextStyle(
-          color: DjStudioTheme.textMain,
+          color: GatoMixTheme.textMain,
           fontSize: size.width * 0.12,
           fontWeight: FontWeight.w700,
         ),
@@ -448,8 +448,8 @@ class RelevoAntes extends StatelessWidget {
             ? 1 + 0.04 * math.sin(beat * math.pi * 2)
             : 1;
         final Color wash = Color.lerp(
-          DjStudioTheme.bgDark,
-          Color.lerp(DjStudioTheme.deckA, DjStudioTheme.deckB, u)!,
+          GatoMixTheme.bgDark,
+          Color.lerp(GatoMixTheme.deckA, GatoMixTheme.deckB, u)!,
           0.42,
         )!;
         return ClipRect(
@@ -458,7 +458,7 @@ class RelevoAntes extends StatelessWidget {
               gradient: LinearGradient(
                 begin: Alignment.topCenter,
                 end: Alignment.bottomCenter,
-                colors: [Color(0xFF1B3A4B), DjStudioTheme.bgDark],
+                colors: [Color(0xFF1B3A4B), GatoMixTheme.bgDark],
               ),
             ),
             child: Stack(
@@ -526,15 +526,15 @@ class _AntesCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final Color deck = DjStudioTheme.deckB;
+    final Color deck = GatoMixTheme.deckB;
     final Color fill = entering
-        ? Color.lerp(DjStudioTheme.bgPanel, deck, 0.55)!
-        : DjStudioTheme.bgPanel;
+        ? Color.lerp(GatoMixTheme.bgPanel, deck, 0.55)!
+        : GatoMixTheme.bgPanel;
     return DecoratedBox(
       decoration: BoxDecoration(
         color: fill,
         borderRadius: BorderRadius.circular(4),
-        border: Border.all(color: entering ? deck : DjStudioTheme.textHidden),
+        border: Border.all(color: entering ? deck : GatoMixTheme.textHidden),
       ),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -557,7 +557,7 @@ class _AntesCard extends StatelessWidget {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
-                color: DjStudioTheme.textMain,
+                color: GatoMixTheme.textMain,
                 fontWeight: FontWeight.w600,
                 fontSize: 13,
               ),
@@ -566,7 +566,7 @@ class _AntesCard extends StatelessWidget {
               entering ? '124 BPM' : 'C. Mar',
               maxLines: 1,
               style: const TextStyle(
-                color: DjStudioTheme.textMuted,
+                color: GatoMixTheme.textMuted,
                 fontSize: 11,
               ),
             ),

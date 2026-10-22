@@ -1,5 +1,5 @@
 # NO listar aqui lib/ ni recuadros UI. .cursorignore NO bloquea diffs.
-# Ley: c:\Python\djstudio_player\CONTEXTO.md (LOG + OK de Gabriel).
+# Ley: c:\Python\gatomix_player\CONTEXTO.md (LOG + OK de Gabriel).
 
 # ============================================================
 # Optimización de costos — excluir del indexado (reduce tokens)
@@ -27,7 +27,7 @@ __pycache__/
 *.pyc
 
 # Binarios y releases pesados
-djstudio_tv/releases/
+gatomix_tv/releases/
 *.apk
 *.zip
 

@@ -1,6 +1,6 @@
 [package]
-name = "rust_lib_djstudio_player"
-version = "0.1.0"
+name = "rust_lib_gatomix_player"
+version = "1.0.0"
 edition = "2021"
 
 [lib]

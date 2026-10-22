@@ -7,7 +7,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_selector/file_selector.dart';
 
-import 'package:djstudio_player/src/rust/api/core_dsp.dart' as rust_dsp;
+import 'package:gatomix_player/src/rust/api/core_dsp.dart' as rust_dsp;
 import '../core/hal/platform_strategy.dart';
 import '../core/audio/af_caps.dart';
 import '../core/audio/tempo_drift.dart';
@@ -21,11 +21,11 @@ import '../djiphone/iphone_library.dart';
 enum LiveDjMixStrategy { sequential, random }
 
 /// Bitácora de decisiones del mezclador (solo diagnóstico, no toca el audio).
-/// Archivo: <temp>/djstudio_livedj_trace.txt (se recorta solo al pasar 300 KB).
+/// Archivo: <temp>/gatomix_livedj_trace.txt (se recorta solo al pasar 300 KB).
 void _djTrace(String msg) {
   try {
     final f = File(
-      '${Directory.systemTemp.path}${Platform.pathSeparator}djstudio_livedj_trace.txt',
+      '${Directory.systemTemp.path}${Platform.pathSeparator}gatomix_livedj_trace.txt',
     );
     if (f.existsSync() && f.lengthSync() > 300000) f.writeAsStringSync('');
     f.writeAsStringSync(

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/brand_paths.dart';
 import '../../djiphone/iphone_library.dart';
 import '../../providers/directory_provider.dart';
 import '../../providers/automix_provider.dart';
@@ -50,7 +51,7 @@ class _AutomixWorkspaceState extends ConsumerState<AutomixWorkspace> {
         const Expanded(
           flex: 2,
           child: Material(
-            color: DjStudioTheme.bgPanel,
+            color: GatoMixTheme.bgPanel,
             child: LibraryTreePanel(),
           ),
         ),
@@ -242,7 +243,7 @@ class _LibraryTreePanelState extends ConsumerState<LibraryTreePanel> {
         Container(
           padding: EdgeInsets.all(isMobile ? 6.0 : 12.0),
           decoration: const BoxDecoration(
-            color: DjStudioTheme.bgPanel,
+            color: GatoMixTheme.bgPanel,
             border: Border(bottom: BorderSide(color: Colors.white10)),
           ),
           child: Row(
@@ -324,7 +325,7 @@ class FolderContentPanel extends ConsumerWidget {
             horizontal: 10,
             vertical: isMobile ? 4 : 8,
           ),
-          color: DjStudioTheme.bgPanel,
+          color: GatoMixTheme.bgPanel,
           child: Row(
             children: [
               Expanded(
@@ -767,7 +768,7 @@ class AutomixPanel extends ConsumerWidget {
             horizontal: 10,
             vertical: isMobile ? 4 : 8,
           ),
-          color: DjStudioTheme.bgPanel,
+          color: GatoMixTheme.bgPanel,
           child: Row(
             children: [
               Icon(
@@ -897,7 +898,7 @@ class AutomixPanel extends ConsumerWidget {
                         color: Colors.white70,
                         size: isMobile ? 16 : 20,
                       ),
-                      color: DjStudioTheme.bgDark,
+                      color: GatoMixTheme.bgDark,
                       shape: RoundedRectangleBorder(
                         side: const BorderSide(color: Color(0xFFFF007F)),
                         borderRadius: BorderRadius.circular(4),
@@ -965,7 +966,7 @@ class AutomixPanel extends ConsumerWidget {
 
                     return Material(
                       color: isPlayingThisTrack
-                          ? DjStudioTheme.deckA.withValues(alpha: 0.15)
+                          ? GatoMixTheme.deckA.withValues(alpha: 0.15)
                           : Colors.transparent,
                       child: ListTile(
                         dense: true,
@@ -1225,7 +1226,7 @@ class _MixerPanelState extends ConsumerState<MixerPanel> {
         final Widget lyricsBox = ClipRect(
           child: Container(
             decoration: BoxDecoration(
-              color: DjStudioTheme.bgPanel,
+              color: GatoMixTheme.bgPanel,
               borderRadius: BorderRadius.circular(8),
               border: Border.all(
                 color: isRecording
@@ -1439,9 +1440,9 @@ class _MixerPanelState extends ConsumerState<MixerPanel> {
                         child: Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            DjStudioMobileModeBar(
+                            GatoMixMobileModeBar(
                               title: 'Automix',
-                              accent: DjStudioTheme.deckA,
+                              accent: GatoMixTheme.deckA,
                               open: menuOpen,
                               expand: false,
                               onTap: () => ref
@@ -1456,9 +1457,9 @@ class _MixerPanelState extends ConsumerState<MixerPanel> {
                     : Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          DjStudioMobileModeBar(
+                          GatoMixMobileModeBar(
                             title: 'Automix',
-                            accent: DjStudioTheme.deckA,
+                            accent: GatoMixTheme.deckA,
                             open: menuOpen,
                             expand: false,
                             onTap: () => ref
@@ -1481,7 +1482,7 @@ class _MixerPanelState extends ConsumerState<MixerPanel> {
                   vertical: compact ? 2 : 10,
                 ),
                 decoration: BoxDecoration(
-                  color: DjStudioTheme.bgPanel,
+                  color: GatoMixTheme.bgPanel,
                   borderRadius: BorderRadius.circular(8),
                   border: Border.all(color: Colors.white10),
                 ),
@@ -2028,9 +2029,7 @@ class _LyricsSyncPanelState extends ConsumerState<LyricsSyncPanel> {
       baseMusicPath = '/storage/emulated/0/Music';
     }
 
-    final labDir = Directory(
-      '$baseMusicPath${Platform.pathSeparator}DjStudio_LAB',
-    );
+    final labDir = Directory(labFolder(baseMusicPath));
     if (!labDir.existsSync()) labDir.createSync(recursive: true);
 
     final registryFile = File(
@@ -2102,7 +2101,7 @@ class _LyricsSyncPanelState extends ConsumerState<LyricsSyncPanel> {
               "En laboratorio",
               style: TextStyle(color: Colors.white70, fontSize: 12),
             ),
-            backgroundColor: DjStudioTheme.bgPanel,
+            backgroundColor: GatoMixTheme.bgPanel,
             behavior: SnackBarBehavior.floating,
             duration: Duration(seconds: 2),
           ),
@@ -2373,7 +2372,7 @@ class _LyricsSyncPanelState extends ConsumerState<LyricsSyncPanel> {
                         ),
                         _anchorNumBtn(
                           n: '3',
-                          color: DjStudioTheme.deckA,
+                          color: GatoMixTheme.deckA,
                           selected: widget.anchorMode == 3,
                           isMobileLandscape: isMobileLandscape,
                           tooltip: 'Ancla 3: solo #Fila',
@@ -2557,7 +2556,7 @@ class SemanticDeckPainter extends CustomPainter {
         ((triggerRemainingMs / durationMs) * size.width).clamp(0.0, size.width);
 
     final Rect deckA = Rect.fromLTWH(0, 0, size.width, 10);
-    canvas.drawRect(deckA, Paint()..color = DjStudioTheme.bgPanel);
+    canvas.drawRect(deckA, Paint()..color = GatoMixTheme.bgPanel);
     canvas.drawRect(
       Rect.fromLTWH(0, 0, progressX, 10),
       Paint()..color = const Color(0xFF39FF14).withValues(alpha: 0.5),

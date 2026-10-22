@@ -927,7 +927,7 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.6.1"
-  rust_lib_djstudio_player:
+  rust_lib_gatomix_player:
     dependency: "direct main"
     description:
       path: rust_builder

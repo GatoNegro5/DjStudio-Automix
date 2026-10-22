@@ -27,7 +27,7 @@ class LiveDjWorkspace extends ConsumerWidget {
     final bool playlist = ref.watch(liveDjPlaylistViewProvider);
     if (playlist) {
       return Scaffold(
-        backgroundColor: DjStudioTheme.bgDark,
+        backgroundColor: GatoMixTheme.bgDark,
         body: Stack(
           children: [
             const Positioned.fill(child: LiveDjFolderPlaylist()),
@@ -45,7 +45,7 @@ class LiveDjWorkspace extends ConsumerWidget {
                     child: Icon(
                       Icons.album,
                       size: 28,
-                      color: DjStudioTheme.syncActive,
+                      color: GatoMixTheme.syncActive,
                     ),
                   ),
                 ),
@@ -56,14 +56,14 @@ class LiveDjWorkspace extends ConsumerWidget {
       );
     }
     return Scaffold(
-      backgroundColor: DjStudioTheme.bgDark,
+      backgroundColor: GatoMixTheme.bgDark,
       body: Row(
         children: [
           // Explorador: columna izquierda a toda la altura, arranca arriba.
           Expanded(
             flex: 5,
             child: Material(
-              color: DjStudioTheme.bgPanel,
+              color: GatoMixTheme.bgPanel,
               child: LibraryTreePanel(provider: liveDjDirectoryProvider),
             ),
           ),
@@ -111,7 +111,7 @@ class LiveDjFolderPanel extends ConsumerWidget {
             horizontal: 10,
             vertical: isMobile ? 4 : 8,
           ),
-          color: DjStudioTheme.bgPanel,
+          color: GatoMixTheme.bgPanel,
           child: Row(
             children: [
               Expanded(
@@ -152,7 +152,7 @@ class LiveDjFolderPanel extends ConsumerWidget {
                 ),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.white10,
-                  foregroundColor: DjStudioTheme.cyanAccent,
+                  foregroundColor: GatoMixTheme.cyanAccent,
                   padding: const EdgeInsets.symmetric(horizontal: 10),
                   minimumSize: Size(0, isMobile ? 24 : 30),
                 ),
@@ -208,7 +208,7 @@ class LiveDjFolderPanel extends ConsumerWidget {
                         trailing: IconButton(
                           icon: const Icon(
                             Icons.add_circle_outline,
-                            color: DjStudioTheme.cyanAccent,
+                            color: GatoMixTheme.cyanAccent,
                             size: 20,
                           ),
                           onPressed: () =>
@@ -336,12 +336,12 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
                     ? "PHRASE 8 (GRID 4/4)"
                     : "ACTIVE BEATMATCHING (DNA DJ 60-80%)"));
     final engineModeColor = isMixBypass
-        ? DjStudioTheme.cyanAccent
+        ? GatoMixTheme.cyanAccent
         : (mixFormula == MixFormula.stealthGap
-              ? DjStudioTheme.deckB
+              ? GatoMixTheme.deckB
               : (mixFormula == MixFormula.phraseGrid
-                    ? DjStudioTheme.deckA
-                    : DjStudioTheme.syncActive));
+                    ? GatoMixTheme.deckA
+                    : GatoMixTheme.syncActive));
 
     final isShuffle = state.mixStrategy == LiveDjMixStrategy.random;
     final compact = Platform.isAndroid || Platform.isIOS;
@@ -354,7 +354,7 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
     // ON AIR Radio: encendido = rojo; apagado = rojo vino (look de apagado).
     final bool radioOn = state.radioOn;
     final Color radioColor = radioOn
-        ? DjStudioTheme.alertCritical
+        ? GatoMixTheme.alertCritical
         : const Color(0xFF7A2E3E);
     final onAirBadge = Tooltip(
       message: radioOn
@@ -413,17 +413,17 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
             ),
             decoration: BoxDecoration(
               color: selected
-                  ? DjStudioTheme.syncActive.withValues(alpha: 0.18)
+                  ? GatoMixTheme.syncActive.withValues(alpha: 0.18)
                   : Colors.transparent,
               border: Border.all(
-                color: selected ? DjStudioTheme.syncActive : Colors.white24,
+                color: selected ? GatoMixTheme.syncActive : Colors.white24,
               ),
               borderRadius: BorderRadius.circular(12),
             ),
             child: Text(
               label,
               style: TextStyle(
-                color: selected ? DjStudioTheme.syncActive : Colors.white54,
+                color: selected ? GatoMixTheme.syncActive : Colors.white54,
                 fontWeight: FontWeight.bold,
                 fontSize: compact ? 10 : 11,
               ),
@@ -490,7 +490,7 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
                   const Text(
                     "NOW PLAYING",
                     style: TextStyle(
-                      color: DjStudioTheme.syncActive,
+                      color: GatoMixTheme.syncActive,
                       fontWeight: FontWeight.bold,
                       fontSize: 9,
                     ),
@@ -542,7 +542,7 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
                     Icons.album,
                     size: 28,
                     color: playlistOn
-                        ? DjStudioTheme.syncActive
+                        ? GatoMixTheme.syncActive
                         : Colors.white70,
                   ),
                 ),
@@ -560,7 +560,7 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
                 Text(
                   "${pos.inMinutes.toString().padLeft(2, '0')}:${(pos.inSeconds % 60).toString().padLeft(2, '0')}",
                   style: const TextStyle(
-                    color: DjStudioTheme.cyanAccent,
+                    color: GatoMixTheme.cyanAccent,
                     fontFamily: 'Consolas',
                     fontSize: 13,
                     fontWeight: FontWeight.bold,
@@ -572,7 +572,7 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
                       trackHeight: 3,
                       thumbShape: RoundSliderThumbShape(enabledThumbRadius: 5),
                       overlayShape: RoundSliderOverlayShape(overlayRadius: 8),
-                      activeTrackColor: DjStudioTheme.syncActive,
+                      activeTrackColor: GatoMixTheme.syncActive,
                       inactiveTrackColor: Colors.white10,
                       thumbColor: Colors.white,
                     ),
@@ -717,7 +717,7 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
               Text(
                 "${pos.inMinutes.toString().padLeft(2, '0')}:${(pos.inSeconds % 60).toString().padLeft(2, '0')}",
                 style: TextStyle(
-                  color: DjStudioTheme.cyanAccent,
+                  color: GatoMixTheme.cyanAccent,
                   fontFamily: 'Consolas',
                   fontSize: timeSize,
                   fontWeight: FontWeight.bold,
@@ -742,7 +742,7 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
                 trackHeight: 3,
                 thumbShape: RoundSliderThumbShape(enabledThumbRadius: 6),
                 overlayShape: RoundSliderOverlayShape(overlayRadius: 12),
-                activeTrackColor: DjStudioTheme.syncActive,
+                activeTrackColor: GatoMixTheme.syncActive,
                 inactiveTrackColor: Colors.white10,
                 thumbColor: Colors.white,
               ),
@@ -899,7 +899,7 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
       margin: EdgeInsets.all(compact ? 6 : 15),
       padding: EdgeInsets.all(compact ? 8 : 15),
       decoration: BoxDecoration(
-        color: DjStudioTheme.bgPanel,
+        color: GatoMixTheme.bgPanel,
         borderRadius: BorderRadius.circular(8),
         border: Border.all(color: Colors.white10),
       ),
@@ -911,7 +911,7 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
         horizontal: compact ? 8 : 15,
         vertical: compact ? 4 : 12,
       ),
-      color: DjStudioTheme.bgDark,
+      color: GatoMixTheme.bgDark,
       child: Row(
         children: [
           Icon(Icons.memory, color: engineModeColor, size: 16),
@@ -952,7 +952,7 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
                   vertical: 4,
                 ),
                 decoration: BoxDecoration(
-                  color: DjStudioTheme.bgDark,
+                  color: GatoMixTheme.bgDark,
                   border: Border.all(
                     color: engineModeColor.withValues(alpha: 0.5),
                   ),
@@ -1000,7 +1000,7 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
                   isDense: true,
                   contentPadding: const EdgeInsets.symmetric(vertical: 6),
                   filled: true,
-                  fillColor: DjStudioTheme.bgDark,
+                  fillColor: GatoMixTheme.bgDark,
                   enabledBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(4),
                     borderSide: const BorderSide(color: Colors.white24),
@@ -1008,7 +1008,7 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
                   focusedBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(4),
                     borderSide: const BorderSide(
-                      color: DjStudioTheme.syncActive,
+                      color: GatoMixTheme.syncActive,
                     ),
                   ),
                 ),
@@ -1023,12 +1023,12 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
       children: [
         if (compact)
           ColoredBox(
-            color: DjStudioTheme.bgDark,
+            color: GatoMixTheme.bgDark,
             child: Row(
               children: [
-                DjStudioMobileModeBar(
+                GatoMixMobileModeBar(
                   title: 'Live DJ',
-                  accent: DjStudioTheme.syncActive,
+                  accent: GatoMixTheme.syncActive,
                   open: menuOpen,
                   expand: false,
                   onTap: () => ref.read(mobileNavOpenProvider.notifier).state =
@@ -1048,7 +1048,7 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
                       child: Icon(
                         Icons.album,
                         size: 26,
-                        color: DjStudioTheme.syncActive,
+                        color: GatoMixTheme.syncActive,
                       ),
                     ),
                   ),
@@ -1061,7 +1061,7 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 10),
             decoration: const BoxDecoration(
-              color: DjStudioTheme.bgDark,
+              color: GatoMixTheme.bgDark,
               border: Border(bottom: BorderSide(color: Colors.white10)),
             ),
             child: Row(
@@ -1078,7 +1078,7 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
                   padding: const EdgeInsets.fromLTRB(6, 4, 6, 4),
                   child: DecoratedBox(
                     decoration: BoxDecoration(
-                      color: DjStudioTheme.bgPanel,
+                      color: GatoMixTheme.bgPanel,
                       borderRadius: BorderRadius.circular(8),
                       border: Border.all(color: Colors.white10),
                     ),
@@ -1117,7 +1117,7 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
                                   Icons.album,
                                   size: 26,
                                   color: playlistOn
-                                      ? DjStudioTheme.syncActive
+                                      ? GatoMixTheme.syncActive
                                       : Colors.white70,
                                 ),
                               ),
@@ -1159,7 +1159,7 @@ class LiveDjCartridgePanel extends ConsumerWidget {
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
           decoration: const BoxDecoration(
-            color: DjStudioTheme.bgPanel,
+            color: GatoMixTheme.bgPanel,
             border: Border(
               top: BorderSide(color: Colors.white10),
               bottom: BorderSide(color: Colors.white10),

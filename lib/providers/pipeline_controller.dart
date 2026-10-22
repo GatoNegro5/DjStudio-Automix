@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import '../core/brand_paths.dart';
 import 'core_metadata.dart';
 import 'core_dsp.dart';
 import 'core_nlp.dart';
@@ -62,14 +63,9 @@ class PipelineController {
       if (!file.existsSync()) return;
 
       // 3. Auto-crear directorio de cuarentena (Setup Proactivo)
-      final quarantineDir = Directory(
-        '${file.parent.path}${Platform.pathSeparator}Cuarentena_DjStudio',
-      );
-      if (!quarantineDir.existsSync()) {
-        quarantineDir.createSync();
-      }
+      final quarantine = quarantineDir(file.parent.path);
 
-      final newPath = '${quarantineDir.path}${Platform.pathSeparator}$fileName';
+      final newPath = '${quarantine.path}${Platform.pathSeparator}$fileName';
 
       // 4. Mover el archivo (Fallback a copy+delete si rename falla por bloqueos residuales)
       try {
@@ -84,7 +80,7 @@ class PipelineController {
         total,
         current,
         fileName,
-        "☣️ AISLADO: Movido a Cuarentena_DjStudio",
+        "☣️ AISLADO: Movido a Cuarentena_GatoMix",
       );
       debugPrint("☣️ [CUARENTENA] Archivo extraído físicamente a: $newPath");
     } catch (e) {

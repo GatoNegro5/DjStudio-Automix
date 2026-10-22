@@ -4,7 +4,7 @@ import 'package:http/http.dart' as http;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'pipeline_provider.dart';
 import 'package:flutter/foundation.dart';
-import 'package:djstudio_player/src/rust/api/core_dsp.dart' as rust_dsp;
+import 'package:gatomix_player/src/rust/api/core_dsp.dart' as rust_dsp;
 import 'db_provider.dart'; // 🛠️ Requerido para inyectar Cues a la BD
 
 final nlpWorkerProvider = Provider((ref) => NlpWorker(ref));
@@ -13,7 +13,7 @@ class NlpWorker {
   final Ref ref;
 
   final Map<String, String> _headers = {
-    'User-Agent': 'DJStudioPlayer/1.0.0 (Custom Build)',
+    'User-Agent': 'GatoMixPlayer/1.0.0 (Custom Build)',
   };
 
   NlpWorker(this.ref);
