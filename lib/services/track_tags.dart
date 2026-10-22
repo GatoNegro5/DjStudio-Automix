@@ -1,4 +1,4 @@
-import 'package:gatomix_player/src/rust/api/core_dsp.dart' as rust_dsp;
+import 'package:gatomix/src/rust/api/core_dsp.dart' as rust_dsp;
 
 /// Lo que dejó el MASTERIZADO en las etiquetas de la pista (Rust/id3):
 /// silencios de inicio/fin, BPM y ganancia ReplayGain. Se lee sin decodificar.

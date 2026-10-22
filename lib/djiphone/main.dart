@@ -7,18 +7,18 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:media_kit/media_kit.dart';
 
-import 'package:gatomix_player/src/rust/frb_generated.dart';
-import 'package:gatomix_player/core/audio/dj_audio_handler.dart';
-import 'package:gatomix_player/djiphone/iphone_library.dart';
-import 'package:gatomix_player/providers/automix_provider.dart';
-import 'package:gatomix_player/providers/livedj_provider.dart';
-import 'package:gatomix_player/providers/pipeline_provider.dart';
-import 'package:gatomix_player/providers/theme_provider.dart';
-import 'package:gatomix_player/services/audio_interruption.dart';import 'package:gatomix_player/ui/widgets/app_version_label.dart';
-import 'package:gatomix_player/ui/workspaces/automix_workspace.dart';
-import 'package:gatomix_player/ui/workspaces/dsp_workspace.dart';
-import 'package:gatomix_player/ui/workspaces/lan_sync_workspace.dart';
-import 'package:gatomix_player/ui/workspaces/livedj_workspace.dart';
+import 'package:gatomix/src/rust/frb_generated.dart';
+import 'package:gatomix/core/audio/dj_audio_handler.dart';
+import 'package:gatomix/djiphone/iphone_library.dart';
+import 'package:gatomix/providers/automix_provider.dart';
+import 'package:gatomix/providers/livedj_provider.dart';
+import 'package:gatomix/providers/pipeline_provider.dart';
+import 'package:gatomix/providers/theme_provider.dart';
+import 'package:gatomix/services/audio_interruption.dart';import 'package:gatomix/ui/widgets/app_version_label.dart';
+import 'package:gatomix/ui/workspaces/automix_workspace.dart';
+import 'package:gatomix/ui/workspaces/dsp_workspace.dart';
+import 'package:gatomix/ui/workspaces/lan_sync_workspace.dart';
+import 'package:gatomix/ui/workspaces/livedj_workspace.dart';
 /// Entrada de DjIphone. No es lib/main.dart.
 /// Pantallas: Automix, Live DJ, Masterizar, LAN Sync.
 /// Índices iguales al player de escritorio (0, 5, 1, 4).

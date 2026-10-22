@@ -1,5 +1,5 @@
 import 'dart:io';
-import 'package:gatomix_player/services/karaoke_engine.dart';
+import 'package:gatomix/services/karaoke_engine.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
@@ -7,7 +7,7 @@ import 'package:file_selector/file_selector.dart';
 import 'package:media_kit/media_kit.dart';
 import '../../core/net/safe_download.dart';
 
-import 'package:gatomix_player/src/rust/api/core_dsp.dart' as rust_dsp;
+import 'package:gatomix/src/rust/api/core_dsp.dart' as rust_dsp;
 import '../../providers/metadata_provider.dart';
 import '../../providers/nlp_provider.dart';
 import '../../providers/dsp_provider.dart';

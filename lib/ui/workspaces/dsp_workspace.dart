@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import 'package:gatomix_player/src/rust/api/core_dsp.dart' as rust_dsp;
+import 'package:gatomix/src/rust/api/core_dsp.dart' as rust_dsp;
 
 import '../../core/brand_paths.dart';
 import '../../djiphone/iphone_library.dart';

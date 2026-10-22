@@ -6,7 +6,7 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:media_kit/media_kit.dart';
 
-import 'package:gatomix_player/src/rust/api/core_dsp.dart' as rust_dsp;
+import 'package:gatomix/src/rust/api/core_dsp.dart' as rust_dsp;
 import '../core/audio/af_caps.dart';
 import '../core/hal/platform_strategy.dart';
 

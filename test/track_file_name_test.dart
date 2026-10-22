@@ -1,5 +1,5 @@
-import 'package:gatomix_player/core/id3_names.dart';
-import 'package:gatomix_player/core/track_file_name.dart';
+import 'package:gatomix/core/id3_names.dart';
+import 'package:gatomix/core/track_file_name.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {

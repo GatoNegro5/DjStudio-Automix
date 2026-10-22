@@ -1,7 +1,7 @@
-import 'package:gatomix_player/providers/livedj_provider.dart';
-import 'package:gatomix_player/providers/mix_formula.dart';
-import 'package:gatomix_player/providers/theme_provider.dart';
-import 'package:gatomix_player/ui/workspaces/livedj_deck_relevo.dart';
+import 'package:gatomix/providers/livedj_provider.dart';
+import 'package:gatomix/providers/mix_formula.dart';
+import 'package:gatomix/providers/theme_provider.dart';
+import 'package:gatomix/ui/workspaces/livedj_deck_relevo.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 

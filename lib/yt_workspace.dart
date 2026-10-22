@@ -5,7 +5,7 @@ import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import 'package:file_selector/file_selector.dart';
 
 // 🛠️ INYECTADO: Backend FFI Nativo y Providers para Auto-Masterización
-import 'package:gatomix_player/src/rust/api/core_dsp.dart' as rust_dsp;
+import 'package:gatomix/src/rust/api/core_dsp.dart' as rust_dsp;
 import 'providers/metadata_provider.dart';
 import 'providers/nlp_provider.dart';
 import 'providers/dsp_provider.dart';

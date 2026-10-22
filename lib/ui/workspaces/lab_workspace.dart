@@ -1,13 +1,13 @@
 import 'dart:io';
 import 'dart:convert';
-import 'package:gatomix_player/core/brand_paths.dart';
-import 'package:gatomix_player/services/karaoke_engine.dart';
+import 'package:gatomix/core/brand_paths.dart';
+import 'package:gatomix/services/karaoke_engine.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import '../../core/net/safe_download.dart';
 
-import 'package:gatomix_player/src/rust/api/core_dsp.dart' as rust_dsp;
+import 'package:gatomix/src/rust/api/core_dsp.dart' as rust_dsp;
 import '../../providers/automix_provider.dart';
 import '../../providers/metadata_provider.dart';
 import '../../providers/dsp_provider.dart';

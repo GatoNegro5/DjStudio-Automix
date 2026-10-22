@@ -5,7 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
-import 'package:gatomix_player/src/rust/api/core_dsp.dart' as rust_dsp;
+import 'package:gatomix/src/rust/api/core_dsp.dart' as rust_dsp;
 
 /// Karaoke IA 100 % en proceso (Rust + ONNX, modelo MDX-Net/UVR).
 /// Sin Python, sin Demucs, sin FFmpeg. Genera `<nombre>_K.mp3` junto a la

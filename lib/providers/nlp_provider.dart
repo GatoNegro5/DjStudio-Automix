@@ -4,7 +4,7 @@ import 'package:http/http.dart' as http;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'pipeline_provider.dart';
 import 'package:flutter/foundation.dart';
-import 'package:gatomix_player/src/rust/api/core_dsp.dart' as rust_dsp;
+import 'package:gatomix/src/rust/api/core_dsp.dart' as rust_dsp;
 import 'db_provider.dart'; // 🛠️ Requerido para inyectar Cues a la BD
 
 final nlpWorkerProvider = Provider((ref) => NlpWorker(ref));

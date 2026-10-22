@@ -8,7 +8,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 // 🛠️ INYECCIÓN: El puente de memoria FFI (Rust <> Dart)
-import 'package:gatomix_player/src/rust/frb_generated.dart';
+import 'package:gatomix/src/rust/frb_generated.dart';
 
 // --- IMPORTACIÓN DE MÓDULOS Y PROVIDERS ---
 import 'providers/automix_provider.dart';
