@@ -21,7 +21,7 @@ class DjStudioTvApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'DjStudio Edge Node',
+      title: 'GatoMix Karaoke',
       theme: ThemeData(
         brightness: Brightness.dark,
         scaffoldBackgroundColor: const Color(0xFF050505),

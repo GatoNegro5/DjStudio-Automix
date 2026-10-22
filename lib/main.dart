@@ -510,7 +510,7 @@ String _moduleTitle(int route, bool mobile) {
     case 6:
       return "Karaoke";
     default:
-      return "DjStudio";
+      return "GatoMix";
   }
 }
 
@@ -678,7 +678,7 @@ class _DjStudioNavColumn extends ConsumerWidget {
         const Padding(
           padding: EdgeInsets.fromLTRB(12, 10, 12, 4),
           child: Text(
-            "DjStudio",
+            "GatoMix",
             style: TextStyle(
               fontSize: 18,
               fontWeight: FontWeight.bold,

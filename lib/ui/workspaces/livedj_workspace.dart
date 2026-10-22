@@ -35,7 +35,7 @@ class LiveDjWorkspace extends ConsumerWidget {
               top: 8,
               right: 56,
               child: Tooltip(
-                message: 'Volver a DJ Studio',
+                message: 'Volver a GatoMix',
                 child: GestureDetector(
                   onTap: () => ref
                       .read(liveDjPlaylistViewProvider.notifier)
@@ -1036,7 +1036,7 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
                 ),
                 Tooltip(
                   message: playlistOn
-                      ? 'Volver a DJ Studio'
+                      ? 'Volver a GatoMix'
                       : 'Vista de la carpeta',
                   child: GestureDetector(
                     onTap: () {

@@ -1,4 +1,4 @@
-# djstudio_tv
+# GatoMix Karaoke
 
 A new Flutter project.
 

@@ -1,4 +1,4 @@
-#define MyAppName "DjStudio"
+#define MyAppName "GatoMix"
 #define MyAppVersion "3.0.1"
 #define MyAppPublisher "Gabriel Calle"
 #define MyAppExeName "djstudio_player.exe"

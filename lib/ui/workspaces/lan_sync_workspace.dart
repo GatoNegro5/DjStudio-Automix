@@ -119,18 +119,36 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
     if (Platform.isWindows) {
       try {
         setState(() => _currentLog = "⚙️ Auditando Windows Defender...");
-        final checkCmd = await Process.run('powershell', [
+        const oldRule = 'DjStudio REST Server';
+        const newRule = 'GatoMix REST Server';
+        final oldCmd = await Process.run('powershell', [
           '-Command',
-          'Get-NetFirewallRule -DisplayName "DjStudio REST Server" -ErrorAction SilentlyContinue',
+          'Get-NetFirewallRule -DisplayName "$oldRule" -ErrorAction SilentlyContinue',
         ]);
-
-        if (!checkCmd.stdout.toString().contains("DjStudio REST Server")) {
+        final newCmd = await Process.run('powershell', [
+          '-Command',
+          'Get-NetFirewallRule -DisplayName "$newRule" -ErrorAction SilentlyContinue',
+        ]);
+        final hadOld = oldCmd.stdout.toString().contains(oldRule);
+        final hasNew = newCmd.stdout.toString().contains(newRule);
+        if (hadOld || !hasNew) {
           setState(
             () => _currentLog = "⚠️ Escalando privilegios (Acepte el UAC)...",
           );
+          final script = StringBuffer();
+          if (hadOld) {
+            script.write(
+              "Remove-NetFirewallRule -DisplayName '$oldRule' -ErrorAction SilentlyContinue; ",
+            );
+          }
+          if (!hasNew) {
+            script.write(
+              "New-NetFirewallRule -DisplayName '$newRule' -Direction Inbound -LocalPort $_restPort -Protocol TCP -Action Allow",
+            );
+          }
           final addCmd =
               '''
-          Start-Process powershell -Verb runAs -WindowStyle Hidden -ArgumentList "-Command New-NetFirewallRule -DisplayName 'DjStudio REST Server' -Direction Inbound -LocalPort $_restPort -Protocol TCP -Action Allow"
+          Start-Process powershell -Verb runAs -WindowStyle Hidden -ArgumentList "-Command ${script.toString().trim()}"
           ''';
           await Process.run('powershell', ['-Command', addCmd]);
           await Future.delayed(const Duration(seconds: 2));
@@ -524,7 +542,7 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>DjStudio Karaoke Web</title>
+  <title>GatoMix Karaoke</title>
   <style>
     :root { --bg: #0a0a0a; --neon: #39ff14; --dark: #1a1a1a; --text: #fff; --subtext: #888; }
     body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 20px; }

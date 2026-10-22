@@ -7,7 +7,7 @@ Future<void> initGlobalAudioService() async {
     builder: () => DjAudioHandler(),
     config: const AudioServiceConfig(
       androidNotificationChannelId: 'com.djstudio.player.channel.audio',
-      androidNotificationChannelName: 'DjStudio Playback',
+      androidNotificationChannelName: 'GatoMix',
       // 🛠️ FIX ARQUITECTÓNICO: Se elimina androidNotificationOngoing.
       // Al mantener StopForegroundOnPause en false, la notificación
       // asume el estado persistente automáticamente sin romper la aserción de compilación.
@@ -97,7 +97,7 @@ class DjAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
         mediaItem.add(
           MediaItem(
             id: title,
-            album: 'DjStudio Master',
+            album: 'GatoMix',
             title: title,
             duration: _osDuration,
           ),
@@ -165,7 +165,7 @@ class DjAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     mediaItem.add(
       MediaItem(
         id: title,
-        album: 'DjStudio Master',
+        album: 'GatoMix',
         title: title,
         duration: duration,
       ),

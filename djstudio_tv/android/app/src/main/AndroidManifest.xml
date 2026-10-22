@@ -8,7 +8,7 @@
         android:required="false"/>
 
     <application
-        android:label="DJ Studio Karaoke"
+        android:label="GatoMix Karaoke"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:banner="@mipmap/ic_launcher">

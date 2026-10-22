@@ -19,12 +19,12 @@ jobs:
           - os: windows-latest
             target: windows
             build_cmd: flutter build windows --release
-            asset_name: DjStudio-Windows.zip
+            asset_name: GatoMix-Installer.exe
             rust_targets: x86_64-pc-windows-msvc
           - os: macos-latest
             target: macos
             build_cmd: flutter build macos --release
-            asset_name: DjStudio-MacOS.zip
+            asset_name: GatoMix-MacOS.zip
             rust_targets: x86_64-apple-darwin, aarch64-apple-darwin
 
     runs-on: ${{ matrix.os }}
@@ -126,7 +126,7 @@ jobs:
 
       - name: Zip MacOS Build
         if: matrix.target == 'macos'
-        run: ditto -c -k --sequesterRsrc --keepParent build/macos/Build/Products/Release/*.app DjStudio-MacOS.zip
+        run: ditto -c -k --sequesterRsrc --keepParent build/macos/Build/Products/Release/*.app GatoMix-MacOS.zip
 
       - name: Upload Artifacts to Job
         uses: actions/upload-artifact@v4
@@ -134,8 +134,8 @@ jobs:
           name: ${{ matrix.asset_name }}
           path: |
             ${{ matrix.target == 'apk' && 'build/app/outputs/flutter-apk/app-release.apk' || '' }}
-            ${{ matrix.target == 'windows' && 'DjStudio-Installer.exe' || '' }}
-            ${{ matrix.target == 'macos' && 'DjStudio-MacOS.zip' || '' }}
+            ${{ matrix.target == 'windows' && 'GatoMix-Installer.exe' || '' }}
+            ${{ matrix.target == 'macos' && 'GatoMix-MacOS.zip' || '' }}
 
   release:
     name: Create GitHub Release
@@ -155,15 +155,15 @@ jobs:
         with:
           files: |
             artifacts/app-release.apk
-            artifacts/DjStudio-Installer.exe
-            artifacts/DjStudio-MacOS.zip
+            artifacts/GatoMix-Installer.exe
+            artifacts/GatoMix-MacOS.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # APK de Karaoke para Google TV: la app de escritorio lo baja del release
   # cuando la laptop no tiene Flutter ni la carpeta djstudio_tv.
   djstudio_tv:
-    name: Build DJ Studio Karaoke TV APK
+    name: Build GatoMix Karaoke APK
     needs: release
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -243,7 +243,7 @@ jobs:
           flutter config --no-enable-swift-package-manager
           flutter create --platforms=ios --org com.djstudio .
           cp "$RUNNER_TEMP/DjIphone-Info.plist" ios/Runner/Info.plist
-          perl -pi -e 's/PRODUCT_BUNDLE_IDENTIFIER = com\.djstudio\.djstudioPlayer;/PRODUCT_BUNDLE_IDENTIFIER = com.djstudio.djiphone;/g' ios/Runner.xcodeproj/project.pbxproj
+          perl -pi -e 's/PRODUCT_BUNDLE_IDENTIFIER = com\.djstudio\.djstudioPlayer;/PRODUCT_BUNDLE_IDENTIFIER = com.gatonegro5.gatomix;/g' ios/Runner.xcodeproj/project.pbxproj
           perl -pi -e 's/IPHONEOS_DEPLOYMENT_TARGET = 13\.0;/IPHONEOS_DEPLOYMENT_TARGET = 15.0;/g' ios/Runner.xcodeproj/project.pbxproj
           cd ios
           perl -pi -e "s/^# (platform :ios, '[0-9.]+')/\$1/" Podfile

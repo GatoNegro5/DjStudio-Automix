@@ -68,7 +68,7 @@ class CuePreviewNotifier extends StateNotifier<CueState> {
   Future<void> _init() async {
     try {
       final p = Player(
-        configuration: const PlayerConfiguration(title: 'DJ Studio CUE'),
+        configuration: const PlayerConfiguration(title: 'GatoMix CUE'),
       );
       _player = p;
       try {

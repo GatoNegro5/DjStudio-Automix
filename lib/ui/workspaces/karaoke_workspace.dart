@@ -186,21 +186,39 @@ class _KaraokeWorkspaceState extends ConsumerState<KaraokeWorkspace> {
   /// cubre :55055; sin esta, la Google TV no completa el upgrade WebSocket.
   Future<void> _ensureTvFirewallRule() async {
     if (!Platform.isWindows) return;
-    const ruleName = 'DjStudio TV Sync';
+    const oldRule = 'DjStudio TV Sync';
+    const ruleName = 'GatoMix TV Sync';
     try {
+      final probeOld = await Process.run('powershell', [
+        '-Command',
+        'Get-NetFirewallRule -DisplayName "$oldRule" '
+            '-ErrorAction SilentlyContinue',
+      ]);
       final probe = await Process.run('powershell', [
         '-Command',
         'Get-NetFirewallRule -DisplayName "$ruleName" '
             '-ErrorAction SilentlyContinue',
       ]);
-      if (probe.stdout.toString().contains(ruleName)) return;
+      final hadOld = probeOld.stdout.toString().contains(oldRule);
+      final hasNew = probe.stdout.toString().contains(ruleName);
+      if (!hadOld && hasNew) return;
 
+      final script = StringBuffer();
+      if (hadOld) {
+        script.write(
+          "Remove-NetFirewallRule -DisplayName '$oldRule' -ErrorAction SilentlyContinue; ",
+        );
+      }
+      if (!hasNew) {
+        script.write(
+          "New-NetFirewallRule -DisplayName '$ruleName' -Direction Inbound "
+          '-LocalPort 55056 -Protocol TCP -Action Allow',
+        );
+      }
       await Process.run('powershell', [
         '-Command',
         'Start-Process powershell -Verb runAs -WindowStyle Hidden '
-            '-ArgumentList "-Command New-NetFirewallRule '
-            "-DisplayName '$ruleName' -Direction Inbound "
-            '-LocalPort 55056 -Protocol TCP -Action Allow"',
+            '-ArgumentList "-Command ${script.toString().trim()}"',
       ]);
     } catch (e) {
       debugPrint('🔴 [KARAOKE TV] Firewall :55056 $e');
@@ -1589,7 +1607,7 @@ class _TvDeploymentDialogState extends State<TvDeploymentDialog> {
                           ),
                         ),
                         Text(
-                          'Compila, instala y abre DJ Studio Karaoke',
+                          'Compila, instala y abre GatoMix Karaoke',
                           style: TextStyle(color: Colors.white54),
                         ),
                       ],

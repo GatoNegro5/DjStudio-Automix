@@ -1,4 +1,4 @@
-# djstudio_player
+# GatoMix
 
 A new Flutter project.
 

@@ -303,7 +303,7 @@ class TvAdbDeploymentService {
         'shell',
         'pm',
         'path',
-        'com.example.djstudio_tv',
+        'com.gatonegro5.gatomix.tv',
       ]);
       return '${result.stdout}'.contains('package:');
     } catch (_) {
@@ -318,7 +318,7 @@ class TvAdbDeploymentService {
       'shell',
       'monkey',
       '-p',
-      'com.example.djstudio_tv',
+      'com.gatonegro5.gatomix.tv',
       '-c',
       'android.intent.category.LEANBACK_LAUNCHER',
       '1',
@@ -469,7 +469,7 @@ class TvAdbDeploymentService {
             );
 
       if (project != null && _requiresBuild(project, apk)) {
-        onProgress('Compilando DJ Studio Karaoke TV…');
+        onProgress('Compilando GatoMix Karaoke…');
         final build = await Process.start(
           Platform.isWindows ? 'flutter.bat' : 'flutter',
           ['build', 'apk', '--release'],
@@ -510,7 +510,7 @@ class TvAdbDeploymentService {
       }
     }
 
-    onProgress('Abriendo DJ Studio Karaoke en la TV…');
+    onProgress('Abriendo GatoMix Karaoke en la TV…');
     await launchApp(endpoint);
     onProgress(
       alreadyInstalled
@@ -574,7 +574,7 @@ class TvAdbDeploymentService {
     final dir = Directory('${_appDataDir()}${Platform.pathSeparator}tv');
     dir.createSync(recursive: true);
     final apk = File('${dir.path}${Platform.pathSeparator}djstudio-tv.apk');
-    onProgress('Descargando DJ Studio Karaoke TV (APK)…');
+    onProgress('Descargando GatoMix Karaoke (APK)…');
     await downloadFileRobust(
       'https://github.com/GatoNegro5/DjStudio-Automix/releases/latest/download/djstudio-tv.apk',
       apk.path,
@@ -603,7 +603,7 @@ class TvAdbDeploymentService {
       }
     }
     throw StateError(
-      'No se encontró djstudio_tv/. Ejecuta desde el repositorio de DJ Studio.',
+      'No se encontró djstudio_tv/. Ejecuta desde el repositorio de GatoMix.',
     );
   }
 }

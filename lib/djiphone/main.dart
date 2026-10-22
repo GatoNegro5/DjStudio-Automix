@@ -115,7 +115,7 @@ Future<void> main() async {
             child: Padding(
               padding: const EdgeInsets.all(20),
               child: Text(
-                'DjIphone no pudo abrir la carpeta de música.\n\n$e',
+                'GatoMix no pudo abrir la carpeta de música.\n\n$e',
                 style: const TextStyle(
                   color: Colors.redAccent,
                   fontFamily: 'Consolas',
@@ -138,7 +138,7 @@ class DjIphoneApp extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final appTheme = ref.watch(themeProvider);
     return MaterialApp(
-      title: 'DjIphone',
+      title: 'GatoMix',
       debugShowCheckedModeBanner: false,
       theme: appTheme,
       builder: (context, child) {
@@ -265,7 +265,7 @@ class _DjIphoneBootState extends State<_DjIphoneBoot> {
             CircularProgressIndicator(color: DjStudioTheme.deckA),
             SizedBox(height: 20),
             Text(
-              'DjIphone',
+              'GatoMix',
               style: TextStyle(
                 color: DjStudioTheme.textMuted,
                 fontFamily: 'Consolas',
@@ -432,7 +432,7 @@ String _title(int route) {
     case 5:
       return 'Live DJ';
     default:
-      return 'DjIphone';
+      return 'GatoMix';
   }
 }
 
@@ -539,7 +539,7 @@ class _DjIphoneNav extends ConsumerWidget {
         const Padding(
           padding: EdgeInsets.fromLTRB(12, 10, 12, 4),
           child: Text(
-            'DjIphone',
+            'GatoMix',
             style: TextStyle(
               fontSize: 18,
               fontWeight: FontWeight.bold,

@@ -2,10 +2,10 @@ import 'dart:io';
 
 import 'package:path_provider/path_provider.dart';
 
-/// Carpeta de música de DjIphone.
+/// Carpeta de música de GatoMix.
 ///
 /// Vive en Documentos de la app. Con uso compartido de archivos, el iPhone
-/// la muestra en Archivos → En mi iPhone → DjIphone → Music.
+/// la muestra en Archivos → En mi iPhone → GatoMix → Music.
 /// No es la biblioteca de Apple Music.
 class IphoneLibrary {
   static String musicRoot = '';
