@@ -14,7 +14,9 @@ import 'package:gatomix/providers/automix_provider.dart';
 import 'package:gatomix/providers/livedj_provider.dart';
 import 'package:gatomix/providers/pipeline_provider.dart';
 import 'package:gatomix/providers/theme_provider.dart';
-import 'package:gatomix/services/audio_interruption.dart';import 'package:gatomix/ui/widgets/app_version_label.dart';
+import 'package:gatomix/services/audio_interruption.dart';
+import 'package:gatomix/services/library/library_boot.dart';
+import 'package:gatomix/ui/widgets/app_version_label.dart';
 import 'package:gatomix/ui/workspaces/automix_workspace.dart';
 import 'package:gatomix/ui/workspaces/dsp_workspace.dart';
 import 'package:gatomix/ui/workspaces/lan_sync_workspace.dart';
@@ -234,10 +236,19 @@ class _DjIphoneBoot extends StatefulWidget {
 }
 
 class _DjIphoneBootState extends State<_DjIphoneBoot> {
+  String _statusText = 'GatoMix';
+
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      await LibraryBoot.prepare(
+        context,
+        onStatus: (String text) {
+          if (mounted) setState(() => _statusText = text);
+        },
+      );
       if (!mounted) return;
       Navigator.of(context).pushReplacement(
         PageRouteBuilder(
@@ -268,9 +279,9 @@ class _DjIphoneBootState extends State<_DjIphoneBoot> {
             const SizedBox(height: 30),
             const CircularProgressIndicator(color: GatoMixTheme.deckA),
             const SizedBox(height: 20),
-            const Text(
-              'GatoMix',
-              style: TextStyle(
+            Text(
+              _statusText,
+              style: const TextStyle(
                 color: GatoMixTheme.textMuted,
                 fontFamily: 'Consolas',
                 fontSize: 12,

@@ -5,7 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
-import 'package:permission_handler/permission_handler.dart';
+import 'services/library/library_boot.dart';
 
 // 🛠️ INYECCIÓN: El puente de memoria FFI (Rust <> Dart)
 import 'package:gatomix/src/rust/frb_generated.dart';
@@ -103,16 +103,6 @@ Future<void> main() async {
     // 🛠️ INYECCIÓN OS: Levantar el servicio nativo de Audio (Lockscreen/Background)
     // Debe arrancar antes de cualquier otra lógica pesada o permisos.
     await initGlobalAudioService();
-
-    // 🛠️ FASE 3: Perforación de Scoped Storage en Runtime (Android 11+)
-    if (Platform.isAndroid) {
-      if (await Permission.manageExternalStorage.isDenied) {
-        await Permission.manageExternalStorage.request();
-      }
-      if (await Permission.storage.isDenied) {
-        await Permission.storage.request();
-      }
-    }
 
     // 🛠️ VETO TÉCNICO APLICADO: Escudo protector de Plataforma.
     // SystemChrome no existe en Desktop y destruye el Isolate si se invoca.
@@ -277,19 +267,13 @@ class _BootloaderScreenState extends State<BootloaderScreen> {
   }
 
   Future<void> _requestPermissionsAndBoot() async {
-    if (Platform.isAndroid || Platform.isIOS || Platform.isMacOS) {
-      setState(() => _statusText = "Verificando llaves de I/O nativo...");
-
-      if (Platform.isAndroid) {
-        final status = await Permission.manageExternalStorage.status;
-        if (!status.isGranted) {
-          await Permission.manageExternalStorage.request();
-        }
-        await Permission.storage.request();
-      } else {
-        await Permission.storage.request();
-      }
-    }
+    await LibraryBoot.prepare(
+      context,
+      onStatus: (String text) {
+        if (mounted) setState(() => _statusText = text);
+      },
+    );
+    if (!mounted) return;
 
     setState(() => _statusText = "Cargando espacio de trabajo...");
     await Future.delayed(const Duration(milliseconds: 600));

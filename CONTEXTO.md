@@ -210,7 +210,7 @@ final smoothRateOut = pow(rateOut, 1.2).toDouble();
 
 ## 9. Permisos Android (APK)
 
-`READ_EXTERNAL_STORAGE` · `WRITE_EXTERNAL_STORAGE` · `MANAGE_EXTERNAL_STORAGE` (API 30+). Escritura en `/storage/emulated/0/Music`. Sin micrófono: `RECORD_AUDIO` y los `<queries>` de voz (reconocedor/TTS) se quitaron el 2026-10-05.
+`READ_MEDIA_AUDIO` (API 33+) · `READ_EXTERNAL_STORAGE` (maxSdkVersion 32) · `WRITE_EXTERNAL_STORAGE`. Sin `MANAGE_EXTERNAL_STORAGE`: Google Play lo rechaza. La biblioteca sale de MediaStore (incluye SD), no de una carpeta llamada Music. Sin micrófono: `RECORD_AUDIO` y los `<queries>` de voz (reconocedor/TTS) se quitaron el 2026-10-05.
 
 ## 10. CI GitHub (Windows · Android · macOS)
 
