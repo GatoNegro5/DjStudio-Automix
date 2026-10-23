@@ -122,16 +122,18 @@ class MasterTrack {
       }
       trimHead = rw.trimHeadMs;
       final int residual = rw.residualMs;
-      // El corte puede venir de esta pasada o de la transcodificación de
-      // Descargas (GMX_TRIM ya escrito, trimHead 0). La letra auto sin
-      // [gmx_shift:] se mueve exactamente esos ms, una sola vez.
-      final int pending = trimHead > 0 ? 0 : await _autoTrimStillUnshifted(current);
-      final int shiftBy = trimHead > 0 ? trimHead : pending;
-      if (shiftBy > 0 || residual > 0) {
+      // Solo el corte medido en esta pasada. Un GMX_TRIM de antes (Take On
+      // Me, 1010 ms) no mueve una letra que ya coincide con el archivo.
+      final int? shiftBy = measuredLyricShiftMs(
+        audioCut: rw.rewritten && trimHead > 0,
+        trimHeadMs: trimHead,
+        residualMs: residual,
+      );
+      if (shiftBy != null) {
         await _shiftLyricsAndCues(
           ref,
           current,
-          shiftBy,
+          trimHead,
           extraDelayMs: residual,
         );
       }
@@ -267,17 +269,6 @@ class MasterTrack {
     } catch (_) {
       return false;
     }
-  }
-
-  /// TRIM ya aplicado y la letra auto todavía no se movió.
-  static Future<int> _autoTrimStillUnshifted(String path) async {
-    final marks = await rust_dsp.readGmxMarks(inputPath: path);
-    if (marks.trimMs <= 0) return 0;
-    final File lrc = File(_lrcPath(path));
-    if (!lrc.existsSync() || !_lrcIsAuto(lrc.path)) return 0;
-    final String text = await lrc.readAsString();
-    if (lrcIsManual(text) || lrcShiftMs(text) != null) return 0;
-    return marks.trimMs;
   }
 
   static Future<void> _ensureBackup(String path) async {

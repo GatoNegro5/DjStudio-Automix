@@ -75,4 +75,23 @@ void main() {
     expect(lrcIsProtected('[gmx_shift:-80]\n[00:10.08]Hola\n'), isTrue);
     expect(lrcIsProtected(sample), isFalse);
   });
+
+  test('Take On Me: 1010 ms sin corte medido no mueve la letra', () {
+    expect(
+      measuredLyricShiftMs(audioCut: false, trimHeadMs: 1010, residualMs: 0),
+      isNull,
+    );
+    expect(
+      measuredLyricShiftMs(audioCut: true, trimHeadMs: 0, residualMs: 1010),
+      isNull,
+    );
+    expect(
+      measuredLyricShiftMs(audioCut: true, trimHeadMs: 1010, residualMs: 1010),
+      isNull,
+    );
+    expect(
+      measuredLyricShiftMs(audioCut: true, trimHeadMs: 1010, residualMs: 0),
+      1010,
+    );
+  });
 }

@@ -6,6 +6,8 @@ import 'pipeline_provider.dart';
 import 'package:flutter/foundation.dart';
 import 'package:gatomix/src/rust/api/core_dsp.dart' as rust_dsp;
 import '../core/lrc_timeline.dart';
+import '../core/lyric_match.dart';
+import '../services/id3_title_artist.dart';
 import 'db_provider.dart'; // 🛠️ Requerido para inyectar Cues a la BD
 
 bool _enCarpetaOriginal(String path) {
@@ -334,93 +336,9 @@ class NlpWorker {
   }
 
   // ----------------------------------------------------- coincidencia segura
-  // Una letra equivocada es peor que ninguna: solo se acepta un resultado
-  // cuyo ARTISTA, TÍTULO y DURACIÓN coinciden con el archivo. Nada de recortar
-  // el título palabra por palabra ni de aceptar el primer resultado.
-
-  static const Map<String, String> _accents = {
-    'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u', 'ü': 'u', 'ñ': 'n',
-    'à': 'a', 'è': 'e', 'ì': 'i', 'ò': 'o', 'ù': 'u',
-  };
-
-  String _norm(String s) {
-    var t = s.toLowerCase();
-    _accents.forEach((k, v) => t = t.replaceAll(k, v));
-    t = t.replaceAll(RegExp(r'[\(\[\{][^\)\]\}]*[\)\]\}]'), ' ');
-    t = t.replaceAll(RegExp(r'\b(feat|ft|featuring)\b.*$'), ' ');
-    t = t.replaceAll(RegExp(r'[^a-z0-9]+'), ' ').trim();
-    return t;
-  }
-
-  Set<String> _tokens(String s) =>
-      _norm(s).split(' ').where((w) => w.isNotEmpty).toSet();
-
-  /// Parecido entre dos textos (0..1): comunes / el mayor de los dos.
-  double _similar(String a, String b) {
-    final ta = _tokens(a);
-    final tb = _tokens(b);
-    if (ta.isEmpty || tb.isEmpty) return 0.0;
-    final common = ta.intersection(tb).length;
-    return common / (ta.length > tb.length ? ta.length : tb.length);
-  }
-
-  /// Mejor candidato seguro, o null si ninguno es confiable.
-  Map<String, dynamic>? _bestSafeMatch(
-    List<dynamic> items, {
-    required String artist,
-    required String title,
-    required int localSec,
-    bool allowPlain = false,
-    bool ignoreDuration = false,
-  }) {
-    Map<String, dynamic>? best;
-    double bestScore = 0.0;
-    for (final raw in items) {
-      if (raw is! Map) continue;
-      final synced = raw['syncedLyrics']?.toString() ?? '';
-      final plain = raw['plainLyrics']?.toString() ?? '';
-      if (synced.trim().isEmpty && !(allowPlain && plain.trim().isNotEmpty)) {
-        continue;
-      }
-
-      final double titleSim = _similar(title, raw['trackName']?.toString() ?? '');
-      if (titleSim < 0.75) continue;
-
-      double artistSim = 1.0;
-      if (artist.isNotEmpty) {
-        artistSim = _similar(artist, raw['artistName']?.toString() ?? '');
-        // El artista del archivo puede traer "A & B": basta con que uno encaje.
-        if (artistSim < 0.5) {
-          final apiArtist = _norm(raw['artistName']?.toString() ?? '');
-          final fileArtist = _norm(artist);
-          if (apiArtist.isEmpty ||
-              !(fileArtist.contains(apiArtist) ||
-                  apiArtist.contains(fileArtist))) {
-            continue;
-          }
-          artistSim = 0.6;
-        }
-      }
-
-      final int apiDur = (raw['duration'] as num?)?.toInt() ?? 0;
-      double durScore = 0.5;
-      if (!ignoreDuration && localSec > 0 && apiDur > 0) {
-        final int diff = (apiDur - localSec).abs();
-        if (diff > 30) continue; // ±30 s: extended / otra edición se filtra aparte
-        durScore = 1.0 - (diff / 30.0) * 0.5;
-      } else if (!ignoreDuration && (titleSim < 0.99 || artistSim < 0.99)) {
-        // Sin duración que lo confirme solo vale una coincidencia exacta.
-        continue;
-      }
-
-      final double score = titleSim * 2 + artistSim + durScore;
-      if (score > bestScore) {
-        bestScore = score;
-        best = Map<String, dynamic>.from(raw);
-      }
-    }
-    return best;
-  }
+  // Una letra equivocada es peor que ninguna. ID3 primero; si no, el nombre
+  // del archivo. LRCLIB /api/get con la duración medida y, si no hay, /api/search
+  // filtrado por artista, título y ±2 s. La misma función la usa Automix.
 
   Future<({List<dynamic> items, bool serverDown})> _lrclibSearch(String url) async {
     try {
@@ -444,97 +362,90 @@ class NlpWorker {
     return (items: const [], serverDown: false);
   }
 
-  /// Letra sincronizada, plana, sin coincidencia, o servidor caído (reintento).
-  Future<LyricStatus> _fetchAndSaveLrc(String audioPath, String lrcPath) async {
+  /// La misma búsqueda que Automix. No escribe el archivo.
+  Future<LyricChoice> lookupSafeLyric(String audioPath) async {
+    final id3 = await loadId3TitleArtist(audioPath);
+    final int localSec = await _getLocalDurationSec(audioPath);
+    final LyricIdentity id = lyricIdentity(
+      path: audioPath,
+      id3Artist: id3.artist,
+      id3Title: id3.title,
+      id3Album: id3.album,
+      durationSec: localSec,
+    );
+    if (id.artist.isEmpty || id.title.isEmpty || localSec <= 0) {
+      lastDetail = 'Sin coincidencia segura';
+      return const LyricChoice.none();
+    }
+
+    Map<String, dynamic>? direct;
+    var serverDown = false;
     try {
-      final filename = audioPath
-          .split(RegExp(r'[\\/]'))
-          .last
-          .replaceAll(RegExp(r'\.mp3$|\.webm$|\.m4a$', caseSensitive: false), '');
-      final parts = filename.split(' - ');
-      final localSec = await _getLocalDurationSec(audioPath);
-
-      final String artist = parts.length >= 2 ? parts[0].trim() : '';
-      final String title = parts.length >= 2
-          ? parts.sublist(1).join(' - ').trim()
-          : filename.trim();
-      final String cleanTitle = title
-          .replaceAll(RegExp(r'[\(\[\{][^\)\]\}]*[\)\]\}]'), ' ')
-          .replaceAll(RegExp(r'\s+'), ' ')
-          .trim();
-
-      final urls = <String>[
-        if (artist.isNotEmpty)
-          'https://lrclib.net/api/search?artist_name=${Uri.encodeComponent(artist)}&track_name=${Uri.encodeComponent(title)}',
-        if (artist.isNotEmpty && cleanTitle.isNotEmpty && cleanTitle != title)
-          'https://lrclib.net/api/search?artist_name=${Uri.encodeComponent(artist)}&track_name=${Uri.encodeComponent(cleanTitle)}',
-        'https://lrclib.net/api/search?q=${Uri.encodeComponent(artist.isEmpty ? cleanTitle : '$artist $cleanTitle')}',
-      ];
-
-      final bool extended = RegExp(
-        r'extended|extendid|versi[oó]n larga',
-        caseSensitive: false,
-      ).hasMatch('$filename $title');
-      bool serverDown = false;
-
-      Future<LyricStatus?> tryUrls({required bool ignoreDuration, required bool plain}) async {
-        for (final url in urls) {
-          final found = await _lrclibSearch(url);
-          if (found.serverDown) serverDown = true;
-          final best = _bestSafeMatch(
-            found.items,
-            artist: artist,
-            title: title,
-            localSec: localSec,
-            allowPlain: plain,
-            ignoreDuration: ignoreDuration,
-          );
-          if (best == null) {
-            await Future.delayed(const Duration(milliseconds: 250));
-            continue;
-          }
-          final String synced = best['syncedLyrics']?.toString() ?? '';
-          if (!plain && synced.trim().isNotEmpty) {
-            await File(lrcPath).writeAsString(synced);
-            await _markAuto(lrcPath);
-            await _processVocalBoundingBox(audioPath, synced, localSec);
-            lastDetail = '';
-            debugPrint(
-              "🟢 [NLP Tracker] Letra segura: ${best['artistName']} - ${best['trackName']} (${best['duration']}s vs $localSec s)",
-            );
-            return LyricStatus.ok;
-          }
-          final String plainText = best['plainLyrics']?.toString() ?? '';
-          if (plain && synced.trim().isEmpty && plainText.trim().isNotEmpty) {
-            await File(lrcPath).writeAsString('[gmx_plain:1]\n$plainText');
-            await _markAuto(lrcPath);
-            lastDetail = 'Letra plana (sin tiempos)';
-            return LyricStatus.plain;
-          }
-          await Future.delayed(const Duration(milliseconds: 250));
-        }
-        return null;
+      final response = await _resilientGet(lrclibGetUri(id).toString());
+      if (response.statusCode == 200) {
+        final parsed = jsonDecode(response.body);
+        if (parsed is Map) direct = Map<String, dynamic>.from(parsed);
+      } else if (response.statusCode == 429 ||
+          response.statusCode == 503 ||
+          response.statusCode >= 500) {
+        serverDown = true;
+        lastDetail = 'LRCLIB respondió HTTP ${response.statusCode}';
       }
+    } catch (e) {
+      serverDown = true;
+      lastDetail = 'LRCLIB no responde: $e';
+    }
 
-      final syncedHit = await tryUrls(ignoreDuration: false, plain: false);
-      if (syncedHit != null) return syncedHit;
-      if (extended || localSec >= 420) {
-        final loose = await tryUrls(ignoreDuration: true, plain: false);
-        if (loose != null) return loose;
+    final LyricChoice fromGet = chooseLrclibLyric(id, direct: direct);
+    if (fromGet.kind == LyricKind.synced) return fromGet;
+
+    final found = await _lrclibSearch(lrclibSearchUri(id).toString());
+    if (found.serverDown) serverDown = true;
+    final LyricChoice choice = chooseLrclibLyric(
+      id,
+      direct: direct,
+      searched: found.items,
+    );
+    if (choice.hasText) return choice;
+    if (serverDown) {
+      lastDetail = lastDetail.isEmpty ? 'Servidor de letras caído' : lastDetail;
+      return const LyricChoice.down();
+    }
+    lastDetail = 'Sin coincidencia segura';
+    return const LyricChoice.none();
+  }
+
+  /// Letra sincronizada, plana, sin coincidencia, o servidor caído (reintento).
+  /// No pisa un `.lrc` que ya existe.
+  Future<LyricStatus> _fetchAndSaveLrc(String audioPath, String lrcPath) async {
+    if (!lyricMayDownload(lrcExists: File(lrcPath).existsSync())) {
+      return LyricStatus.kept;
+    }
+    try {
+      final LyricChoice choice = await lookupSafeLyric(audioPath);
+      if (!lyricMayDownload(lrcExists: File(lrcPath).existsSync())) {
+        return LyricStatus.kept;
       }
-      final plainHit = await tryUrls(
-        ignoreDuration: extended || localSec >= 420,
-        plain: true,
-      );
-      if (plainHit != null) return plainHit;
-
-      if (serverDown) {
-        lastDetail = lastDetail.isEmpty ? 'Servidor de letras caído' : lastDetail;
-        debugPrint("🟡 [NLP Tracker] Servidor caído, se reintenta: $filename");
+      if (choice.kind == LyricKind.synced) {
+        await File(lrcPath).writeAsString(choice.fileText);
+        await _markAuto(lrcPath);
+        final int localSec = await _getLocalDurationSec(audioPath);
+        await _processVocalBoundingBox(audioPath, choice.body, localSec);
+        lastDetail = '';
+        debugPrint("🟢 [NLP Tracker] Letra segura: $audioPath");
+        return LyricStatus.ok;
+      }
+      if (choice.kind == LyricKind.plain) {
+        await File(lrcPath).writeAsString(choice.fileText);
+        await _markAuto(lrcPath);
+        lastDetail = 'Letra plana (sin tiempos)';
+        return LyricStatus.plain;
+      }
+      if (choice.serverDown) {
+        debugPrint("🟡 [NLP Tracker] Servidor caído, se reintenta: $audioPath");
         return LyricStatus.retry;
       }
-      lastDetail = 'Sin coincidencia segura';
-      debugPrint("🟡 [NLP Tracker] Sin coincidencia segura: $filename");
+      debugPrint("🟡 [NLP Tracker] Sin coincidencia segura: $audioPath");
       return LyricStatus.noMatch;
     } catch (e) {
       lastDetail = '$e';

@@ -5,7 +5,7 @@ import '../core/id3_names.dart';
 
 final Map<String, Future<Id3Names>> _cache = {};
 
-/// TIT2 / TPE1 de un archivo, sin decodificar el audio y sin abrir un
+/// TIT2 / TPE1 / TALB de un archivo, sin decodificar el audio y sin abrir un
 /// reproductor. Igual en Windows, Android, macOS e iPhone: solo lee la
 /// cabecera ID3v2. Sin etiqueta, cadenas vacías y el nombre de archivo manda.
 Future<Id3Names> loadId3TitleArtist(String path) {

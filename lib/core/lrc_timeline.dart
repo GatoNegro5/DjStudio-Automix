@@ -68,6 +68,23 @@ String _mapStamps(String content, int deltaMs) {
   });
 }
 
+/// Milisegundos a mover la letra, o null si esta pasada no midió un corte.
+///
+/// Solo cuenta un recorte de audio de esta pasada (`audioCut`) con
+/// [trimHeadMs] > 0. Un `GMX_TRIM` guardado de antes no se reaplica: la
+/// letra se buscó contra el archivo como está. Take On Me llevaba
+/// `[gmx_shift:1010]` sin ese corte y la letra quedaba ~0,6 s adelantada.
+int? measuredLyricShiftMs({
+  required bool audioCut,
+  required int trimHeadMs,
+  required int residualMs,
+}) {
+  if (!audioCut || trimHeadMs <= 0) return null;
+  final int net = trimHeadMs - residualMs;
+  if (net == 0) return null;
+  return net;
+}
+
 /// Mueve cada sello por el neto `trimMs - extraDelayMs`.
 /// El corte adelanta la letra; el retardo residual del encoder (si el
 /// reproductor no honra el tag) la atrasa. La marca guarda ese neto, que
