@@ -10,6 +10,18 @@ class MainFlutterWindow: NSWindow {
 
     RegisterGeneratedPlugins(registry: flutterViewController)
 
+    let thermal = FlutterMethodChannel(
+      name: "gatomix/thermal",
+      binaryMessenger: flutterViewController.engine.binaryMessenger
+    )
+    thermal.setMethodCallHandler { call, result in
+      if call.method == "status" {
+        result(ProcessInfo.processInfo.thermalState.rawValue)
+      } else {
+        result(FlutterMethodNotImplemented)
+      }
+    }
+
     super.awakeFromNib()
   }
 }

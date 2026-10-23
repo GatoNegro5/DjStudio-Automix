@@ -1342,6 +1342,7 @@ fn analyze_and_tag(input_path: &str, force: bool) -> Result<bool, String> {
 /// Masterizado de una pista: volumen + silencios + BPM, sin recodificar.
 /// (Mismo nombre y firma que antes; ya no usa FFmpeg.)
 pub async fn process_full_pipeline(input_path: String, is_megamix: bool) -> Result<bool, String> {
+    bind_master_thread();
     if is_megamix {
         return Ok(true);
     }
@@ -2799,6 +2800,123 @@ pub struct MasterRewrite {
     pub residual_ms: u32,
 }
 
+/// Índice de núcleo: `requested % ncpu`. Cero CPUs cuenta como una.
+fn master_core_index(requested: usize, ncpu: usize) -> usize {
+    if ncpu == 0 {
+        0
+    } else {
+        requested % ncpu
+    }
+}
+
+/// Ancla el hilo actual al núcleo pedido.
+/// Linux/Android: `sched_setaffinity`. Windows: `SetThreadGroupAffinity`.
+/// macOS/iOS no tienen afinidad: QoS utility y el llamador ya va en un hilo.
+fn pin_current_thread(requested: usize) {
+    let n = std::thread::available_parallelism()
+        .map(|p| p.get())
+        .unwrap_or(1);
+    let core = master_core_index(requested, n);
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    unsafe {
+        let mut set = [0u8; 128];
+        if core < 128 * 8 {
+            set[core / 8] |= 1u8 << (core % 8);
+        }
+        extern "C" {
+            fn sched_setaffinity(pid: i32, cpusetsize: usize, mask: *const u8) -> i32;
+        }
+        let _ = sched_setaffinity(0, set.len(), set.as_ptr());
+    }
+    #[cfg(target_os = "windows")]
+    unsafe {
+        #[repr(C)]
+        struct GroupAffinity {
+            mask: usize,
+            group: u16,
+            reserved: [u16; 3],
+        }
+        extern "system" {
+            fn GetCurrentThread() -> isize;
+            fn SetThreadGroupAffinity(
+                thread: isize,
+                affinity: *const GroupAffinity,
+                previous: *mut GroupAffinity,
+            ) -> i32;
+            fn SetThreadAffinityMask(thread: isize, mask: usize) -> usize;
+        }
+        let bit = core % 64;
+        let group = GroupAffinity {
+            mask: 1usize << bit,
+            group: (core / 64) as u16,
+            reserved: [0; 3],
+        };
+        let thread = GetCurrentThread();
+        if SetThreadGroupAffinity(thread, &group, std::ptr::null_mut()) == 0 {
+            let _ = SetThreadAffinityMask(thread, 1usize << bit);
+        }
+    }
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    unsafe {
+        extern "C" {
+            fn pthread_set_qos_class_self_np(class: u32, relative: i32) -> i32;
+        }
+        const QOS_CLASS_UTILITY: u32 = 0x11;
+        let _ = pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+        let _ = core;
+    }
+}
+
+fn limit_omp_to_one() {
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "ios"
+    ))]
+    unsafe {
+        extern "C" {
+            fn setenv(name: *const i8, value: *const i8, overwrite: i32) -> i32;
+        }
+        let name = b"OMP_NUM_THREADS\0";
+        let value = b"1\0";
+        let _ = setenv(
+            name.as_ptr() as *const i8,
+            value.as_ptr() as *const i8,
+            1,
+        );
+    }
+    #[cfg(target_os = "windows")]
+    unsafe {
+        extern "system" {
+            fn SetEnvironmentVariableW(name: *const u16, value: *const u16) -> i32;
+        }
+        let name: Vec<u16> = "OMP_NUM_THREADS"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let value: Vec<u16> = "1".encode_utf16().chain(std::iter::once(0)).collect();
+        let _ = SetEnvironmentVariableW(name.as_ptr(), value.as_ptr());
+    }
+}
+
+/// Lee `GMX_MASTER_CORE` (lo publica Dart antes de cada canción) y ancla
+/// este hilo. Vacío o ausente: no toca la afinidad.
+fn bind_master_thread() {
+    let Ok(raw) = std::env::var("GMX_MASTER_CORE") else {
+        return;
+    };
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return;
+    }
+    let Ok(requested) = raw.parse::<usize>() else {
+        return;
+    };
+    pin_current_thread(requested);
+    limit_omp_to_one();
+}
+
 /// Recorta silencios y/o normaliza a −14 LUFS. Una sola generación si hacen
 /// falta los dos. `force_head_ms` / `force_tail_ms` < 0 = detectar; si no,
 /// cortar exactamente esos ms (el `_K` acompaña a la pista). Una pista que
@@ -2811,6 +2929,7 @@ pub fn master_rewrite(
     force_head_ms: i32,
     force_tail_ms: i32,
 ) -> Result<MasterRewrite, String> {
+    bind_master_thread();
     if !Path::new(&input_path).exists() {
         return Err("Archivo no encontrado en I/O.".to_string());
     }
@@ -3336,19 +3455,21 @@ impl KStft {
 
 type KInfer = Box<dyn FnMut(&[f32]) -> Result<Vec<f32>, String>>;
 
-/// Escritorio (Windows/macOS): ONNX Runtime oficial (MIT), SIMD + varios
-/// hilos; muy superior a un intérprete en Rust puro para convoluciones.
+/// Escritorio (Windows/macOS): ONNX Runtime oficial (MIT). Un solo hilo,
+/// el mismo que ancló Masterizar: sin pool intra/inter.
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 fn karaoke_backend(model_path: &str) -> Result<KInfer, String> {
     use ort::session::{builder::GraphOptimizationLevel, Session};
     use ort::value::Tensor;
-    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-    let threads = (cores * 3 / 4).clamp(2, 16);
     let mut session = Session::builder()
         .map_err(|e| e.to_string())?
         .with_optimization_level(GraphOptimizationLevel::Level3)
         .map_err(|e| e.to_string())?
-        .with_intra_threads(threads)
+        .with_intra_threads(1)
+        .map_err(|e| e.to_string())?
+        .with_inter_threads(1)
+        .map_err(|e| e.to_string())?
+        .with_parallel_execution(false)
         .map_err(|e| e.to_string())?
         .commit_from_file(model_path)
         .map_err(|e| format!("Modelo inválido: {e}"))?;
@@ -3375,8 +3496,7 @@ fn karaoke_backend(model_path: &str) -> Result<KInfer, String> {
         .map_err(|e| e.to_string())?
         .into_runnable()
         .map_err(|e| e.to_string())?;
-    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2);
-    let pool = tract_onnx::tract_core::internal::multithread::Executor::multithread((cores / 2).clamp(1, 8));
+    let pool = tract_onnx::tract_core::internal::multithread::Executor::SingleThread;
     Ok(Box::new(move |data: &[f32]| {
         let input = Tensor::from_shape(&[1, 4, K_DIM_F, K_DIM_T], data).map_err(|e| e.to_string())?;
         let out = tract_onnx::tract_core::internal::multithread::multithread_tract_scope(
@@ -3391,6 +3511,7 @@ fn karaoke_backend(model_path: &str) -> Result<KInfer, String> {
 /// Separa la voz y escribe la pista instrumental como MP3 320 kbps.
 /// `model_path` = UVR-MDX-NET-Inst_HQ_3.onnx. Sin Python ni FFmpeg.
 pub fn karaoke_separate(input_path: String, model_path: String, output_path: String) -> Result<bool, String> {
+    bind_master_thread();
     KAR_CANCEL.store(false, Ordering::Relaxed);
     KAR_PROGRESS.store(0, Ordering::Relaxed);
 
@@ -4076,5 +4197,66 @@ mod karaoke_tests {
         });
         super::karaoke_separate(inp, model, out).unwrap();
         println!("TIEMPO {:?}", t.elapsed());
+    }
+}
+
+#[cfg(test)]
+mod affinity_tests {
+    use super::{master_core_index, pin_current_thread};
+
+    #[test]
+    fn el_nucleo_rota_y_el_ancla_no_entra_en_panico() {
+        assert_eq!(master_core_index(0, 4), 0);
+        assert_eq!(master_core_index(5, 4), 1);
+        assert_eq!(master_core_index(3, 1), 0);
+        assert_eq!(master_core_index(2, 0), 0);
+        pin_current_thread(0);
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        unsafe {
+            extern "C" {
+                fn sched_getaffinity(pid: i32, cpusetsize: usize, mask: *mut u8) -> i32;
+                fn sched_setaffinity(pid: i32, cpusetsize: usize, mask: *const u8) -> i32;
+            }
+            let mut set = [0u8; 128];
+            assert_eq!(sched_getaffinity(0, set.len(), set.as_mut_ptr()), 0);
+            let bits: u32 = set.iter().map(|b| b.count_ones()).sum();
+            assert_eq!(bits, 1, "el hilo quedó en un solo núcleo");
+            assert_eq!(set[0] & 1, 1, "el núcleo pedido fue el 0");
+            let n = std::thread::available_parallelism()
+                .map(|p| p.get())
+                .unwrap_or(1)
+                .min(1024);
+            let mut all = [0u8; 128];
+            for i in 0..n {
+                all[i / 8] |= 1u8 << (i % 8);
+            }
+            let _ = sched_setaffinity(0, all.len(), all.as_ptr());
+        }
+        pin_current_thread(99999);
+    }
+
+    #[test]
+    fn el_nucleo_publicado_se_lee_sin_cache() {
+        unsafe {
+            extern "C" {
+                fn setenv(name: *const i8, value: *const i8, overwrite: i32) -> i32;
+            }
+            let name = b"GMX_MASTER_CORE\0";
+            let value = b"2\0";
+            assert_eq!(
+                setenv(name.as_ptr() as *const i8, value.as_ptr() as *const i8, 1),
+                0
+            );
+        }
+        assert_eq!(std::env::var("GMX_MASTER_CORE").ok().as_deref(), Some("2"));
+        super::bind_master_thread();
+        unsafe {
+            extern "C" {
+                fn setenv(name: *const i8, value: *const i8, overwrite: i32) -> i32;
+            }
+            let name = b"GMX_MASTER_CORE\0";
+            let empty = b"\0";
+            let _ = setenv(name.as_ptr() as *const i8, empty.as_ptr() as *const i8, 1);
+        }
     }
 }

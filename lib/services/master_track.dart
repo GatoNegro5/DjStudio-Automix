@@ -17,12 +17,14 @@ class MasterOutcome {
   final int trimHeadMs;
   final LyricStatus? lyric;
   final String detail;
+  final bool stopped;
 
   const MasterOutcome({
     required this.path,
     required this.trimHeadMs,
     required this.lyric,
     required this.detail,
+    this.stopped = false,
   });
 }
 
@@ -35,7 +37,17 @@ class MasterTrack {
     required bool withLyrics,
     bool writeCues = true,
     void Function(String stage)? onStage,
+    bool Function()? shouldStop,
   }) async {
+    bool stop() => shouldStop?.call() == true;
+    MasterOutcome abortedAt(String at) => MasterOutcome(
+      path: at,
+      trimHeadMs: 0,
+      lyric: null,
+      detail: '',
+      stopped: true,
+    );
+
     onStage?.call('METADATA_CLEANUP');
     final String oldPath = path;
     var current = await ref.read(metadataWorkerProvider).processSingleFile(path);
@@ -50,6 +62,7 @@ class MasterTrack {
     await _mark(current, 'GMX_NAME_OK', '1');
     await _mark(current, 'GMX_TYPE', mega ? 'MEGAMIX' : 'SONG');
     await _mark(current, 'GMX_BACKUP', '1');
+    if (stop()) return abortedAt(current);
 
     LyricStatus? lyric;
     String detail = '';
@@ -84,6 +97,7 @@ class MasterTrack {
         if (start != null) await _mark(current, 'GMX_LYR_START_MS', '$start');
       }
     }
+    if (stop()) return abortedAt(current);
 
     onStage?.call('DSP_ANALYSIS');
     final before = await rust_dsp.readGmxMarks(inputPath: current);
@@ -119,6 +133,7 @@ class MasterTrack {
         await _trimKaraokeTwin(current, trimHead, rw.trimTailMs);
       }
     }
+    if (stop()) return abortedAt(current);
 
     final String karaokeTwin = current.replaceAll(
       RegExp(r'\.mp3$', caseSensitive: false),
@@ -142,6 +157,7 @@ class MasterTrack {
     if (after.trimMs >= 0 && after.lufsDone && after.bpmOk && lyricsOk) {
       await rust_dsp.injectWatermark(inputPath: current);
     }
+    if (stop()) return abortedAt(current);
 
     if (writeCues) {
       onStage?.call('DB_ISAR');

@@ -133,12 +133,8 @@ class PipelineNotifier extends Notifier<PipelineState> {
 
     // Delegación estricta a la capa de infraestructura.
     MediaProcessKiller.executeGlobalHardAbort();
-
-    // 🛠️ FIX ARQUITECTÓNICO: Liberación de Bloqueo Fantasma (Ghost Lock)
-    // Forzamos el reset de la UI 2 segundos después de matar los procesos nativos.
-    Future.delayed(const Duration(seconds: 2), () {
-      reset();
-    });
+    // isAborted se queda en true hasta que el lote salga y llame a reset().
+    // Un reset a los 2 s reanudaba la canción siguiente y la pausa.
   }
 
   void reset() {

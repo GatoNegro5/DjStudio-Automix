@@ -9,6 +9,9 @@ import 'package:gatomix/src/rust/api/core_dsp.dart' as rust_dsp;
 import '../../core/brand_paths.dart';
 import '../../core/gmx_status.dart';
 import '../../core/lrc_timeline.dart';
+import '../../core/master_affinity.dart';
+import '../../core/master_cool.dart';
+import '../../core/master_pause.dart';
 import '../../core/master_profile.dart';
 import '../../djiphone/iphone_library.dart';
 import '../../providers/directory_provider.dart';
@@ -417,7 +420,11 @@ class DspNlpWorkspace extends ConsumerWidget {
 
     final pipe = ref.read(pipelineProvider.notifier);
     ref.read(directoryProvider.notifier).scanPath(targetPath);
-    bool checkAbort() => ref.read(pipelineProvider).isAborted;
+    bool latchedAbort = false;
+    bool checkAbort() {
+      if (ref.read(pipelineProvider).isAborted) latchedAbort = true;
+      return latchedAbort;
+    }
 
     int consecutiveErrors = 0;
     String? criticalFailureMessage;
@@ -498,6 +505,7 @@ class DspNlpWorkspace extends ConsumerWidget {
       final MasterProfile profile = MasterProfile.current();
       int cursor = 0;
       int finished = 0;
+      int songSlot = 0;
       bool stopAll = false;
 
       Future<void> lane() async {
@@ -528,7 +536,22 @@ class DspNlpWorkspace extends ConsumerWidget {
             continue;
           }
 
+          final int core = MasterCool.coreForSong(
+            songSlot,
+            Platform.numberOfProcessors,
+          );
+          songSlot++;
+          MasterAffinity.publish(core);
           final Stopwatch trackClock = Stopwatch()..start();
+          void logSong(int pauseMs) {
+            if (trackClock.isRunning) trackClock.stop();
+            final String nucleo = (Platform.isIOS || Platform.isMacOS)
+                ? '$core/qos'
+                : '$core';
+            debugPrint(
+              'MASTER núcleo=$nucleo proceso=${trackClock.elapsedMilliseconds}ms pausa=${pauseMs}ms $originalName',
+            );
+          }
 
           try {
             final bool isMp3 = currentPath.toLowerCase().endsWith('.mp3');
@@ -545,6 +568,7 @@ class DspNlpWorkspace extends ConsumerWidget {
                   .processSingleFile(currentPath);
               if (stopAll || checkAbort()) {
                 stopAll = true;
+                logSong(0);
                 return;
               }
               currentStage = "DSP_ANALYSIS";
@@ -557,6 +581,11 @@ class DspNlpWorkspace extends ConsumerWidget {
               final bool analyzed = await ref
                   .read(dspWorkerProvider)
                   .analyzeTrack(currentPath);
+              if (stopAll || checkAbort()) {
+                stopAll = true;
+                logSong(0);
+                return;
+              }
               if (analyzed) {
                 currentStage = "WATERMARK_ID3";
                 await rust_dsp
@@ -567,6 +596,11 @@ class DspNlpWorkspace extends ConsumerWidget {
                         "Timeout: Bloqueo de disco al inyectar ID3v2.",
                       ),
                     );
+              }
+              if (stopAll || checkAbort()) {
+                stopAll = true;
+                logSong(0);
+                return;
               }
               (checkpoint['processed'] as List).add(originalName);
             } else {
@@ -584,6 +618,7 @@ class DspNlpWorkspace extends ConsumerWidget {
                   ref: ref,
                   path: currentPath,
                   withLyrics: true,
+                  shouldStop: checkAbort,
                   onStage: (String stage) {
                     currentStage = stage;
                     pipe.updateProgress(
@@ -603,8 +638,9 @@ class DspNlpWorkspace extends ConsumerWidget {
                     'Audio intacto · ${outcome.detail}',
                   );
                 }
-                if (stopAll || checkAbort()) {
+                if (outcome.stopped || stopAll || checkAbort()) {
                   stopAll = true;
+                  logSong(0);
                   return;
                 }
                 if (outcome.lyric != LyricStatus.retry) {
@@ -711,6 +747,7 @@ class DspNlpWorkspace extends ConsumerWidget {
               checkpointFile.writeAsStringSync(jsonEncode(checkpoint));
               pipe.abort();
               stopAll = true;
+              logSong(0);
               return;
             } else if (consecutiveErrors >= 3) {
               isThermalThrottling = false;
@@ -720,24 +757,38 @@ class DspNlpWorkspace extends ConsumerWidget {
               checkpointFile.writeAsStringSync(jsonEncode(checkpoint));
               pipe.abort();
               stopAll = true;
+              logSong(0);
               return;
             }
           }
 
-          if (profile.thermalPause) {
-            final int scaled = (trackClock.elapsedMilliseconds * 0.7)
-                .round()
-                .clamp(300, 4000);
-            final int gap = profile.thermalGap.inMilliseconds;
-            final int restMs = scaled < gap ? gap : scaled;
-            await Future.delayed(Duration(milliseconds: restMs));
+          if (trackClock.isRunning) trackClock.stop();
+          if (stopAll || checkAbort()) {
+            logSong(0);
+            stopAll = true;
+            return;
+          }
+          var pauseMs = 0;
+          if (profile.thermalPause &&
+              _batchHasPending(files, cursor, total, checkpoint)) {
+            pauseMs = await MasterPause.run(
+              baseMs: profile.thermalGap.inMilliseconds,
+              cancelled: checkAbort,
+              onTick: (String label) {
+                pipe.updateProgress(finished + 1, total, originalName, label);
+              },
+            );
+          }
+          logSong(pauseMs);
+          if (stopAll || checkAbort()) {
+            stopAll = true;
+            return;
           }
           finished++;
         }
       }
 
-      final int lanes = profile.parallel.clamp(1, 4);
-      await Future.wait(List<Future<void>>.generate(lanes, (_) => lane()));
+      await lane();
 
       if (!checkAbort()) {
         pipe.updateProgress(
@@ -757,6 +808,7 @@ class DspNlpWorkspace extends ConsumerWidget {
     } catch (e) {
       debugPrint("🔴 [ERROR AL PREPARAR CARPETA]: $e");
     } finally {
+      MasterAffinity.clear();
       if (context.mounted) {
         final state = ref.read(pipelineProvider);
 
@@ -1249,7 +1301,7 @@ class DspNlpWorkspace extends ConsumerWidget {
             _buildActionCard(
               title: "MASTERIZACIÓN PROFESIONAL",
               description:
-                  "TODO EN UNO en PC/Mac: nombre, letra, corte real de silencios, BPM y −14 LUFS (una generación, sin EQ). El _K va al final. Retoma si se corta.",
+                  "TODO EN UNO en PC/Mac: nombre, letra, corte real de silencios, BPM y −14 LUFS (una generación, sin EQ), una canción a la vez con enfriamiento. El _K va al final. Retoma si se corta.",
               icon: Icons.rocket_launch,
               color: const Color(0xFF39FF14),
               isPrimary: true,
@@ -1268,7 +1320,7 @@ class DspNlpWorkspace extends ConsumerWidget {
             _buildActionCard(
               title: "PREPARACIÓN MÓVIL",
               description:
-                  "TODO EN UNO: nombre, letra, corte real, BPM y −14 LUFS, una canción a la vez, con pausa térmica. Sin _K (eso es de PC/Mac). Retoma si se corta.",
+                  "TODO EN UNO: nombre, letra, corte real, BPM y −14 LUFS, una canción a la vez, con enfriamiento. Sin _K (eso es de PC/Mac). Retoma si se corta.",
               icon: Icons.phone_android,
               color: Colors.cyanAccent,
               isPrimary: true,
@@ -2202,6 +2254,21 @@ class DspNlpWorkspace extends ConsumerWidget {
       ),
     );
   }
+}
+
+bool _batchHasPending(
+  List<File> files,
+  int cursor,
+  int total,
+  Map<String, dynamic> checkpoint,
+) {
+  final List<dynamic> processed = checkpoint['processed'] as List<dynamic>;
+  final List<dynamic> failed = checkpoint['failed'] as List<dynamic>;
+  for (int j = cursor; j < total; j++) {
+    final String name = files[j].uri.pathSegments.last;
+    if (!processed.contains(name) && !failed.contains(name)) return true;
+  }
+  return false;
 }
 
 String _masterStageLabel(String stage) {

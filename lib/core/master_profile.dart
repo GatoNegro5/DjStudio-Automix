@@ -1,12 +1,12 @@
 import 'dart:io';
 
-/// Perfil de Masterizar. La lógica de cada paso es la misma en las 4
-/// plataformas; cambian el paralelismo, la pausa térmica y el karaoke `_K`.
+/// Perfil de Masterizar. Las 4 plataformas procesan una canción a la vez,
+/// rotan el núcleo y enfrían 12 s. El karaoke `_K` sigue solo en escritorio.
 class MasterProfile {
-  /// Canciones a la vez. Celular: 1. Escritorio: 2–4.
+  /// Canciones a la vez. Siempre 1: un hilo, un núcleo.
   final int parallel;
 
-  /// Pausa entre canciones para no cocinar el teléfono.
+  /// Pausa de enfriamiento entre canción y canción.
   final bool thermalPause;
 
   final Duration thermalGap;
@@ -26,23 +26,21 @@ class MasterProfile {
   static const MasterProfile phone = MasterProfile(
     parallel: 1,
     thermalPause: true,
-    thermalGap: Duration(seconds: 2),
+    thermalGap: Duration(seconds: 12),
     allowKaraoke: false,
   );
 
   static MasterProfile desktop() {
-    final int cores = Platform.numberOfProcessors;
-    final int lanes = cores >= 8 ? 4 : (cores >= 4 ? 3 : 2);
-    return MasterProfile(
-      parallel: lanes,
-      thermalPause: false,
-      thermalGap: Duration.zero,
+    return const MasterProfile(
+      parallel: 1,
+      thermalPause: true,
+      thermalGap: Duration(seconds: 12),
       allowKaraoke: true,
     );
   }
 
-  /// Android e iPhone: una canción y pausa. Windows, Mac y el resto de
-  /// escritorio: 2–4 en paralelo, sin pausa, con `_K`.
+  /// Android, iPhone, Windows y Mac: una canción, núcleo turnado y
+  /// enfriamiento de 12 s. `_K` solo en escritorio.
   static MasterProfile current() {
     if (Platform.isAndroid || Platform.isIOS) return phone;
     return desktop();
