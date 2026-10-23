@@ -450,7 +450,7 @@ class NlpWorker {
       final filename = audioPath
           .split(RegExp(r'[\\/]'))
           .last
-          .replaceAll(RegExp(r'\.mp3$|\.webm$', caseSensitive: false), '');
+          .replaceAll(RegExp(r'\.mp3$|\.webm$|\.m4a$', caseSensitive: false), '');
       final parts = filename.split(' - ');
       final localSec = await _getLocalDurationSec(audioPath);
 
@@ -649,7 +649,7 @@ class NlpWorker {
     if (!file.existsSync()) return LyricStatus.failed;
 
     final lrcPath = filePath.replaceAll(
-      RegExp(r'\.mp3$|\.webm$', caseSensitive: false),
+      RegExp(r'\.mp3$|\.webm$|\.m4a$', caseSensitive: false),
       '.lrc',
     );
     final lrcFile = File(lrcPath);

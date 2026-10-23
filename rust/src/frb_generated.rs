@@ -273,6 +273,7 @@ fn wire__crate__api__core_dsp__encode_to_mp3_impl(
             let api_input_path = <String>::sse_decode(&mut deserializer);
             let api_output_path = <String>::sse_decode(&mut deserializer);
             let api_bitrate_kbps = <u32>::sse_decode(&mut deserializer);
+            let api_master = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, String>((move || {
@@ -280,6 +281,7 @@ fn wire__crate__api__core_dsp__encode_to_mp3_impl(
                         api_input_path,
                         api_output_path,
                         api_bitrate_kbps,
+                        api_master,
                     )?;
                     Ok(output_ok)
                 })())

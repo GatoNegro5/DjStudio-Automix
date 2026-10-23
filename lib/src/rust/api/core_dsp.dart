@@ -91,14 +91,17 @@ Future<bool> clearWatermark({required String inputPath}) =>
 /// Convierte CUALQUIER audio decodificable (m4a/AAC, MP3, FLAC, WAV, OGG…)
 /// a MP3 CBR con LAME (calidad máxima). Decodifica en streaming (RAM plana).
 /// Reemplaza al antiguo `ffmpeg -vn -b:a 320k`.
+/// Con [master], el mismo pase recorta y deja −14 LUFS.
 Future<bool> encodeToMp3({
   required String inputPath,
   required String outputPath,
   required int bitrateKbps,
+  bool master = false,
 }) => RustLib.instance.api.crateApiCoreDspEncodeToMp3(
   inputPath: inputPath,
   outputPath: outputPath,
   bitrateKbps: bitrateKbps,
+  master: master,
 );
 
 Future<GmxMarks> readGmxMarks({required String inputPath}) =>

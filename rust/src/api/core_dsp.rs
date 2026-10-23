@@ -515,8 +515,45 @@ fn detect_bpm(mono: &[f32], rate: u32, prior: Option<f64>) -> Option<f64> {
         if let Some(lag) = lag_matching_prior(lag_f, &scores, env_rate, min_lag, max_lag, want) {
             lag_f = lag;
         }
+        // Con TBPM previo manda el alias (±2 %). No se empuja a 90–180:
+        // una cumbia en 108 se queda en 108 aunque 144 puntúe más.
+        return Some(fold_bpm_band(60.0 * env_rate / lag_f));
     }
-    Some(fold_bpm_band(60.0 * env_rate / lag_f))
+    Some(prefer_dance_tempo(lag_f, &scores, env_rate, min_lag, max_lag))
+}
+
+/// Sin TBPM previo: el lag ganador y sus vecinos ×2, ÷2, ×4/3 y ×3/4.
+/// Gana el de mayor autocorrelación cuyo BPM cae en 90–180 (pop, rock, disco).
+/// Si ninguno entra, se pliega a 78–165 como antes.
+fn prefer_dance_tempo(
+    lag_f: f64,
+    scores: &[f64],
+    env_rate: f64,
+    min_lag: usize,
+    max_lag: usize,
+) -> f64 {
+    let mut best: Option<(f64, f64)> = None;
+    // lag×0,5 = tempo×2; lag×2 = tempo÷2; lag×3/4 = tempo×4/3; lag×4/3 = tempo×3/4.
+    for factor in [1.0_f64, 0.5, 2.0, 3.0 / 4.0, 4.0 / 3.0] {
+        let lag = lag_f * factor;
+        let ilag = lag.round() as usize;
+        if ilag < min_lag || ilag > max_lag || ilag >= scores.len() {
+            continue;
+        }
+        let score = scores[ilag];
+        if score <= 0.0 {
+            continue;
+        }
+        let bpm = 60.0 * env_rate / lag;
+        if !(90.0..=180.0).contains(&bpm) {
+            continue;
+        }
+        if best.map(|(s, _)| score > s).unwrap_or(true) {
+            best = Some((score, bpm));
+        }
+    }
+    best.map(|(_, bpm)| bpm)
+        .unwrap_or_else(|| fold_bpm_band(60.0 * env_rate / lag_f))
 }
 
 /// Rejilla de golpes de un tramo: BPM medido y posición (ms absolutos en la
@@ -1067,9 +1104,27 @@ fn read_lame_delay_padding(buf: &[u8]) -> Option<(u32, u32)> {
 }
 
 /// Convierte CUALQUIER audio decodificable (m4a/AAC, MP3, FLAC, WAV, OGG…)
-/// a MP3 CBR con LAME (calidad máxima). Decodifica en streaming (RAM plana).
-/// Reemplaza al antiguo `ffmpeg -vn -b:a 320k`.
-pub fn encode_to_mp3(input_path: String, output_path: String, bitrate_kbps: u32) -> Result<bool, String> {
+/// a MP3 CBR con LAME. `master` aplica el mismo corte y −14 LUFS que
+/// Masterizar, en esta única codificación, y deja las marcas GMX. No escribe
+/// el BPM: eso sigue en `master_rewrite`.
+pub fn encode_to_mp3(
+    input_path: String,
+    output_path: String,
+    bitrate_kbps: u32,
+    master: bool,
+) -> Result<bool, String> {
+    if master {
+        encode_mastered_mp3(&input_path, &output_path, bitrate_kbps)
+    } else {
+        encode_plain_mp3(input_path, output_path, bitrate_kbps)
+    }
+}
+
+fn encode_plain_mp3(
+    input_path: String,
+    output_path: String,
+    bitrate_kbps: u32,
+) -> Result<bool, String> {
     let (mut format, track_id, params) = open_format(&input_path)?;
     let rate = params.sample_rate.ok_or("Sin frecuencia de muestreo")?;
     let mut decoder = symphonia::default::get_codecs()
@@ -1123,6 +1178,70 @@ pub fn encode_to_mp3(input_path: String, output_path: String, bitrate_kbps: u32)
     Ok(true)
 }
 
+/// AAC/M4A → MP3 con el corte y el −14 en la misma codificación LAME.
+/// El bitrate es el que pidió Descargas (no el promedio del AAC). Sin TBPM:
+/// Masterizar lo mide después, sin volver a codificar si las marcas ya están.
+fn encode_mastered_mp3(input: &str, output: &str, kbps: u32) -> Result<bool, String> {
+    let m = measure_stream(input)?;
+    if m.decode_errors > 0 {
+        encode_plain_mp3(input.to_string(), output.to_string(), kbps)?;
+        let mut tag = Tag::read_from_path(output).unwrap_or_else(|_| Tag::new());
+        set_ext(
+            &mut tag,
+            KEY_REASON,
+            format!("decode_errors={}", m.decode_errors),
+        );
+        set_ext(&mut tag, KEY_V, SCHEMA_V2.to_string());
+        tag.write_to_path(output, Version::Id3v24)
+            .map_err(|e| e.to_string())?;
+        return Ok(true);
+    }
+    let plan = plan_span(&m, true, true, -1, -1, 0.0);
+    let tmp = format!("{output}.part");
+    encode_master_span(
+        input,
+        &tmp,
+        m.rate,
+        m.channels,
+        m.samples,
+        plan.head_s,
+        plan.tail_s,
+        plan.gain,
+        plan.lufs_encode,
+        kbps,
+    )
+    .map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        e
+    })?;
+    let mut tag = Tag::new();
+    set_ext(&mut tag, KEY_TRIM, plan.cut_head_ms.to_string());
+    set_ext(&mut tag, KEY_TRIM_TAIL, plan.cut_tail_ms.to_string());
+    set_ext(&mut tag, KEY_LEAD, plan.new_lead_ms.to_string());
+    set_ext(&mut tag, KEY_TAIL, plan.new_tail_ms.to_string());
+    if plan.lufs_encode || plan.lufs_seal {
+        set_ext(&mut tag, KEY_LUFS, format!("{:.2}", plan.lufs));
+        set_ext(&mut tag, KEY_LUFS_DONE, "-14".to_string());
+    }
+    if plan.lufs_encode {
+        set_ext(&mut tag, "REPLAYGAIN_TRACK_GAIN", "-4.00 dB".to_string());
+        set_ext(
+            &mut tag,
+            "REPLAYGAIN_TRACK_PEAK",
+            format!("{TP_CEILING:.6}"),
+        );
+    }
+    tag.remove_extended_text(Some(KEY_REASON), None);
+    set_ext(&mut tag, KEY_V, SCHEMA_V2.to_string());
+    tag.write_to_path(&tmp, Version::Id3v24).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        e.to_string()
+    })?;
+    let _ = std::fs::remove_file(output);
+    std::fs::rename(&tmp, output).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
 // ════════════════════════════════════════════════════════════════════════
 //  master_rewrite — recorte real + −14 LUFS en UNA codificación LAME.
 //  Sin EQ. Silencio −50 dBFS. Cabeza: deja ~150 ms. Cola: fade 300 ms.
@@ -1148,8 +1267,12 @@ const SCHEMA_V2: &str = "2";
 const TARGET_LUFS: f64 = -14.0;
 const HEAD_KEEP_MS: u64 = 150;
 const TAIL_FADE_MS: u64 = 300;
-/// −1 dBTP.
-const TP_CEILING: f32 = 0.8912509;
+/// −1 dBTP. Por encima de esto el master vuelve a codificar.
+const TP_CEILING: f32 = 0.8912509381337456;
+/// Techo del limitador (−1,5 dBFS): margen para el overshoot del MP3.
+const TP_LIMIT: f32 = 0.8413951416451951;
+/// Segundo pase si el MP3 sigue por encima de −1 dBTP.
+const TP_LIMIT_RETRY: f32 = 0.7943282347242815;
 
 fn bitrate_at_most(kbps: u32) -> mp3lame_encoder::Bitrate {
     use mp3lame_encoder::Bitrate as B;
@@ -1232,10 +1355,25 @@ fn consider_peak(hist: &mut [f32; 4], sample: f32, peak: &mut f32) {
     }
 }
 
+/// Delay y padding que el reproductor (libmpv / FFmpeg) no hace sonar.
+/// Cabeza: delay del tag LAME + 528 + 1 (retardo del decodificador MPEG-1
+/// Layer III). Cola: padding del mismo tag. Sin tag, no se salta nada.
+fn lame_player_skip(path: &str) -> (u64, u32) {
+    let Ok(data) = std::fs::read(path) else {
+        return (0, 0);
+    };
+    match read_lame_delay_padding(&data) {
+        Some((delay, padding)) => (delay as u64 + 528 + 1, padding),
+        None => (0, 0),
+    }
+}
+
 /// Decodifica la pista. Devuelve cuántos paquetes se descartaron por
 /// `DecodeError` (el audio de esos paquetes no entra en el PCM).
+/// Con `gapless`, el PCM es el que suena: sin el priming ni el padding.
 fn decode_frames(
     input_path: &str,
+    gapless: bool,
     mut on_frame: impl FnMut(u32, usize, &[f32]) -> Result<(), String>,
 ) -> Result<u32, String> {
     let (mut format, track_id, params) = open_format(input_path)?;
@@ -1243,7 +1381,15 @@ fn decode_frames(
     let mut decoder = symphonia::default::get_codecs()
         .make(&params, &DecoderOptions::default())
         .map_err(|e| format!("Códec no soportado: {e}"))?;
+    let (skip_head, skip_tail) = if gapless {
+        lame_player_skip(input_path)
+    } else {
+        (0, 0)
+    };
     let mut skipped = 0u32;
+    let mut seen: u64 = 0;
+    let mut width = 0usize;
+    let mut hold: std::collections::VecDeque<f32> = std::collections::VecDeque::new();
     loop {
         let packet = match format.next_packet() {
             Ok(p) => p,
@@ -1258,7 +1404,33 @@ fn decode_frames(
                 let n_ch = spec.channels.count().max(1);
                 let mut buf = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
                 buf.copy_interleaved_ref(decoded);
-                on_frame(rate, n_ch, buf.samples())?;
+                if width == 0 {
+                    width = n_ch;
+                }
+                let tail_samples = skip_tail as usize * width.max(1);
+                let mut emit: Vec<f32> = Vec::new();
+                for frame in buf.samples().chunks(n_ch) {
+                    if seen < skip_head {
+                        seen += 1;
+                        continue;
+                    }
+                    seen += 1;
+                    if tail_samples > 0 {
+                        hold.extend(frame.iter().copied());
+                        while hold.len() > tail_samples {
+                            for _ in 0..width {
+                                if let Some(s) = hold.pop_front() {
+                                    emit.push(s);
+                                }
+                            }
+                        }
+                    } else {
+                        emit.extend_from_slice(frame);
+                    }
+                }
+                if !emit.is_empty() {
+                    on_frame(rate, n_ch, &emit)?;
+                }
             }
             Err(SymError::DecodeError(_)) => {
                 skipped += 1;
@@ -1285,7 +1457,7 @@ fn measure_stream(input_path: &str) -> Result<StreamMeasure, String> {
     let mut hl = [0f32; 4];
     let mut hr = [0f32; 4];
 
-    let decode_errors = decode_frames(input_path, |r, nch, inter| {
+    let decode_errors = decode_frames(input_path, true, |r, nch, inter| {
         if filt.is_none() {
             rate = r;
             channels = nch.max(1);
@@ -1543,12 +1715,22 @@ struct LookLim {
     gain: f32,
     att: f32,
     rel: f32,
+    ceiling: f32,
     bl: std::collections::VecDeque<f32>,
     br: std::collections::VecDeque<f32>,
 }
 
+fn buf_true_peak(buf: &std::collections::VecDeque<f32>) -> f32 {
+    let mut hist = [0f32; 4];
+    let mut peak = 0.0f32;
+    for &s in buf.iter() {
+        consider_peak(&mut hist, s, &mut peak);
+    }
+    peak
+}
+
 impl LookLim {
-    fn new(rate: u32) -> Self {
+    fn new(rate: u32, ceiling: f32) -> Self {
         let n = ((rate as usize) * 5 / 1000).max(8);
         let att = 1.0 - (-1.0_f32 / (0.001 * rate as f32)).exp();
         let rel = 1.0 - (-1.0_f32 / (0.080 * rate as f32)).exp();
@@ -1557,6 +1739,7 @@ impl LookLim {
             gain: 1.0,
             att,
             rel,
+            ceiling,
             bl: std::collections::VecDeque::new(),
             br: std::collections::VecDeque::new(),
         }
@@ -1568,11 +1751,12 @@ impl LookLim {
         if self.bl.len() <= self.n {
             return None;
         }
-        let mut peak = 0.0f32;
-        for &s in self.bl.iter().chain(self.br.iter()) {
-            peak = peak.max(s.abs());
-        }
-        let target = if peak > TP_CEILING { TP_CEILING / peak } else { 1.0 };
+        let peak = buf_true_peak(&self.bl).max(buf_true_peak(&self.br));
+        let target = if peak > self.ceiling {
+            self.ceiling / peak
+        } else {
+            1.0
+        };
         let c = if target < self.gain { self.att } else { self.rel };
         self.gain += (target - self.gain) * c;
         Some((
@@ -1612,6 +1796,7 @@ fn encode_span(
     gain: f32,
     limit: bool,
     kbps: u32,
+    ceiling: f32,
 ) -> Result<u32, String> {
     let end = samples.saturating_sub(tail);
     if end <= head {
@@ -1624,7 +1809,7 @@ fn encode_span(
         0
     };
     let mut sink = Mp3Sink::new_no_upsample(tmp, rate_hint, channels > 1, kbps)?;
-    let mut lim = LookLim::new(rate_hint);
+    let mut lim = LookLim::new(rate_hint, ceiling);
     let mut seen: u64 = 0;
     let mut batch: Vec<f32> = Vec::with_capacity(8192);
     let ch_out = if channels > 1 { 2 } else { 1 };
@@ -1641,7 +1826,7 @@ fn encode_span(
         Ok(())
     };
 
-    decode_frames(input_path, |_, nch, inter| {
+    decode_frames(input_path, true, |_, nch, inter| {
         let nch = nch.max(1);
         for frame in inter.chunks(nch) {
             let idx = seen;
@@ -1680,6 +1865,149 @@ fn encode_span(
     }
     let gap = sink.finish()?;
     Ok(gap.residual_ms)
+}
+
+/// Codifica y, si el limitador está activo, mide el MP3. Si el pico real
+/// sigue por encima de −1 dBTP, repite una vez con el techo de −2 dBFS.
+fn encode_master_span(
+    input_path: &str,
+    tmp: &str,
+    rate_hint: u32,
+    channels: usize,
+    samples: u64,
+    head: u64,
+    tail: u64,
+    gain: f32,
+    limit: bool,
+    kbps: u32,
+) -> Result<u32, String> {
+    if !limit {
+        return encode_span(
+            input_path, tmp, rate_hint, channels, samples, head, tail, gain, false, kbps,
+            TP_LIMIT,
+        );
+    }
+    let residual = encode_span(
+        input_path, tmp, rate_hint, channels, samples, head, tail, gain, true, kbps, TP_LIMIT,
+    )?;
+    let peak = measure_stream(tmp)?.true_peak;
+    if peak <= TP_CEILING {
+        return Ok(residual);
+    }
+    let _ = std::fs::remove_file(tmp);
+    encode_span(
+        input_path,
+        tmp,
+        rate_hint,
+        channels,
+        samples,
+        head,
+        tail,
+        gain,
+        true,
+        kbps,
+        TP_LIMIT_RETRY,
+    )
+}
+
+struct SpanPlan {
+    cut_head_ms: u64,
+    cut_tail_ms: u64,
+    new_lead_ms: u64,
+    new_tail_ms: u64,
+    lufs: f64,
+    head_s: u64,
+    tail_s: u64,
+    lufs_encode: bool,
+    lufs_seal: bool,
+    gain: f32,
+}
+
+/// Misma decisión de corte y de −14 que `master_rewrite`.
+fn plan_span(
+    m: &StreamMeasure,
+    do_trim: bool,
+    do_lufs: bool,
+    force_head_ms: i32,
+    force_tail_ms: i32,
+    lufs_hint: f64,
+) -> SpanPlan {
+    let mut cut_head_ms: u64 = 0;
+    let mut cut_tail_ms: u64 = 0;
+    let mut new_lead_ms: u64;
+    let mut new_tail_ms: u64;
+    let mut lufs = lufs_hint;
+    let (lead, tail) = edges_from(&m.mono_ms);
+    if do_trim {
+        if force_head_ms >= 0 {
+            cut_head_ms = force_head_ms as u64;
+        } else {
+            cut_head_ms = lead.saturating_sub(HEAD_KEEP_MS);
+        }
+        if force_tail_ms >= 0 {
+            cut_tail_ms = force_tail_ms as u64;
+        } else {
+            cut_tail_ms = tail;
+        }
+        let head_try = ms_to_samples(cut_head_ms, m.rate);
+        let tail_try = ms_to_samples(cut_tail_ms, m.rate);
+        if head_try.saturating_add(tail_try).saturating_add(m.rate as u64) >= m.samples {
+            cut_head_ms = 0;
+            cut_tail_ms = 0;
+        }
+        if cut_head_ms < 50 {
+            cut_head_ms = 0;
+        }
+        if cut_tail_ms < 50 {
+            cut_tail_ms = 0;
+        }
+        new_lead_ms = lead.saturating_sub(cut_head_ms);
+        new_tail_ms = if cut_tail_ms > 0 { 0 } else { tail };
+    } else {
+        new_lead_ms = lead;
+        new_tail_ms = tail;
+    }
+    let head_w = (cut_head_ms / 10) as usize;
+    let tail_w = (cut_tail_ms / 10) as usize;
+    let end_w = m.k_ms.len().saturating_sub(tail_w);
+    if end_w > head_w {
+        lufs = lufs_of(&m.k_ms[head_w..end_w]);
+    }
+    let delta_lufs = (TARGET_LUFS - lufs).abs();
+    let mut lufs_encode =
+        do_lufs && lufs >= -60.0 && (delta_lufs > 0.5 || m.true_peak > TP_CEILING);
+    let mut lufs_seal = do_lufs && lufs >= -60.0 && !lufs_encode;
+    if m.decode_errors > 0 {
+        cut_head_ms = 0;
+        cut_tail_ms = 0;
+        new_lead_ms = lead;
+        new_tail_ms = tail;
+        lufs_encode = false;
+        lufs_seal = false;
+    }
+    let head_s = if cut_head_ms >= 50 {
+        ms_to_samples(cut_head_ms, m.rate)
+    } else {
+        0
+    };
+    let tail_s = if cut_tail_ms >= 50 {
+        ms_to_samples(cut_tail_ms, m.rate)
+    } else {
+        0
+    };
+    let gain = if lufs_encode { gain_for(lufs, true) } else { 1.0 };
+    SpanPlan {
+        cut_head_ms,
+        cut_tail_ms,
+        new_lead_ms,
+        new_tail_ms,
+        lufs,
+        head_s,
+        tail_s,
+        lufs_encode,
+        lufs_seal,
+        gain,
+    }
 }
 
 fn detect_validated(
@@ -1971,7 +2299,7 @@ pub fn master_rewrite(
         let audio_change = head_s > 0 || tail_s > 0 || lufs_encode;
         if audio_change {
             let tmp = format!("{input_path}.gmxpart");
-            residual_ms = encode_span(
+            residual_ms = encode_master_span(
                 &input_path,
                 &tmp,
                 m.rate,
@@ -2609,7 +2937,7 @@ mod gapless_tests {
 
     fn decode_mono(path: &str) -> Vec<f32> {
         let mut out = Vec::new();
-        decode_frames(path, |_rate, nch, inter| {
+        decode_frames(path, false, |_rate, nch, inter| {
             let nch = nch.max(1);
             for frame in inter.chunks(nch) {
                 out.push(frame[0]);
@@ -2650,6 +2978,52 @@ mod gapless_tests {
 
     fn rate_window(len: usize) -> usize {
         len.min(44100)
+    }
+
+    /// El mismo salto, aplicado dentro del decodificador que usa el master.
+    #[test]
+    fn el_decode_gapless_deja_el_transitorio_a_1ms() {
+        let rate = 44100u32;
+        let lead = rate as usize / 5;
+        let burst = rate as usize * 3 / 10;
+        let tail = rate as usize / 10;
+        let mut pcm = vec![0f32; lead + burst + tail];
+        let mut phase = 0.0f32;
+        for i in 0..burst {
+            let p = i as f32 / burst as f32;
+            let hz = 180.0 + p * 3600.0;
+            phase += std::f32::consts::TAU * hz / rate as f32;
+            pcm[lead + i] = phase.sin() * 0.55;
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "gmx_gapless_on_{}_{}",
+            std::process::id(),
+            rate
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("burst.mp3");
+        let path_s = path.to_string_lossy().to_string();
+        let mut sink = Mp3Sink::new(&path_s, rate, false, 320).unwrap();
+        sink.push(&pcm, 1).unwrap();
+        sink.finish().unwrap();
+
+        let mut heard = Vec::new();
+        decode_frames(&path_s, true, |_rate, nch, inter| {
+            let nch = nch.max(1);
+            for frame in inter.chunks(nch) {
+                heard.push(frame[0]);
+            }
+            Ok(())
+        })
+        .unwrap();
+        let lag = best_lag(&pcm, &heard);
+        let one_ms = (rate / 1000) as i32;
+        assert!(
+            lag.abs() <= one_ms,
+            "gapless dejó {lag} muestras ({:.3} ms)",
+            lag.abs() as f32 * 1000.0 / rate as f32
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -2776,7 +3150,7 @@ mod master_guard_tests {
         }
         std::fs::write(&path_s, &bytes).unwrap();
 
-        let skipped = decode_frames(&path_s, |_r, _n, _s| Ok(())).unwrap();
+        let skipped = decode_frames(&path_s, false, |_r, _n, _s| Ok(())).unwrap();
         assert!(skipped > 0, "el MP3 roto no produjo DecodeError");
 
         let mut tag = Tag::new();
@@ -2803,6 +3177,102 @@ mod master_guard_tests {
         assert_eq!(marks.trim_ms, -1, "no se sella un corte que no se hizo");
         assert!(!marks.lufs_done);
         let _ = audio_before;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn clicks(bpm: f64, seconds: f64) -> Vec<f32> {
+        let rate = 44100.0;
+        let n = (rate * seconds) as usize;
+        let mut pcm = vec![0f32; n];
+        let period = (rate * 60.0 / bpm).round() as usize;
+        let mut i = period;
+        while i + 16 < n {
+            for k in 0..6 {
+                pcm[i + k] = 0.85;
+            }
+            i += period;
+        }
+        pcm
+    }
+
+    #[test]
+    fn sin_tbpm_previo_no_parte_un_tempo_de_pop() {
+        let env_rate = 200.0;
+        let lag_169 = ((60.0 * env_rate / 169.0) as f64).round() as usize;
+        let lag_85 = ((60.0 * env_rate / 84.5) as f64).round() as usize;
+        let mut scores = vec![0.0; lag_85 + 8];
+        scores[lag_169] = 6.0;
+        scores[lag_85] = 9.0;
+        let bpm = prefer_dance_tempo(lag_85 as f64, &scores, env_rate, 20, lag_85 + 4);
+        assert!(
+            bpm > 160.0 && bpm < 180.0,
+            "con medio tiempo más fuerte eligió {bpm}"
+        );
+
+        let only_slow = {
+            let mut s = vec![0.0; lag_85 + 8];
+            s[lag_85] = 9.0;
+            prefer_dance_tempo(lag_85 as f64, &s, env_rate, 20, lag_85 + 4)
+        };
+        assert!(
+            (only_slow - 84.5).abs() < 1.0,
+            "sin candidato en 90–180 debía plegar, salió {only_slow}"
+        );
+
+        let audio = clicks(169.0, 12.0);
+        let got = detect_bpm(&audio, 44100, None).expect("bpm");
+        assert!(
+            got > 155.0 && got < 185.0,
+            "Take On Me quedó en {got} en vez de ~169"
+        );
+        let kept = detect_bpm(&clicks(108.0, 12.0), 44100, Some(108.0)).expect("108");
+        assert!(
+            (kept - 108.0).abs() < 3.0,
+            "la cumbia con TBPM 108 pasó a {kept}"
+        );
+        let plain = detect_bpm(&clicks(110.0, 12.0), 44100, Some(110.0)).expect("110");
+        assert!((plain - 110.0).abs() < 3.0, "TBPM 110 pasó a {plain}");
+    }
+
+    #[test]
+    fn el_pico_real_del_mp3_queda_en_menos_1() {
+        let rate = 44100u32;
+        let n = rate as usize * 4;
+        let mut pcm = vec![0f32; n];
+        for i in 0..n {
+            let body = (i as f32 * 440.0 * std::f32::consts::TAU / rate as f32).sin() * 0.22;
+            pcm[i] = body;
+        }
+        let spike_every = rate as usize / 2;
+        let mut at = spike_every;
+        while at + 80 < n {
+            for k in 0..40 {
+                pcm[at + k] = 0.98;
+            }
+            at += spike_every;
+        }
+        let dir = std::env::temp_dir().join(format!("gmx_tp_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("hot.mp3");
+        let path_s = path.to_string_lossy().to_string();
+        let mut sink = Mp3Sink::new(&path_s, rate, false, 320).unwrap();
+        sink.push(&pcm, 1).unwrap();
+        sink.finish().unwrap();
+
+        let rw = master_rewrite(path_s.clone(), true, true, false, -1, -1).unwrap();
+        assert!(rw.lufs_applied, "el pico debía forzar la normalización");
+        let measured = measure_stream(&path_s).unwrap();
+        let dbtp = 20.0 * (measured.true_peak as f64).max(1e-9).log10();
+        assert!(
+            dbtp <= -1.0 + 0.05,
+            "true peak {dbtp:.2} dBTP (lineal {})",
+            measured.true_peak
+        );
+        let lufs = lufs_of(&measured.k_ms);
+        assert!(
+            (lufs - TARGET_LUFS).abs() <= 0.5,
+            "LUFS {lufs:.2}, se pedía −14 ±0,5"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -104,6 +104,7 @@ abstract class RustLibApi extends BaseApi {
     required String inputPath,
     required String outputPath,
     required int bitrateKbps,
+    required bool master,
   });
 
   Future<BigInt> crateApiCoreDspExactDurationMs({required String inputPath});
@@ -356,6 +357,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required String inputPath,
     required String outputPath,
     required int bitrateKbps,
+    required bool master,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -364,6 +366,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_String(inputPath, serializer);
           sse_encode_String(outputPath, serializer);
           sse_encode_u_32(bitrateKbps, serializer);
+          sse_encode_bool(master, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -376,7 +379,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_String,
         ),
         constMeta: kCrateApiCoreDspEncodeToMp3ConstMeta,
-        argValues: [inputPath, outputPath, bitrateKbps],
+        argValues: [inputPath, outputPath, bitrateKbps, master],
         apiImpl: this,
       ),
     );
@@ -384,7 +387,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   TaskConstMeta get kCrateApiCoreDspEncodeToMp3ConstMeta => const TaskConstMeta(
     debugName: "encode_to_mp3",
-    argNames: ["inputPath", "outputPath", "bitrateKbps"],
+    argNames: ["inputPath", "outputPath", "bitrateKbps", "master"],
   );
 
   @override

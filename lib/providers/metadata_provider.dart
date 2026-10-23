@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -194,6 +195,7 @@ class MetadataWorker {
 
         // Letra, texto y pista _K siguen al MP3 renombrado.
         await _syncAssociatedFile(filePath, targetPath, '.lrc');
+        await _retargetAutoLyric(filePath, targetPath);
         await _syncAssociatedFile(filePath, targetPath, '.txt');
         await _syncKaraokeFile(filePath, targetPath);
 
@@ -205,6 +207,24 @@ class MetadataWorker {
     }
 
     return filePath;
+  }
+
+  Future<void> _retargetAutoLyric(String oldMp3, String newMp3) async {
+    final RegExp ext = RegExp(r'\.mp3$', caseSensitive: false);
+    final String oldBase = File(oldMp3.replaceAll(ext, '.lrc')).uri.pathSegments.last;
+    final String newBase = File(newMp3.replaceAll(ext, '.lrc')).uri.pathSegments.last;
+    if (oldBase == newBase) return;
+    final File reg = File(
+      '${File(newMp3).parent.path}${Platform.pathSeparator}_lyrics_auto.json',
+    );
+    if (!reg.existsSync()) return;
+    try {
+      final dynamic decoded = jsonDecode(reg.readAsStringSync());
+      if (decoded is! Map || !decoded.containsKey(oldBase)) return;
+      final Map<String, dynamic> map = Map<String, dynamic>.from(decoded);
+      map[newBase] = map.remove(oldBase);
+      await reg.writeAsString(jsonEncode(map));
+    } catch (_) {}
   }
 
   // Motor para evitar dejar archivos .lrc o .txt huérfanos al renombrar el MP3
