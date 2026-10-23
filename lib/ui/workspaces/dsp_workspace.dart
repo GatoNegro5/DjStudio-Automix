@@ -9,8 +9,8 @@ import 'package:gatomix/src/rust/api/core_dsp.dart' as rust_dsp;
 import '../../core/brand_paths.dart';
 import '../../core/gmx_status.dart';
 import '../../core/lrc_timeline.dart';
-import '../../core/master_affinity.dart';
 import '../../core/master_cool.dart';
+import '../../core/thermal_status.dart';
 import '../../core/master_pause.dart';
 import '../../core/master_profile.dart';
 import '../../djiphone/iphone_library.dart';
@@ -506,7 +506,6 @@ class DspNlpWorkspace extends ConsumerWidget {
       final MasterProfile profile = MasterProfile.current();
       int cursor = 0;
       int finished = 0;
-      int songSlot = 0;
       bool stopAll = false;
 
       Future<void> lane() async {
@@ -537,20 +536,17 @@ class DspNlpWorkspace extends ConsumerWidget {
             continue;
           }
 
-          final MasterPair pair = MasterCool.pairForSong(
-            songSlot,
-            Platform.numberOfProcessors,
-          );
-          songSlot++;
-          MasterAffinity.publish(pair.low, pair.high);
           final Stopwatch trackClock = Stopwatch()..start();
-          void logSong(int pauseMs) {
+          Future<void> logSong(int pauseMs) async {
             if (trackClock.isRunning) trackClock.stop();
-            final String par = (Platform.isIOS || Platform.isMacOS)
-                ? '${pair.label}/qos'
-                : pair.label;
+            var prio = MasterCool.priorityLabel(ThermalProbe.platform);
+            try {
+              final String got = await rust_dsp.masterPriority();
+              if (got.isNotEmpty) prio = got;
+            } catch (_) {}
+            final String termico = await ThermalProbe.label();
             debugPrint(
-              'MASTER par=$par proceso=${trackClock.elapsedMilliseconds}ms pausa=${pauseMs}ms $originalName',
+              'MASTER prio=$prio proceso=${trackClock.elapsedMilliseconds}ms pausa=${pauseMs}ms termico=$termico $originalName',
             );
           }
 
@@ -569,7 +565,7 @@ class DspNlpWorkspace extends ConsumerWidget {
                   .processSingleFile(currentPath);
               if (stopAll || checkAbort()) {
                 stopAll = true;
-                logSong(0);
+                await logSong(0);
                 return;
               }
               currentStage = "DSP_ANALYSIS";
@@ -584,7 +580,7 @@ class DspNlpWorkspace extends ConsumerWidget {
                   .analyzeTrack(currentPath);
               if (stopAll || checkAbort()) {
                 stopAll = true;
-                logSong(0);
+                await logSong(0);
                 return;
               }
               if (analyzed) {
@@ -600,7 +596,7 @@ class DspNlpWorkspace extends ConsumerWidget {
               }
               if (stopAll || checkAbort()) {
                 stopAll = true;
-                logSong(0);
+                await logSong(0);
                 return;
               }
               (checkpoint['processed'] as List).add(originalName);
@@ -641,7 +637,7 @@ class DspNlpWorkspace extends ConsumerWidget {
                 }
                 if (outcome.stopped || stopAll || checkAbort()) {
                   stopAll = true;
-                  logSong(0);
+                  await logSong(0);
                   return;
                 }
                 if (outcome.lyric != LyricStatus.retry) {
@@ -748,7 +744,7 @@ class DspNlpWorkspace extends ConsumerWidget {
               checkpointFile.writeAsStringSync(jsonEncode(checkpoint));
               pipe.abort();
               stopAll = true;
-              logSong(0);
+              await logSong(0);
               return;
             } else if (consecutiveErrors >= 3) {
               isThermalThrottling = false;
@@ -758,14 +754,14 @@ class DspNlpWorkspace extends ConsumerWidget {
               checkpointFile.writeAsStringSync(jsonEncode(checkpoint));
               pipe.abort();
               stopAll = true;
-              logSong(0);
+              await logSong(0);
               return;
             }
           }
 
           if (trackClock.isRunning) trackClock.stop();
           if (stopAll || checkAbort()) {
-            logSong(0);
+            await logSong(0);
             stopAll = true;
             return;
           }
@@ -780,7 +776,7 @@ class DspNlpWorkspace extends ConsumerWidget {
               },
             );
           }
-          logSong(pauseMs);
+          await logSong(pauseMs);
           if (stopAll || checkAbort()) {
             stopAll = true;
             return;
@@ -811,7 +807,6 @@ class DspNlpWorkspace extends ConsumerWidget {
     } catch (e) {
       debugPrint("🔴 [ERROR AL PREPARAR CARPETA]: $e");
     } finally {
-      MasterAffinity.clear();
       if (context.mounted) {
         final state = ref.read(pipelineProvider);
 

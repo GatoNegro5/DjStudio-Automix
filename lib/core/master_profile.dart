@@ -1,9 +1,9 @@
 import 'dart:io';
 
-/// Perfil de Masterizar. Las 4 plataformas procesan una canción a la vez,
-/// rotan un par de núcleos y enfrían 12 s. El karaoke `_K` sigue solo en escritorio.
+/// Perfil de Masterizar. Las 4 plataformas procesan una canción a la vez
+/// y enfrían 12 s. Sin afinidad manual. El karaoke `_K` sigue solo en escritorio.
 class MasterProfile {
-  /// Canciones a la vez. Siempre 1. Cada una usa un par de núcleos.
+  /// Canciones a la vez. Siempre 1.
   final int parallel;
 
   /// Pausa de enfriamiento entre canción y canción.
@@ -39,8 +39,11 @@ class MasterProfile {
     );
   }
 
-  /// Android, iPhone, Windows y Mac: una canción, par de núcleos turnado y
-  /// enfriamiento de 12 s. `_K` solo en escritorio.
+  /// Android e iPhone: 1 hilo. Windows y Mac: 2. `_K` solo en escritorio.
+  int get workerThreads => isPhone ? 1 : 2;
+
+  /// Android, iPhone, Windows y Mac: una canción y enfriamiento de 12 s.
+  /// `_K` solo en escritorio.
   static MasterProfile current() {
     if (Platform.isAndroid || Platform.isIOS) return phone;
     return desktop();

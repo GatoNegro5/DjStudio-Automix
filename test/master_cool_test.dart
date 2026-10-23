@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:gatomix/core/master_affinity.dart';
 import 'package:gatomix/core/master_cool.dart';
+import 'package:gatomix/core/master_profile.dart';
 
 void main() {
   test('la pausa queda entre 10 y 15 s, con 12 de fábrica', () {
@@ -12,35 +12,19 @@ void main() {
     expect(MasterCool.clampPauseMs(15000), 15000);
   });
 
-  test('el par rota en 4 turnos y no se repite seguido', () {
-    expect(MasterCool.pairTurns(8), 4);
-    expect(MasterCool.pairTurns(16), 4);
-    expect(MasterCool.pairTurns(4), 2);
-    expect(MasterCool.pairTurns(6), 3);
-    expect(MasterCool.pairTurns(2), 1);
-    expect(MasterCool.pairForSong(0, 8), const MasterPair(0, 1));
-    expect(MasterCool.pairForSong(1, 8), const MasterPair(2, 3));
-    expect(MasterCool.pairForSong(2, 8), const MasterPair(4, 5));
-    expect(MasterCool.pairForSong(3, 8), const MasterPair(6, 7));
-    expect(MasterCool.pairForSong(4, 8), const MasterPair(0, 1));
-    expect(MasterCool.pairForSong(0, 4), const MasterPair(0, 1));
-    expect(MasterCool.pairForSong(1, 4), const MasterPair(2, 3));
-    expect(MasterCool.pairForSong(2, 4), const MasterPair(0, 1));
-    expect(MasterCool.pairForSong(0, 6), const MasterPair(0, 1));
-    expect(MasterCool.pairForSong(2, 6), const MasterPair(4, 5));
-    expect(MasterCool.pairForSong(0, 16), const MasterPair(0, 1));
-    expect(MasterCool.pairForSong(4, 16), const MasterPair(0, 1));
-    expect(MasterCool.pairForSong(0, 1), const MasterPair(0, 0));
-    expect(MasterCool.pairForSong(-1, 8), const MasterPair(0, 1));
-    for (final int n in [4, 6, 8, 12, 16]) {
-      for (var i = 0; i < 10; i++) {
-        expect(
-          MasterCool.pairForSong(i, n) == MasterCool.pairForSong(i + 1, n),
-          isFalse,
-          reason: 'n=$n canción $i',
-        );
-      }
-    }
+  test('móvil 1 hilo, escritorio 2, sin afinidad', () {
+    expect(MasterCool.workerThreads('android'), 1);
+    expect(MasterCool.workerThreads('ios'), 1);
+    expect(MasterCool.workerThreads('windows'), 2);
+    expect(MasterCool.workerThreads('macos'), 2);
+    expect(MasterProfile.phone.workerThreads, 1);
+    expect(MasterProfile.phone.parallel, 1);
+    expect(MasterProfile.desktop().workerThreads, 2);
+    expect(MasterProfile.desktop().parallel, 1);
+    expect(MasterCool.priorityLabel('windows'), 'ecoqos+background');
+    expect(MasterCool.priorityLabel('macos'), 'qos-utility');
+    expect(MasterCool.priorityLabel('ios'), 'qos-utility');
+    expect(MasterCool.priorityLabel('android'), 'nice10');
   });
 
   test('la barra dice Enfriando… Ns', () {
@@ -108,20 +92,67 @@ void main() {
     );
   });
 
-  test('térmico alto: Android desde SEVERE, iOS desde serious', () {
+  test('térmico alto: Android SEVERE o headroom, iOS serious', () {
     expect(MasterCool.thermalIsHigh(platform: 'android', status: 2), isFalse);
     expect(MasterCool.thermalIsHigh(platform: 'android', status: 3), isTrue);
     expect(MasterCool.thermalIsHigh(platform: 'ios', status: 1), isFalse);
     expect(MasterCool.thermalIsHigh(platform: 'ios', status: 2), isTrue);
-    expect(MasterCool.thermalIsHigh(platform: 'macos', status: 2), isTrue);
+    expect(MasterCool.thermalIsHigh(platform: 'macos', status: 3), isTrue);
     expect(MasterCool.thermalIsHigh(platform: 'windows', status: 5), isFalse);
     expect(MasterCool.thermalIsHigh(platform: 'android', status: null), isFalse);
-  });
-
-  test('el par publicado se lee y se limpia', () {
-    MasterAffinity.publish(2, 3);
-    expect(MasterAffinity.current(), '2-3');
-    MasterAffinity.clear();
-    expect(MasterAffinity.current(), isNull);
+    expect(MasterCool.headroomIsHigh(0.7), isFalse);
+    expect(MasterCool.headroomIsHigh(0.71), isTrue);
+    expect(MasterCool.headroomIsHigh(double.nan), isFalse);
+    expect(MasterCool.headroomIsHigh(null), isFalse);
+    expect(
+      MasterCool.shouldExtendPause(
+        platform: 'android',
+        status: 0,
+        headroom: 0.8,
+      ),
+      isTrue,
+    );
+    expect(
+      MasterCool.shouldExtendPause(
+        platform: 'android',
+        status: 3,
+        headroom: 0.1,
+      ),
+      isTrue,
+    );
+    expect(
+      MasterCool.shouldExtendPause(
+        platform: 'android',
+        status: 2,
+        headroom: 0.7,
+      ),
+      isFalse,
+    );
+    expect(
+      MasterCool.shouldExtendPause(
+        platform: 'windows',
+        status: 5,
+        headroom: 0.99,
+      ),
+      isFalse,
+    );
+    expect(
+      MasterCool.shouldExtendPause(
+        platform: 'ios',
+        status: 2,
+        headroom: null,
+      ),
+      isTrue,
+    );
+    expect(
+      MasterCool.thermalLabel(platform: 'windows'),
+      'n/a',
+    );
+    expect(
+      MasterCool.thermalLabel(platform: 'android', status: 3, headroom: 0.82),
+      'status=severe headroom=0.82',
+    );
+    expect(MasterCool.thermalLabel(platform: 'ios', status: 2), 'serious');
+    expect(MasterCool.thermalLabel(platform: 'macos', status: 3), 'critical');
   });
 }

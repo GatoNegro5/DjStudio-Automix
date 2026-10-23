@@ -12,16 +12,25 @@ class MainActivity: AudioServiceActivity() {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "gatomix/thermal")
             .setMethodCallHandler { call, result ->
-                if (call.method != "status") {
-                    result.notImplemented()
-                    return@setMethodCallHandler
-                }
-                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-                    result.success(null)
-                    return@setMethodCallHandler
-                }
                 val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-                result.success(pm.currentThermalStatus)
+                when (call.method) {
+                    "status" -> {
+                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                            result.success(null)
+                        } else {
+                            result.success(pm.currentThermalStatus)
+                        }
+                    }
+                    "headroom" -> {
+                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+                            result.success(null)
+                            return@setMethodCallHandler
+                        }
+                        val h = pm.getThermalHeadroom(10)
+                        if (h.isNaN()) result.success(null) else result.success(h.toDouble())
+                    }
+                    else -> result.notImplemented()
+                }
             }
     }
 }

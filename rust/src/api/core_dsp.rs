@@ -1106,6 +1106,11 @@ struct Analysis {
 }
 
 fn analyze_file(input_path: &str) -> Result<Analysis, String> {
+    if !on_worker_thread() {
+        let path = input_path.to_string();
+        return run_on_master_worker(move || analyze_file(&path));
+    }
+    let _prio = PriorityGuard::enter();
     let _watch = CancelWatch::enter();
     cancel_now()?;
     let d = decode_channels(input_path, 0, MAX_ANALYZE_SECS, 2)?;
@@ -1204,7 +1209,6 @@ fn analyze_and_tag(input_path: &str, force: bool) -> Result<bool, String> {
 /// Masterizado de una pista: volumen + silencios + BPM, sin recodificar.
 /// (Mismo nombre y firma que antes; ya no usa FFmpeg.)
 pub async fn process_full_pipeline(input_path: String, is_megamix: bool) -> Result<bool, String> {
-    bind_master_thread();
     if is_megamix {
         return Ok(true);
     }
@@ -1222,9 +1226,17 @@ pub async fn process_auto_trim(input_path: String) -> Result<bool, String> {
 }
 
 pub async fn auto_detect_and_inject_bpm(input_path: String) -> Result<f64, String> {
+    if !on_worker_thread() {
+        return run_on_master_worker(move || auto_detect_body(input_path));
+    }
+    auto_detect_body(input_path)
+}
+
+fn auto_detect_body(input_path: String) -> Result<f64, String> {
     if !Path::new(&input_path).exists() {
         return Err("VETO I/O: Archivo no encontrado.".into());
     }
+    let _prio = PriorityGuard::enter();
     let _watch = CancelWatch::enter();
     cancel_now()?;
     // La pista completa. 150 s en Hello se quedaban en el verso (~235 BPM)
@@ -2689,116 +2701,17 @@ pub struct MasterRewrite {
     pub residual_ms: u32,
 }
 
-thread_local! {
-    static MASTER_PAIR: std::cell::Cell<Option<(usize, usize)>> = std::cell::Cell::new(None);
-}
-
-/// Turnos de pares. 8 o más núcleos: 4. Con menos, los pares que caben.
-#[cfg(test)]
-fn master_pair_turns(ncpu: usize) -> usize {
-    let n = if ncpu == 0 { 1 } else { ncpu };
-    let pairs = n / 2;
-    if pairs < 1 {
+/// Hilos de trabajo de una canción. Móvil: 1. Escritorio: 2. Sin más.
+fn master_worker_cap() -> usize {
+    if cfg!(any(target_os = "android", target_os = "ios")) {
         1
     } else {
-        pairs.min(4)
+        2
     }
 }
 
-/// Par de la canción: 0-1, 2-3, 4-5, 6-7 y vuelve a empezar.
-#[cfg(test)]
-fn master_pair_for_song(song: usize, ncpu: usize) -> (usize, usize) {
-    let n = if ncpu == 0 { 1 } else { ncpu };
-    let slot = song % master_pair_turns(n);
-    if n < 2 {
-        return (0, 0);
-    }
-    let low = slot * 2;
-    let high = (low + 1).min(n - 1);
-    (low, high)
-}
-
-fn parse_master_pair(raw: &str) -> Option<(usize, usize)> {
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return None;
-    }
-    if let Some((a, b)) = raw.split_once('-') {
-        let a = a.trim().parse::<usize>().ok()?;
-        let b = b.trim().parse::<usize>().ok()?;
-        return Some((a, b));
-    }
-    let a = raw.parse::<usize>().ok()?;
-    Some((a, a))
-}
-
-/// Ancla el hilo a uno o dos núcleos.
-/// Linux/Android: `sched_setaffinity`. Windows: `SetThreadGroupAffinity`.
-/// macOS/iOS no tienen afinidad: QoS utility.
-fn pin_cores(first: usize, second: usize) {
-    let n = std::thread::available_parallelism()
-        .map(|p| p.get())
-        .unwrap_or(1)
-        .max(1);
-    let a = first.min(n - 1);
-    let b = second.min(n - 1);
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    unsafe {
-        let mut set = [0u8; 128];
-        for core in [a, b] {
-            if core < 128 * 8 {
-                set[core / 8] |= 1u8 << (core % 8);
-            }
-        }
-        extern "C" {
-            fn sched_setaffinity(pid: i32, cpusetsize: usize, mask: *const u8) -> i32;
-        }
-        let _ = sched_setaffinity(0, set.len(), set.as_ptr());
-    }
-    #[cfg(target_os = "windows")]
-    unsafe {
-        #[repr(C)]
-        struct GroupAffinity {
-            mask: usize,
-            group: u16,
-            reserved: [u16; 3],
-        }
-        extern "system" {
-            fn GetCurrentThread() -> isize;
-            fn SetThreadGroupAffinity(
-                thread: isize,
-                affinity: *const GroupAffinity,
-                previous: *mut GroupAffinity,
-            ) -> i32;
-            fn SetThreadAffinityMask(thread: isize, mask: usize) -> usize;
-        }
-        let group_id = (a / 64) as u16;
-        let mut mask = 1usize << (a % 64);
-        if b / 64 == a / 64 {
-            mask |= 1usize << (b % 64);
-        }
-        let group = GroupAffinity {
-            mask,
-            group: group_id,
-            reserved: [0; 3],
-        };
-        let thread = GetCurrentThread();
-        if SetThreadGroupAffinity(thread, &group, std::ptr::null_mut()) == 0 {
-            let _ = SetThreadAffinityMask(thread, mask);
-        }
-    }
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
-    unsafe {
-        extern "C" {
-            fn pthread_set_qos_class_self_np(class: u32, relative: i32) -> i32;
-        }
-        const QOS_CLASS_UTILITY: u32 = 0x11;
-        let _ = pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
-        let _ = (a, b);
-    }
-}
-
-fn limit_omp_to_two() {
+fn limit_worker_threads() {
+    let n = master_worker_cap();
     #[cfg(any(
         target_os = "linux",
         target_os = "android",
@@ -2810,12 +2723,8 @@ fn limit_omp_to_two() {
             fn setenv(name: *const i8, value: *const i8, overwrite: i32) -> i32;
         }
         let name = b"OMP_NUM_THREADS\0";
-        let value = b"2\0";
-        let _ = setenv(
-            name.as_ptr() as *const i8,
-            value.as_ptr() as *const i8,
-            1,
-        );
+        let value: [u8; 2] = [b'0' + n as u8, 0];
+        let _ = setenv(name.as_ptr() as *const i8, value.as_ptr() as *const i8, 1);
     }
     #[cfg(target_os = "windows")]
     unsafe {
@@ -2826,52 +2735,314 @@ fn limit_omp_to_two() {
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect();
-        let value: Vec<u16> = "2".encode_utf16().chain(std::iter::once(0)).collect();
+        let value: Vec<u16> = n.to_string().encode_utf16().chain(std::iter::once(0)).collect();
         let _ = SetEnvironmentVariableW(name.as_ptr(), value.as_ptr());
     }
 }
 
-/// Lee `GMX_MASTER_CORE` (`0-1`) y deja el hilo en el núcleo bajo del par
-/// (decode/análisis). Vacío o ausente: no toca la afinidad.
-fn bind_master_thread() {
-    let Ok(raw) = std::env::var("GMX_MASTER_CORE") else {
-        MASTER_PAIR.with(|p| p.set(None));
-        return;
-    };
-    let Some((a, b)) = parse_master_pair(&raw) else {
-        MASTER_PAIR.with(|p| p.set(None));
-        return;
-    };
-    let n = std::thread::available_parallelism()
-        .map(|p| p.get())
-        .unwrap_or(1)
-        .max(1);
-    let pair = (a.min(n - 1), b.min(n - 1));
-    MASTER_PAIR.with(|p| p.set(Some(pair)));
-    pin_cores(pair.0, pair.0);
-    limit_omp_to_two();
+fn priority_slot() -> &'static std::sync::Mutex<String> {
+    static LABEL: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+    &LABEL
 }
 
-fn pin_analysis_core() {
-    let Some((a, _)) = MASTER_PAIR.with(|p| p.get()) else {
-        return;
-    };
-    pin_cores(a, a);
+fn store_priority_label(label: &str) {
+    if let Ok(mut g) = priority_slot().lock() {
+        *g = label.to_string();
+    }
 }
 
-fn pin_encoder_core() {
-    let Some((_, b)) = MASTER_PAIR.with(|p| p.get()) else {
-        return;
-    };
-    pin_cores(b, b);
+fn priority_label() -> String {
+    priority_slot().lock().map(|g| g.clone()).unwrap_or_default()
 }
 
-/// Los dos núcleos del par, para un pool de 2 hilos (karaoke).
-fn pin_pair_mask() {
-    let Some((a, b)) = MASTER_PAIR.with(|p| p.get()) else {
-        return;
-    };
-    pin_cores(a, b);
+thread_local! {
+    static ON_WORKER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn on_worker_thread() -> bool {
+    ON_WORKER.with(|c| c.get())
+}
+
+/// La canción corre en su hilo. Al terminar, el hilo muere: un nice que
+/// el SO no deja revertir no se queda en el pool de la UI ni de Live DJ.
+fn run_on_master_worker<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+    let (tx, rx) = std::sync::mpsc::channel();
+    match std::thread::Builder::new()
+        .name("gmx-master".into())
+        .spawn(move || {
+            ON_WORKER.with(|c| c.set(true));
+            let _ = tx.send(work());
+        }) {
+        Ok(handle) => {
+            let value = rx.recv().unwrap_or_else(|_| unreachable!("el hilo no respondió"));
+            let _ = handle.join();
+            value
+        }
+        Err(_) => unreachable!("no hubo hilo para la canción"),
+    }
+}
+
+/// Baja la prioridad del hilo de esta canción y la devuelve al salir.
+/// Sin afinidad: el SO reparte los núcleos.
+struct PriorityGuard {
+    active: bool,
+}
+
+thread_local! {
+    static PRIO_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+impl PriorityGuard {
+    fn enter() -> Self {
+        let active = PRIO_DEPTH.with(|d| {
+            let n = d.get();
+            d.set(n.saturating_add(1));
+            n == 0
+        });
+        if active {
+            limit_worker_threads();
+            store_priority_label(&apply_low_priority());
+        }
+        Self { active }
+    }
+}
+
+impl Drop for PriorityGuard {
+    fn drop(&mut self) {
+        let last = PRIO_DEPTH.with(|d| {
+            let n = d.get().saturating_sub(1);
+            d.set(n);
+            n == 0
+        });
+        if self.active && last {
+            restore_priority();
+        }
+    }
+}
+
+/// Lo que aplicó el último hilo de canción. Lo usa el log.
+pub fn master_priority() -> String {
+    priority_label()
+}
+
+fn apply_low_priority() -> String {
+    #[cfg(target_os = "windows")]
+    {
+        return win_priority::apply();
+    }
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    {
+        return qos_priority::apply();
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "ios")))]
+    {
+        nice_priority::apply()
+    }
+}
+
+fn restore_priority() {
+    #[cfg(target_os = "windows")]
+    win_priority::restore();
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    qos_priority::restore();
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "ios")))]
+    nice_priority::restore();
+}
+
+/// Android y Linux: nice 10 en este hilo (`THREAD_PRIORITY_BACKGROUND`).
+/// `who` es el tid, no el proceso: el servicio en primer plano sigue igual.
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "ios")))]
+mod nice_priority {
+    use std::cell::Cell;
+
+    thread_local! {
+        static PREV: Cell<Option<(i32, i32)>> = const { Cell::new(None) };
+    }
+
+    fn errno_clear() {
+        unsafe {
+            *__errno_location() = 0;
+        }
+    }
+
+    extern "C" {
+        fn __errno_location() -> *mut i32;
+        fn gettid() -> i32;
+        fn getpriority(which: i32, who: i32) -> i32;
+        fn setpriority(which: i32, who: i32, prio: i32) -> i32;
+    }
+
+    fn nice_of(tid: i32) -> i32 {
+        unsafe {
+            errno_clear();
+            getpriority(0, tid)
+        }
+    }
+
+    pub(super) fn apply() -> String {
+        let tid = unsafe { gettid() };
+        let prev = nice_of(tid);
+        let rc = unsafe { setpriority(0, tid, 10) };
+        if rc != 0 {
+            PREV.with(|p| p.set(None));
+            return "none".to_string();
+        }
+        PREV.with(|p| p.set(Some((tid, prev))));
+        "nice10".to_string()
+    }
+
+    pub(super) fn restore() {
+        let Some((tid, prev)) = PREV.with(|p| p.take()) else {
+            return;
+        };
+        unsafe {
+            let _ = setpriority(0, tid, prev);
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn current_nice() -> i32 {
+        nice_of(unsafe { gettid() })
+    }
+}
+
+/// macOS e iPhone: QoS utility. Al salir, la clase por defecto del hilo.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+mod qos_priority {
+    use std::cell::Cell;
+
+    thread_local! {
+        static ON: Cell<bool> = const { Cell::new(false) };
+    }
+
+    extern "C" {
+        fn pthread_set_qos_class_self_np(class: u32, relative: i32) -> i32;
+    }
+
+    const QOS_CLASS_UTILITY: u32 = 0x11;
+    const QOS_CLASS_DEFAULT: u32 = 0x15;
+
+    pub(super) fn apply() -> String {
+        let rc = unsafe { pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0) };
+        if rc != 0 {
+            ON.with(|c| c.set(false));
+            return "none".to_string();
+        }
+        ON.with(|c| c.set(true));
+        "qos-utility".to_string()
+    }
+
+    pub(super) fn restore() {
+        if !ON.with(|c| c.replace(false)) {
+            return;
+        }
+        unsafe {
+            let _ = pthread_set_qos_class_self_np(QOS_CLASS_DEFAULT, 0);
+        }
+    }
+}
+
+/// Windows: EcoQoS y, además, modo background o prioridad por debajo de lo normal.
+#[cfg(target_os = "windows")]
+mod win_priority {
+    use std::cell::Cell;
+
+    thread_local! {
+        static SAVED: Cell<Option<Saved>> = const { Cell::new(None) };
+    }
+
+    struct Saved {
+        eco: bool,
+        background: bool,
+        below: bool,
+    }
+
+    extern "system" {
+        fn GetCurrentThread() -> isize;
+        fn SetThreadInformation(
+            thread: isize,
+            class: i32,
+            info: *const u8,
+            len: u32,
+        ) -> i32;
+        fn SetThreadPriority(thread: isize, priority: i32) -> i32;
+    }
+
+    const THREAD_POWER_THROTTLING: i32 = 3;
+    const THREAD_POWER_THROTTLING_CURRENT_VERSION: u32 = 1;
+    const THREAD_POWER_THROTTLING_EXECUTION_SPEED: u32 = 0x1;
+    const THREAD_MODE_BACKGROUND_BEGIN: i32 = 0x00010000;
+    const THREAD_MODE_BACKGROUND_END: i32 = 0x00020000;
+    const THREAD_PRIORITY_BELOW_NORMAL: i32 = -1;
+    const THREAD_PRIORITY_NORMAL: i32 = 0;
+
+    #[repr(C)]
+    struct Throttle {
+        version: u32,
+        control_mask: u32,
+        state_mask: u32,
+    }
+
+    fn throttle(thread: isize, state: u32) -> bool {
+        let info = Throttle {
+            version: THREAD_POWER_THROTTLING_CURRENT_VERSION,
+            control_mask: THREAD_POWER_THROTTLING_EXECUTION_SPEED,
+            state_mask: state,
+        };
+        unsafe {
+            SetThreadInformation(
+                thread,
+                THREAD_POWER_THROTTLING,
+                &info as *const Throttle as *const u8,
+                std::mem::size_of::<Throttle>() as u32,
+            ) != 0
+        }
+    }
+
+    pub(super) fn apply() -> String {
+        let thread = unsafe { GetCurrentThread() };
+        let eco = throttle(thread, THREAD_POWER_THROTTLING_EXECUTION_SPEED);
+        let background = unsafe { SetThreadPriority(thread, THREAD_MODE_BACKGROUND_BEGIN) != 0 };
+        let below = if background {
+            false
+        } else {
+            unsafe { SetThreadPriority(thread, THREAD_PRIORITY_BELOW_NORMAL) != 0 }
+        };
+        SAVED.with(|c| {
+            c.set(Some(Saved {
+                eco,
+                background,
+                below,
+            }))
+        });
+        match (eco, background, below) {
+            (true, true, _) => "ecoqos+background".to_string(),
+            (true, false, true) => "ecoqos+below-normal".to_string(),
+            (false, false, true) => "below-normal".to_string(),
+            (true, false, false) => "ecoqos".to_string(),
+            (false, true, _) => "background".to_string(),
+            _ => "none".to_string(),
+        }
+    }
+
+    pub(super) fn restore() {
+        let Some(saved) = SAVED.with(|c| c.take()) else {
+            return;
+        };
+        let thread = unsafe { GetCurrentThread() };
+        if saved.background {
+            unsafe {
+                let _ = SetThreadPriority(thread, THREAD_MODE_BACKGROUND_END);
+            }
+        } else if saved.below {
+            unsafe {
+                let _ = SetThreadPriority(thread, THREAD_PRIORITY_NORMAL);
+            }
+        }
+        if saved.eco {
+            let _ = throttle(thread, 0);
+        }
+    }
 }
 
 /// El temporal tiene que decodificar. LUFS y pico se leen en la misma pasada
@@ -2958,9 +3129,21 @@ pub fn master_rewrite(
     force_head_ms: i32,
     force_tail_ms: i32,
 ) -> Result<MasterRewrite, String> {
+    if !on_worker_thread() {
+        return run_on_master_worker(move || {
+            master_rewrite(
+                input_path,
+                do_trim,
+                do_lufs,
+                intro_bpm,
+                force_head_ms,
+                force_tail_ms,
+            )
+        });
+    }
+    let _prio = PriorityGuard::enter();
     let _watch = CancelWatch::enter();
     cancel_now()?;
-    bind_master_thread();
     if !Path::new(&input_path).exists() {
         return Err("Archivo no encontrado en I/O.".to_string());
     }
@@ -3068,7 +3251,6 @@ pub fn master_rewrite(
         };
         let audio_change = head_s > 0 || tail_s > 0 || lufs_encode;
         if audio_change {
-            pin_encoder_core();
             let tmp = format!("{input_path}.gmxpart");
             residual_ms = encode_master_span(
                 &input_path,
@@ -3086,7 +3268,6 @@ pub fn master_rewrite(
                 let _ = std::fs::remove_file(&tmp);
                 e
             })?;
-            pin_analysis_core();
             bpm_path = tmp;
             rewritten = true;
         } else {
@@ -3505,8 +3686,7 @@ impl KStft {
 
 type KInfer = Box<dyn FnMut(&[f32]) -> Result<Vec<f32>, String>>;
 
-/// Escritorio (Windows/macOS): ONNX Runtime oficial (MIT). Pool de 2 hilos
-/// dentro del par de núcleos que fijó Masterizar.
+/// Escritorio (Windows/macOS): ONNX Runtime oficial (MIT). Máximo 2 hilos.
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 fn karaoke_backend(model_path: &str) -> Result<KInfer, String> {
     use ort::session::{builder::GraphOptimizationLevel, Session};
@@ -3515,7 +3695,7 @@ fn karaoke_backend(model_path: &str) -> Result<KInfer, String> {
         .map_err(|e| e.to_string())?
         .with_optimization_level(GraphOptimizationLevel::Level3)
         .map_err(|e| e.to_string())?
-        .with_intra_threads(2)
+        .with_intra_threads(master_worker_cap())
         .map_err(|e| e.to_string())?
         .with_inter_threads(1)
         .map_err(|e| e.to_string())?
@@ -3546,7 +3726,7 @@ fn karaoke_backend(model_path: &str) -> Result<KInfer, String> {
         .map_err(|e| e.to_string())?
         .into_runnable()
         .map_err(|e| e.to_string())?;
-    let pool = tract_onnx::tract_core::internal::multithread::Executor::multithread(2);
+    let pool = tract_onnx::tract_core::internal::multithread::Executor::multithread(master_worker_cap());
     Ok(Box::new(move |data: &[f32]| {
         let input = Tensor::from_shape(&[1, 4, K_DIM_F, K_DIM_T], data).map_err(|e| e.to_string())?;
         let out = tract_onnx::tract_core::internal::multithread::multithread_tract_scope(
@@ -3561,8 +3741,10 @@ fn karaoke_backend(model_path: &str) -> Result<KInfer, String> {
 /// Separa la voz y escribe la pista instrumental como MP3 320 kbps.
 /// `model_path` = UVR-MDX-NET-Inst_HQ_3.onnx. Sin Python ni FFmpeg.
 pub fn karaoke_separate(input_path: String, model_path: String, output_path: String) -> Result<bool, String> {
-    bind_master_thread();
-    pin_pair_mask();
+    if !on_worker_thread() {
+        return run_on_master_worker(move || karaoke_separate(input_path, model_path, output_path));
+    }
+    let _prio = PriorityGuard::enter();
     KAR_CANCEL.store(false, Ordering::Relaxed);
     KAR_PROGRESS.store(0, Ordering::Relaxed);
 
@@ -4373,88 +4555,23 @@ mod karaoke_tests {
 }
 
 #[cfg(test)]
-mod affinity_tests {
-    use super::{master_pair_for_song, master_pair_turns, pin_cores};
-
+mod priority_tests {
     #[test]
-    fn el_par_rota_en_cuatro_turnos_y_no_se_repite() {
-        assert_eq!(master_pair_turns(8), 4);
-        assert_eq!(master_pair_turns(16), 4);
-        assert_eq!(master_pair_turns(4), 2);
-        assert_eq!(master_pair_turns(6), 3);
-        assert_eq!(master_pair_turns(2), 1);
-        assert_eq!(master_pair_for_song(0, 8), (0, 1));
-        assert_eq!(master_pair_for_song(1, 8), (2, 3));
-        assert_eq!(master_pair_for_song(2, 8), (4, 5));
-        assert_eq!(master_pair_for_song(3, 8), (6, 7));
-        assert_eq!(master_pair_for_song(4, 8), (0, 1));
-        assert_eq!(master_pair_for_song(1, 4), (2, 3));
-        assert_eq!(master_pair_for_song(0, 1), (0, 0));
-        for n in [4usize, 6, 8, 16] {
-            for song in 0..10 {
-                assert_ne!(
-                    master_pair_for_song(song, n),
-                    master_pair_for_song(song + 1, n),
-                    "n={n} canción {song}"
-                );
-            }
-        }
+    fn el_escritorio_usa_dos_hilos_y_el_movil_uno() {
+        assert_eq!(super::master_worker_cap(), 2);
     }
 
     #[test]
-    fn el_par_ancla_los_dos_nucleos() {
-        let n = std::thread::available_parallelism()
-            .map(|p| p.get())
-            .unwrap_or(1);
-        pin_cores(0, 1);
-        #[cfg(any(target_os = "linux", target_os = "android"))]
-        unsafe {
-            extern "C" {
-                fn sched_getaffinity(pid: i32, cpusetsize: usize, mask: *mut u8) -> i32;
-                fn sched_setaffinity(pid: i32, cpusetsize: usize, mask: *const u8) -> i32;
-            }
-            let mut set = [0u8; 128];
-            assert_eq!(sched_getaffinity(0, set.len(), set.as_mut_ptr()), 0);
-            let bits: u32 = set.iter().map(|b| b.count_ones()).sum();
-            if n >= 2 {
-                assert_eq!(bits, 2, "el hilo quedó en el par");
-                assert_eq!(set[0] & 0b11, 0b11, "núcleos 0 y 1");
-            } else {
-                assert_eq!(bits, 1);
-            }
-            let mut all = [0u8; 128];
-            let cap = n.min(1024);
-            for i in 0..cap {
-                all[i / 8] |= 1u8 << (i % 8);
-            }
-            let _ = sched_setaffinity(0, all.len(), all.as_ptr());
-        }
-        let _ = n;
-        pin_cores(99999, 99998);
-    }
-
-    #[test]
-    fn el_par_publicado_se_lee_sin_cache() {
-        unsafe {
-            extern "C" {
-                fn setenv(name: *const i8, value: *const i8, overwrite: i32) -> i32;
-            }
-            let name = b"GMX_MASTER_CORE\0";
-            let value = b"2-3\0";
-            assert_eq!(
-                setenv(name.as_ptr() as *const i8, value.as_ptr() as *const i8, 1),
-                0
-            );
-        }
-        assert_eq!(std::env::var("GMX_MASTER_CORE").ok().as_deref(), Some("2-3"));
-        super::bind_master_thread();
-        unsafe {
-            extern "C" {
-                fn setenv(name: *const i8, value: *const i8, overwrite: i32) -> i32;
-            }
-            let name = b"GMX_MASTER_CORE\0";
-            let empty = b"\0";
-            let _ = setenv(name.as_ptr() as *const i8, empty.as_ptr() as *const i8, 1);
-        }
+    fn la_prioridad_es_nice_10_en_el_hilo_de_trabajo() {
+        let main_before = super::nice_priority::current_nice();
+        let label = std::thread::spawn(|| {
+            let _g = super::PriorityGuard::enter();
+            assert_eq!(super::nice_priority::current_nice(), 10);
+            super::priority_label()
+        })
+        .join()
+        .unwrap();
+        assert_eq!(label, "nice10");
+        assert_eq!(super::nice_priority::current_nice(), main_before);
     }
 }

@@ -123,6 +123,8 @@ abstract class RustLibApi extends BaseApi {
 
   Future<void> crateApiCoreDspMasterCancel();
 
+  Future<String> crateApiCoreDspMasterPriority();
+
   Future<double> crateApiCoreDspKaraokeProgress();
 
   Future<bool> crateApiCoreDspKaraokeSeparate({
@@ -623,6 +625,33 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   TaskConstMeta get kCrateApiCoreDspMasterCancelConstMeta =>
       const TaskConstMeta(debugName: "master_cancel", argNames: []);
+
+  @override
+  Future<String> crateApiCoreDspMasterPriority() {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 29,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiCoreDspMasterPriorityConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiCoreDspMasterPriorityConstMeta =>
+      const TaskConstMeta(debugName: "master_priority", argNames: []);
 
   @override
   Future<double> crateApiCoreDspKaraokeProgress() {

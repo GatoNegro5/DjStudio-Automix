@@ -1,22 +1,4 @@
-/// Par de núcleos de una canción. `low` es decode/análisis, `high` es
-/// encoder/limitador. Con un solo núcleo los dos coinciden.
-class MasterPair {
-  final int low;
-  final int high;
-
-  const MasterPair(this.low, this.high);
-
-  String get label => low == high ? '$low' : '$low-$high';
-
-  @override
-  bool operator ==(Object other) =>
-      other is MasterPair && other.low == low && other.high == high;
-
-  @override
-  int get hashCode => Object.hash(low, high);
-}
-
-/// Turno de núcleos y pausa de enfriamiento de Masterizar.
+/// Pausa de enfriamiento y prioridad de Masterizar.
 /// Puro: sin Flutter, para poder probarlo.
 class MasterCool {
   static const int pauseMinMs = 10000;
@@ -30,26 +12,34 @@ class MasterCool {
     return ms;
   }
 
-  /// Turnos de pares. 8 o más núcleos: 4 (0-1, 2-3, 4-5, 6-7).
-  /// Con menos, los pares que caben (4 núcleos → 2 turnos).
-  static int pairTurns(int processors) {
-    final int n = processors < 1 ? 1 : processors;
-    final int pairs = n ~/ 2;
-    if (pairs < 1) return 1;
-    if (pairs > 4) return 4;
-    return pairs;
+  /// 1 hilo en el móvil, 2 en escritorio. Sin más.
+  static int workerThreads(String platform) {
+    switch (platform) {
+      case 'android':
+      case 'ios':
+        return 1;
+      default:
+        return 2;
+    }
   }
 
-  /// Par de esta canción. Canción 0 → 0-1, 1 → 2-3, y así. Con 2 turnos
-  /// o más, dos canciones seguidas no comparten par.
-  static MasterPair pairForSong(int songIndex, int processors) {
-    final int n = processors < 1 ? 1 : processors;
-    final int i = songIndex < 0 ? 0 : songIndex;
-    final int slot = i % pairTurns(n);
-    if (n < 2) return const MasterPair(0, 0);
-    final int low = slot * 2;
-    final int high = low + 1;
-    return MasterPair(low, high < n ? high : n - 1);
+  /// Nombre de la prioridad que pide cada plataforma.
+  static String priorityLabel(String platform) {
+    switch (platform) {
+      case 'windows':
+        return 'ecoqos+background';
+      case 'macos':
+      case 'ios':
+        return 'qos-utility';
+      default:
+        return 'nice10';
+    }
+  }
+
+  /// Android: headroom de 10 s por encima de 0,7.
+  static bool headroomIsHigh(double? headroom) {
+    if (headroom == null || headroom.isNaN || !headroom.isFinite) return false;
+    return headroom > 0.7;
   }
 
   /// Texto exacto de la barra: `Enfriando… Ns`.
@@ -88,8 +78,9 @@ class MasterCool {
     return thermalHigh;
   }
 
-  /// Android PowerManager: SEVERE = 3. iOS/macOS thermalState: serious = 2.
-  /// Sin lectura (escritorio u error) no se alarga.
+  /// Android PowerManager: SEVERE = 3, o headroom > 0,7.
+  /// iOS/macOS thermalState: serious = 2, critical = 3.
+  /// Windows no tiene API: no se alarga.
   static bool thermalIsHigh({required String platform, required int? status}) {
     if (status == null || status < 0) return false;
     switch (platform) {
@@ -101,6 +92,53 @@ class MasterCool {
       default:
         return false;
     }
+  }
+
+  /// La pausa extra. Windows ignora lecturas: solo cuenta la base de 12 s.
+  static bool shouldExtendPause({
+    required String platform,
+    required int? status,
+    required double? headroom,
+  }) {
+    if (platform != 'android' && platform != 'ios' && platform != 'macos') {
+      return false;
+    }
+    if (platform == 'android' && headroomIsHigh(headroom)) return true;
+    return thermalIsHigh(platform: platform, status: status);
+  }
+
+  /// Texto del log: estado térmico de esta canción.
+  static String thermalLabel({
+    required String platform,
+    int? status,
+    double? headroom,
+  }) {
+    if (platform == 'android') {
+      final String st = switch (status) {
+        0 => 'none',
+        1 => 'light',
+        2 => 'moderate',
+        3 => 'severe',
+        4 => 'critical',
+        5 => 'emergency',
+        6 => 'shutdown',
+        _ => 'n/a',
+      };
+      final String h = headroom != null && headroom.isFinite
+          ? headroom.toStringAsFixed(2)
+          : 'n/a';
+      return 'status=$st headroom=$h';
+    }
+    if (platform == 'ios' || platform == 'macos') {
+      return switch (status) {
+        0 => 'nominal',
+        1 => 'fair',
+        2 => 'serious',
+        3 => 'critical',
+        _ => 'n/a',
+      };
+    }
+    return 'n/a';
   }
 
   /// Reloj de la pausa en ticks, sin dormir. Sirve para el test.

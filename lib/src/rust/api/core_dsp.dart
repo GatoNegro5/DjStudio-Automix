@@ -179,6 +179,11 @@ Future<void> masterArm() => RustLib.instance.api.crateApiCoreDspMasterArm();
 Future<void> masterCancel() =>
     RustLib.instance.api.crateApiCoreDspMasterCancel();
 
+/// Prioridad baja aplicada en el hilo que llama (`nice10`, `qos-utility`,
+/// `ecoqos+background`, …). Sirve al log de la canción.
+Future<String> masterPriority() =>
+    RustLib.instance.api.crateApiCoreDspMasterPriority();
+
 /// Separa la voz y escribe la pista instrumental como MP3 320 kbps.
 /// `model_path` = UVR-MDX-NET-Inst_HQ_3.onnx. Sin Python ni FFmpeg.
 Future<bool> karaokeSeparate({
