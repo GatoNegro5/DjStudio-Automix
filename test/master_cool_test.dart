@@ -102,19 +102,27 @@ void main() {
     );
   });
 
-  test('la pausa entra en la 6.ª y el térmico en la 15.ª', () {
-    for (var n = 1; n <= 5; n++) {
-      expect(MasterCool.pauseAfterSong(n), isFalse, reason: 'canción $n');
-      expect(MasterCool.thermalAfterSong(n), isFalse, reason: 'canción $n');
+  test('lote de 7: la 6.ª espera 12 s antes de empezar', () {
+    final List<int> pausaAntes = [];
+    final List<int> termicoAntes = [];
+    const int total = 7;
+    for (var i = 0; i < total - 1; i++) {
+      final int siguiente = i + 2;
+      if (MasterCool.pauseBeforeSong(siguiente)) pausaAntes.add(siguiente);
+      if (MasterCool.thermalBeforeSong(siguiente)) termicoAntes.add(siguiente);
     }
-    for (var n = 6; n <= 14; n++) {
-      expect(MasterCool.pauseAfterSong(n), isTrue, reason: 'canción $n');
-      expect(MasterCool.thermalAfterSong(n), isFalse, reason: 'canción $n');
+    expect(pausaAntes, [6, 7]);
+    expect(termicoAntes, isEmpty);
+
+    final List<int> calor = [];
+    for (var i = 0; i < 15; i++) {
+      final int siguiente = i + 2;
+      if (MasterCool.pauseBeforeSong(siguiente) &&
+          MasterCool.thermalBeforeSong(siguiente)) {
+        calor.add(siguiente);
+      }
     }
-    expect(MasterCool.pauseAfterSong(15), isTrue);
-    expect(MasterCool.thermalAfterSong(15), isTrue);
-    expect(MasterCool.pauseAfterSong(16), isTrue);
-    expect(MasterCool.thermalAfterSong(40), isTrue);
+    expect(calor, [15, 16]);
   });
 
   test('térmico alto: Android SEVERE o headroom, iOS serious', () {

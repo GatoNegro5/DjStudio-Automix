@@ -766,14 +766,14 @@ class DspNlpWorkspace extends ConsumerWidget {
             return;
           }
           var pauseMs = 0;
-          final int songNumber = i + 1;
+          final int nextSong = i + 2;
           if (profile.thermalPause &&
-              MasterCool.pauseAfterSong(songNumber) &&
+              MasterCool.pauseBeforeSong(nextSong) &&
               _batchHasPending(files, cursor, total, checkpoint)) {
             pauseMs = await MasterPause.run(
               baseMs: profile.thermalGap.inMilliseconds,
               cancelled: checkAbort,
-              allowThermal: MasterCool.thermalAfterSong(songNumber),
+              allowThermal: MasterCool.thermalBeforeSong(nextSong),
               onTick: (String label) {
                 pipe.updateProgress(finished + 1, total, originalName, label);
               },

@@ -5,10 +5,10 @@ class MasterCool {
   static const int pauseMaxMs = 15000;
   static const int pauseDefaultMs = 12000;
 
-  /// La 1.ª a la 5.ª canción del lote no esperan.
+  /// La 6.ª canción ya espera 12 s antes de empezar.
   static const int pauseFromSong = 6;
 
-  /// La espera extra por temperatura entra en la 15.ª.
+  /// La espera extra por temperatura entra antes de la 15.ª.
   static const int thermalFromSong = 15;
 
   /// La pausa configurada entra en 10–15 s. 12 s es el valor de fábrica.
@@ -71,11 +71,12 @@ class MasterCool {
     return left < 0 ? 0 : left;
   }
 
-  /// 1-based. Desde la 6.ª hay pausa de 12 s; antes, no.
-  static bool pauseAfterSong(int songNumber) => songNumber >= pauseFromSong;
+  /// [nextSong] es el número 1-based de la canción que va a empezar.
+  /// La pausa que sigue a la canción de índice `i` usa `i + 2`.
+  static bool pauseBeforeSong(int nextSong) => nextSong >= pauseFromSong;
 
-  /// La extensión térmica solo a partir de la 15.ª.
-  static bool thermalAfterSong(int songNumber) => songNumber >= thermalFromSong;
+  /// La extensión térmica es la de la canción que va a empezar, desde la 15.ª.
+  static bool thermalBeforeSong(int nextSong) => nextSong >= thermalFromSong;
 
   /// Sigue en pausa mientras no se cancele, falte la base, o el equipo
   /// siga caliente después de la base.
