@@ -1,5 +1,8 @@
+import 'dart:async';
 import 'dart:io';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:gatomix/src/rust/api/core_dsp.dart' as rust_dsp;
 
 // 🛠️ PATRÓN MUTEX: Gobernador de Hardware
 final hardwareGovernorProvider =
@@ -124,17 +127,17 @@ class PipelineNotifier extends Notifier<PipelineState> {
     state = state.copyWith(quarantinedTracks: []);
   }
 
-  // 🛠️ Freno de Emergencia (Hard Abort OS-Level)
+  // La X. Activa la bandera de Rust y deja isAborted para el hueco
+  // entre canciones. El texto «cancelado» lo pone confirmCancelled
+  // cuando el hilo de la canción ya terminó.
   void abort() {
-    state = state.copyWith(
-      isAborted: true,
-      moduleStatus: "🔴 Abortando operación... aniquilando procesos binarios.",
-    );
-
-    // Delegación estricta a la capa de infraestructura.
+    state = state.copyWith(isAborted: true);
+    unawaited(rust_dsp.masterCancel());
     MediaProcessKiller.executeGlobalHardAbort();
-    // isAborted se queda en true hasta que el lote salga y llame a reset().
-    // Un reset a los 2 s reanudaba la canción siguiente y la pausa.
+  }
+
+  void confirmCancelled() {
+    state = state.copyWith(isAborted: true, moduleStatus: 'cancelado');
   }
 
   void reset() {

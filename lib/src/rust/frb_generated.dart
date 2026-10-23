@@ -119,6 +119,10 @@ abstract class RustLibApi extends BaseApi {
 
   Future<void> crateApiCoreDspKaraokeCancel();
 
+  Future<void> crateApiCoreDspMasterArm();
+
+  Future<void> crateApiCoreDspMasterCancel();
+
   Future<double> crateApiCoreDspKaraokeProgress();
 
   Future<bool> crateApiCoreDspKaraokeSeparate({
@@ -565,6 +569,60 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   TaskConstMeta get kCrateApiCoreDspKaraokeCancelConstMeta =>
       const TaskConstMeta(debugName: "karaoke_cancel", argNames: []);
+
+  @override
+  Future<void> crateApiCoreDspMasterArm() {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 27,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiCoreDspMasterArmConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiCoreDspMasterArmConstMeta =>
+      const TaskConstMeta(debugName: "master_arm", argNames: []);
+
+  @override
+  Future<void> crateApiCoreDspMasterCancel() {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 28,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiCoreDspMasterCancelConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiCoreDspMasterCancelConstMeta =>
+      const TaskConstMeta(debugName: "master_cancel", argNames: []);
 
   @override
   Future<double> crateApiCoreDspKaraokeProgress() {

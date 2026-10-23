@@ -106,14 +106,20 @@ class MasterTrack {
     final bool needBpm = !before.bpmOk;
     var trimHead = 0;
     if (needTrim || needLufs || needBpm) {
-      final rw = await rust_dsp.masterRewrite(
-        inputPath: current,
-        doTrim: needTrim,
-        doLufs: needLufs,
-        introBpm: mega,
-        forceHeadMs: -1,
-        forceTailMs: -1,
-      );
+      final rust_dsp.MasterRewrite rw;
+      try {
+        rw = await rust_dsp.masterRewrite(
+          inputPath: current,
+          doTrim: needTrim,
+          doLufs: needLufs,
+          introBpm: mega,
+          forceHeadMs: -1,
+          forceTailMs: -1,
+        );
+      } catch (e) {
+        if (e.toString().contains('Cancelado')) return abortedAt(current);
+        rethrow;
+      }
       trimHead = rw.trimHeadMs;
       final int residual = rw.residualMs;
       // El corte puede venir de esta pasada o de la transcodificación de

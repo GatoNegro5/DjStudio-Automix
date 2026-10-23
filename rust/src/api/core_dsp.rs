@@ -52,7 +52,7 @@ fn legacy_brand() -> String {
 }
 const SEAL_TEXT: &str = "ReGenial Master";
 const RG_REFERENCE_LUFS: f64 = -18.0;
-/// Tope de análisis (s). Los megamix largos se miden solo en este tramo.
+/// Tope de análisis sin TBPM (s). La pista se mide desde el inicio hasta aquí.
 const MAX_ANALYZE_SECS: u32 = 900;
 
 #[flutter_rust_bridge::frb(init)]
@@ -143,7 +143,9 @@ fn decode_channels(
     let want = (rate as usize) * (max_secs as usize);
     let mut chans: Vec<Vec<f32>> = Vec::new();
     let mut frames = 0usize;
+    let mut since_check = 0usize;
     while frames < want {
+        cancel_now()?;
         let packet = match format.next_packet() {
             Ok(p) => p,
             Err(_) => break,
@@ -166,6 +168,11 @@ fn decode_channels(
                         chans[c].push(frame[c]);
                     }
                     frames += 1;
+                    since_check += 1;
+                    if since_check >= CANCEL_BLOCK {
+                        since_check = 0;
+                        cancel_now()?;
+                    }
                 }
             }
             Err(SymError::DecodeError(_)) => continue,
@@ -508,6 +515,10 @@ fn complex_odf(mono: &[f32], rate: u32) -> Option<(Vec<f64>, f64)> {
     let mut buf = vec![rustfft::num_complex::Complex32::new(0.0, 0.0); n_fft];
     let mut odf = Vec::with_capacity(frames);
     for frame in 0..frames {
+        // 32 cuadros de STFT quedan muy por debajo de 50 ms de trabajo.
+        if frame % 32 == 0 && cancel_now().is_err() {
+            return None;
+        }
         let s = frame * hop;
         for i in 0..n_fft {
             buf[i] = rustfft::num_complex::Complex32::new(mono[s + i] * hann[i], 0.0);
@@ -610,6 +621,9 @@ fn tempo_viterbi(frame_score: &[Vec<f64>], lags: &[f64]) -> Vec<usize> {
     let mut v: Vec<f64> = acc.iter().map(|s| s.max(1e-18).ln()).collect();
     let mut back = vec![vec![0usize; n_k]; n_t];
     for t in 0..n_t {
+        if cancel_now().is_err() {
+            return Vec::new();
+        }
         let mut nv = vec![f64::NEG_INFINITY; n_k];
         for k in 0..n_k {
             let emit = frame_score[t][k].max(1e-18).ln();
@@ -703,6 +717,9 @@ fn ellis_beats(odf: &[f64], period: f64) -> Vec<usize> {
     }
     let mut local = vec![0.0; n];
     for i in 0..n {
+        if i % CANCEL_BLOCK == 0 && cancel_now().is_err() {
+            return Vec::new();
+        }
         let mut s = 0.0;
         for (ki, &w) in kernel.iter().enumerate() {
             let j = i as isize + (ki as isize - rad);
@@ -727,6 +744,9 @@ fn ellis_beats(odf: &[f64], period: f64) -> Vec<usize> {
     let mut cum = vec![0.0f64; n];
     let mut back = vec![0usize; n];
     for i in 0..n {
+        if i % CANCEL_BLOCK == 0 && cancel_now().is_err() {
+            return Vec::new();
+        }
         let j_hi = i.saturating_sub(lo);
         let j_lo = i.saturating_sub(hi);
         if i > hi && j_lo < j_hi {
@@ -823,7 +843,11 @@ fn estimate_tempo_in(mono: &[f32], rate: u32, display_lo: f64, display_hi: f64) 
     }
     let mode = 0.5 * env_rate;
     let mut frames: Vec<Vec<f64>> = Vec::with_capacity(starts.len());
-    for s in starts {
+    let mut comb_acc = vec![0.0f64; lags.len()];
+    for &s in &starts {
+        if cancel_now().is_err() {
+            return None;
+        }
         let end = (s + n_win).min(odf.len());
         let frame = &odf[s..end];
         let ac_max = max_lag.saturating_mul(4).min(frame.len().saturating_sub(2));
@@ -834,6 +858,9 @@ fn estimate_tempo_in(mono: &[f32], rate: u32, display_lo: f64, display_hi: f64) 
         let mut row = vec![0.0; lags.len()];
         for (i, &lag) in lags.iter().enumerate() {
             let c = comb_score(&ac, lag).max(0.0);
+            if debug {
+                comb_acc[i] += c;
+            }
             row[i] = c * rayleigh_weight(lag, mode);
         }
         frames.push(row);
@@ -848,6 +875,9 @@ fn estimate_tempo_in(mono: &[f32], rate: u32, display_lo: f64, display_hi: f64) 
         }
     }
     let path = tempo_viterbi(&frames, &lags);
+    if path.is_empty() || cancel_now().is_err() {
+        return None;
+    }
     let path_i = median_index(&path);
     let mut peak_i = 0usize;
     for i in 1..acc.len() {
@@ -873,6 +903,9 @@ fn estimate_tempo_in(mono: &[f32], rate: u32, display_lo: f64, display_hi: f64) 
     // Ellis coloca los golpes. El BPM es el del tempograma: el intervalo
     // medio, en cuadros de 11,6 ms, cuantiza más que el pico parabólico.
     let beats = ellis_beats(&odf, env_rate * 60.0 / bpm);
+    if cancel_now().is_err() {
+        return None;
+    }
     let shown = fold_display_bpm(bpm, display_lo, display_hi);
     if debug {
         let mut order: Vec<usize> = (0..lags.len()).collect();
@@ -882,10 +915,25 @@ fn estimate_tempo_in(mono: &[f32], rate: u32, display_lo: f64, display_hi: f64) 
             .take(6)
             .map(|i| format!("{:.1}:{:.3}", 60.0 * env_rate / lags[i], acc[i]))
             .collect();
+        let mut order_c: Vec<usize> = (0..lags.len()).collect();
+        order_c.sort_by(|&a, &b| {
+            comb_acc[b]
+                .partial_cmp(&comb_acc[a])
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let top_c: Vec<String> = order_c
+            .into_iter()
+            .take(6)
+            .map(|i| format!("{:.1}:{:.3}", 60.0 * env_rate / lags[i], comb_acc[i]))
+            .collect();
         eprintln!(
-            "tempo qm top [{}] viterbi_lag {:.1} bpm {bpm:.2} mostrado {shown:.2} golpes {}",
+            "tempo qm rate {rate} env {env_rate:.4} odf {} wins {} top [{}] peine [{}] viterbi_lag {:.1} pico_lag {:.2} bpm {bpm:.2} mostrado {shown:.2} golpes {}",
+            odf.len(),
+            starts.len(),
             top.join(" "),
+            top_c.join(" "),
             lags.get(around).copied().unwrap_or(0.0),
+            lag,
             beats.len()
         );
     }
@@ -1058,6 +1106,8 @@ struct Analysis {
 }
 
 fn analyze_file(input_path: &str) -> Result<Analysis, String> {
+    let _watch = CancelWatch::enter();
+    cancel_now()?;
     let d = decode_channels(input_path, 0, MAX_ANALYZE_SECS, 2)?;
     let mut peak = 0.0f64;
     for c in &d.ch {
@@ -1175,7 +1225,12 @@ pub async fn auto_detect_and_inject_bpm(input_path: String) -> Result<f64, Strin
     if !Path::new(&input_path).exists() {
         return Err("VETO I/O: Archivo no encontrado.".into());
     }
-    let d = decode_channels(&input_path, 0, 150, 2).map_err(|e| format!("Fallo DSP: {}", e))?;
+    let _watch = CancelWatch::enter();
+    cancel_now()?;
+    // La pista completa. 150 s en Hello se quedaban en el verso (~235 BPM)
+    // y el pliegue 60–180 lo mostraba como 117,45.
+    let d = decode_channels(&input_path, 0, MAX_ANALYZE_SECS, 2)
+        .map_err(|e| format!("Fallo DSP: {}", e))?;
     let mono = to_mono(&d);
     let bpm = detect_bpm(&mono, d.rate, None).ok_or("Anomalía determinista: Sin periodicidad".to_string())?;
     let rounded = bpm.round();
@@ -1820,7 +1875,11 @@ fn decode_frames(
     let mut seen: u64 = 0;
     let mut width = 0usize;
     let mut hold: std::collections::VecDeque<f32> = std::collections::VecDeque::new();
+    let mut since_check = 0usize;
     loop {
+        // Cada paquete (MP3 ~1152, AAC 1024) es menos de 50 ms. Si un
+        // paquete trajera un bloque enorme, se corta cada 8192 muestras.
+        cancel_now()?;
         let packet = match format.next_packet() {
             Ok(p) => p,
             Err(_) => break,
@@ -1845,6 +1904,11 @@ fn decode_frames(
                         continue;
                     }
                     seen += 1;
+                    since_check += 1;
+                    if since_check >= CANCEL_BLOCK {
+                        since_check = 0;
+                        cancel_now()?;
+                    }
                     if tail_samples > 0 {
                         hold.extend(frame.iter().copied());
                         while hold.len() > tail_samples {
@@ -2312,19 +2376,26 @@ fn encode_master_span(
     kbps: u32,
 ) -> Result<u32, String> {
     if !limit {
-        return encode_span(
+        let residual = encode_span(
             input_path, tmp, rate_hint, channels, samples, head, tail, gain, false, kbps,
             TP_LIMIT,
-        );
+        )?;
+        verify_encoded(tmp)?;
+        return Ok(residual);
     }
     let gain0 = gain;
     let mut ceiling = TP_LIMIT;
     let mut residual = 0u32;
     for attempt in 0..4 {
+        cancel_now()?;
         residual = encode_span(
             input_path, tmp, rate_hint, channels, samples, head, tail, gain, true, kbps, ceiling,
         )?;
         let measured = measure_stream(tmp)?;
+        if measured.samples == 0 || measured.decode_errors > 0 {
+            let _ = std::fs::remove_file(tmp);
+            return Err("La verificación no decodificó el temporal.".to_string());
+        }
         let out_lufs = lufs_of(&measured.k_ms);
         let tp_ok = measured.true_peak <= TP_CEILING;
         let lufs_ok = out_lufs > -50.0 && (out_lufs - TARGET_LUFS).abs() <= LUFS_TOL;
@@ -2451,23 +2522,22 @@ fn detect_validated(
     prior: Option<f64>,
 ) -> Option<f64> {
     let has_prior = prior.and_then(fix_bpm_range).is_some();
-    // Sin TBPM el beat tracking ve la canción. Tope 7 min: un megamix
-    // no se analiza entero. Con TBPM se queda el tramo central de antes.
-    let (from, span) = if samples == 0 || rate == 0 {
-        (0u32, if intro { 60u32 } else { 90u32 })
+    // Sin TBPM: la pista completa, desde el inicio, hasta 15 min. Un recorte
+    // de 90 o 150 s en Hello medía ~235 y el pliegue 60–180 (solo ×2/÷2)
+    // lo dejaba en 117,45. Con TBPM se queda el tramo de antes.
+    let total_s = if samples == 0 || rate == 0 {
+        MAX_ANALYZE_SECS as u64
     } else {
-        let total_s = samples / rate as u64;
-        if intro {
-            (0u32, 60u32)
-        } else if has_prior && total_s > 100 {
-            ((total_s / 2).saturating_sub(40) as u32, 80u32)
-        } else if has_prior {
-            (0u32, (total_s.max(8).min(150)) as u32)
-        } else if total_s > 420 {
-            ((total_s.saturating_sub(420) / 2) as u32, 420u32)
-        } else {
-            (0u32, total_s.max(8) as u32)
-        }
+        (samples / rate as u64).max(8)
+    };
+    let (from, span) = if intro {
+        (0u32, 60u32)
+    } else if has_prior && total_s > 100 {
+        ((total_s / 2).saturating_sub(40) as u32, 80u32)
+    } else if has_prior {
+        (0u32, (total_s.min(150)) as u32)
+    } else {
+        (0u32, (total_s.min(MAX_ANALYZE_SECS as u64)) as u32)
     };
     let d = decode_channels(path, from, span.max(8), 2).ok()?;
     let bpm = detect_bpm(&to_mono(&d), d.rate, prior)?;
@@ -2804,6 +2874,78 @@ fn pin_pair_mask() {
     pin_cores(a, b);
 }
 
+/// El temporal tiene que decodificar. LUFS y pico se leen en la misma pasada
+/// (la decisión de −14 y −1 dBTP la toma el bucle de `encode_master_span`).
+fn verify_encoded(tmp: &str) -> Result<(), String> {
+    let measured = measure_stream(tmp)?;
+    if measured.samples == 0 || measured.decode_errors > 0 {
+        let _ = std::fs::remove_file(tmp);
+        return Err("La verificación no decodificó el temporal.".to_string());
+    }
+    let lufs = lufs_of(&measured.k_ms);
+    let tp = measured.true_peak as f64;
+    if !lufs.is_finite() || !tp.is_finite() || tp < 0.0 {
+        let _ = std::fs::remove_file(tmp);
+        return Err("La verificación no obtuvo LUFS ni pico del temporal.".to_string());
+    }
+    Ok(())
+}
+
+/// Muestras máximas entre dos lecturas de la X. Dentro de 4096–65536.
+const CANCEL_BLOCK: usize = 8192;
+
+const CANCELLED: &str = "Cancelado";
+
+/// Bandera de la X, compartida con la UI. `Arc` para que el hilo de la
+/// canción y el de la X vean el mismo átomo (como el interrupt de ffmpeg).
+fn master_cancel_flag() -> &'static std::sync::Arc<std::sync::atomic::AtomicBool> {
+    static FLAG: std::sync::OnceLock<std::sync::Arc<std::sync::atomic::AtomicBool>> =
+        std::sync::OnceLock::new();
+    FLAG.get_or_init(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)))
+}
+
+thread_local! {
+    static CANCEL_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+struct CancelWatch;
+
+impl CancelWatch {
+    fn enter() -> Self {
+        CANCEL_DEPTH.with(|d| d.set(d.get().saturating_add(1)));
+        CancelWatch
+    }
+}
+
+impl Drop for CancelWatch {
+    fn drop(&mut self) {
+        CANCEL_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+    }
+}
+
+fn cancel_now() -> Result<(), String> {
+    let watching = CANCEL_DEPTH.with(|d| d.get() > 0);
+    if watching && master_cancel_flag().load(std::sync::atomic::Ordering::Acquire) {
+        Err(CANCELLED.to_string())
+    } else {
+        Ok(())
+    }
+}
+
+/// La X pide cortar la canción en curso. El hilo lo ve en el siguiente bloque.
+pub fn master_cancel() {
+    master_cancel_flag().store(true, std::sync::atomic::Ordering::Release);
+}
+
+/// Limpia la X antes de un lote nuevo.
+pub fn master_arm() {
+    master_cancel_flag().store(false, std::sync::atomic::Ordering::Release);
+}
+
+fn discard_partial(path: &str) {
+    let _ = std::fs::remove_file(path);
+}
+
 /// Recorta silencios y/o normaliza a −14 LUFS. Una sola generación si hacen
 /// falta los dos. `force_head_ms` / `force_tail_ms` < 0 = detectar; si no,
 /// cortar exactamente esos ms (el `_K` acompaña a la pista). Una pista que
@@ -2816,6 +2958,8 @@ pub fn master_rewrite(
     force_head_ms: i32,
     force_tail_ms: i32,
 ) -> Result<MasterRewrite, String> {
+    let _watch = CancelWatch::enter();
+    cancel_now()?;
     bind_master_thread();
     if !Path::new(&input_path).exists() {
         return Err("Archivo no encontrado en I/O.".to_string());
@@ -2976,6 +3120,12 @@ pub fn master_rewrite(
             fix_bpm_range(existing_bpm),
         )
     };
+    if let Err(e) = cancel_now() {
+        if rewritten {
+            discard_partial(&bpm_path);
+        }
+        return Err(e);
+    }
     let bpm = resolve_bpm(measured_bpm, existing_bpm);
 
     if do_trim && !blocked {
@@ -3010,12 +3160,23 @@ pub fn master_rewrite(
     }
     set_ext(&mut tag, KEY_V, SCHEMA_V2.to_string());
 
+    if let Err(e) = cancel_now() {
+        if rewritten {
+            discard_partial(&bpm_path);
+        }
+        return Err(e);
+    }
+
     if rewritten {
         let tmp = bpm_path;
         tag.write_to_path(&tmp, Version::Id3v24).map_err(|e| {
             let _ = std::fs::remove_file(&tmp);
             e.to_string()
         })?;
+        if let Err(e) = cancel_now() {
+            discard_partial(&tmp);
+            return Err(e);
+        }
         let side = format!("{input_path}.gmxside");
         if let Err(e) = std::fs::rename(&input_path, &side) {
             let _ = std::fs::remove_file(&tmp);
@@ -3756,8 +3917,14 @@ mod master_guard_tests {
         assert_eq!(cap_kbps(128, Some(160)), 128);
     }
 
+    fn guard_master() -> std::sync::MutexGuard<'static, ()> {
+        static L: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        L.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn un_paquete_roto_no_recodifica_y_deja_el_motivo() {
+        let _g = guard_master();
         let dir = std::env::temp_dir().join(format!("gmx_badpack_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("rota.mp3");
@@ -3997,6 +4164,15 @@ mod master_guard_tests {
                 }
             };
             eprintln!("RESULTADO {name} -> {got:.2} (banda {lo:.0}–{hi:.0}, {secs:.0}s)");
+            // Hello admite el tactus (~62) o el doble (~125). 117 es el fallo.
+            if name == "hello.mp3" {
+                let lento = (60.0..=64.0).contains(&got);
+                let doble = (122.0..=128.0).contains(&got);
+                if !lento && !doble {
+                    fails.push(format!("{name} midió {got:.2}, se admite 60–64 o 122–128"));
+                }
+                continue;
+            }
             let doubled = hi < 80.0 && (got - (lo + hi) * 0.5 * 2.0).abs() <= 8.0;
             if got < lo || got > hi || doubled {
                 fails.push(format!("{name} midió {got:.2}, banda {lo:.0}–{hi:.0}"));
@@ -4027,6 +4203,7 @@ mod master_guard_tests {
 
     #[test]
     fn el_pico_real_del_mp3_queda_en_menos_1() {
+        let _g = guard_master();
         let rate = 44100u32;
         let n = rate as usize * 4;
         let mut pcm = vec![0f32; n];
@@ -4064,6 +4241,115 @@ mod master_guard_tests {
             (lufs - TARGET_LUFS).abs() <= LUFS_TOL,
             "LUFS {lufs:.2}, se pedía −14 ±0,3"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[ignore = "m4a de Gabriel en /tmp/gmx_m4a; no van al repo"]
+    fn tempo_de_los_m4a_de_gabriel() {
+        let dir = "/tmp/gmx_m4a";
+        let mut fails: Vec<String> = Vec::new();
+        for (name, lo, hi) in [("A.m4a", 167.0, 171.0), ("C.m4a", 89.0, 93.0)] {
+            let path = format!("{dir}/{name}");
+            let (samples, rate) = packet_samples(&path);
+            let got = detect_validated(&path, samples, rate, false, None).expect(name);
+            eprintln!(
+                "RESULTADO {name} -> {got:.2} ({:.0}s)",
+                samples as f64 / rate as f64
+            );
+            if got < lo || got > hi {
+                fails.push(format!("{name} midió {got:.2}, banda {lo:.0}–{hi:.0}"));
+            }
+        }
+        let path = format!("{dir}/B.m4a");
+        let (samples, rate) = packet_samples(&path);
+        let got = detect_validated(&path, samples, rate, false, None).expect("B");
+        eprintln!(
+            "RESULTADO B.m4a -> {got:.2} ({:.0}s)",
+            samples as f64 / rate as f64
+        );
+        let ok = (got >= 60.0 && got <= 64.0) || (got >= 122.0 && got <= 128.0);
+        if !ok {
+            fails.push(format!("B.m4a midió {got:.2}, se admite 60–64 o 122–128"));
+        }
+        assert!(fails.is_empty(), "{}", fails.join(" | "));
+    }
+
+    fn packet_samples(path: &str) -> (u64, u32) {
+        let (mut format, track_id, params) = open_format(path).expect(path);
+        let rate = params.sample_rate.expect("rate");
+        let tb = params.time_base.expect("tb");
+        let mut total = 0u64;
+        while let Ok(p) = format.next_packet() {
+            if p.track_id() == track_id {
+                total += p.dur;
+            }
+        }
+        let t = tb.calc_time(total);
+        let samples = t.seconds * rate as u64 + (t.frac * rate as f64) as u64;
+        (samples, rate)
+    }
+
+    #[test]
+    fn la_x_borra_el_temporal_y_deja_el_original() {
+        let _g = guard_master();
+        master_arm();
+        let dir = std::env::temp_dir().join(format!(
+            "gmx_cancel_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("tema.mp3");
+        let path_s = path.to_string_lossy().to_string();
+        let rate = 44100u32;
+        let secs = 25usize;
+        let mut pcm = vec![0f32; rate as usize * secs];
+        for (i, s) in pcm.iter_mut().enumerate() {
+            *s = (i as f32 * 440.0 * std::f32::consts::TAU / rate as f32).sin() * 0.9;
+        }
+        let mut sink = Mp3Sink::new(&path_s, rate, false, 192).unwrap();
+        sink.push(&pcm, 1).unwrap();
+        sink.finish().unwrap();
+        let before = std::fs::read(&path_s).unwrap();
+        let tmp = format!("{path_s}.gmxpart");
+        let watch = tmp.clone();
+        let killer = std::thread::spawn(move || {
+            let start = std::time::Instant::now();
+            while start.elapsed() < std::time::Duration::from_millis(400) {
+                if std::path::Path::new(&watch).exists() {
+                    master_cancel();
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            master_cancel();
+        });
+        let t = std::time::Instant::now();
+        let err = match master_rewrite(path_s.clone(), true, true, false, -1, -1) {
+            Err(e) => e,
+            Ok(_) => panic!("la X debía cortar"),
+        };
+        let elapsed = t.elapsed();
+        killer.join().unwrap();
+        master_arm();
+        assert!(
+            err.contains("Cancelado"),
+            "se esperaba Cancelado y llegó {err}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "tardó {elapsed:?}"
+        );
+        assert_eq!(std::fs::read(&path_s).unwrap(), before, "el original cambió");
+        assert!(
+            !std::path::Path::new(&tmp).exists(),
+            "quedó el temporal {tmp}"
+        );
+        assert!(!std::path::Path::new(&format!("{path_s}.gmxside")).exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

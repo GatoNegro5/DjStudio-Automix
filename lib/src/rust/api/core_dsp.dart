@@ -172,6 +172,13 @@ Future<double> karaokeProgress() =>
 Future<void> karaokeCancel() =>
     RustLib.instance.api.crateApiCoreDspKaraokeCancel();
 
+/// Limpia la X antes de un lote nuevo de masterizar.
+Future<void> masterArm() => RustLib.instance.api.crateApiCoreDspMasterArm();
+
+/// La X. El hilo de la canción la ve en el siguiente bloque.
+Future<void> masterCancel() =>
+    RustLib.instance.api.crateApiCoreDspMasterCancel();
+
 /// Separa la voz y escribe la pista instrumental como MP3 320 kbps.
 /// `model_path` = UVR-MDX-NET-Inst_HQ_3.onnx. Sin Python ni FFmpeg.
 Future<bool> karaokeSeparate({

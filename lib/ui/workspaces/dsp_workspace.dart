@@ -118,7 +118,7 @@ class DspNlpWorkspace extends ConsumerWidget {
             ),
             const SizedBox(width: 10),
             Text(
-              isAborted ? "Operación Abortada: $title" : "Reporte: $title",
+              isAborted ? "cancelado" : "Reporte: $title",
               style: TextStyle(
                 color: isAborted
                     ? Colors.orangeAccent
@@ -419,6 +419,7 @@ class DspNlpWorkspace extends ConsumerWidget {
     }
 
     final pipe = ref.read(pipelineProvider.notifier);
+    await rust_dsp.masterArm();
     ref.read(directoryProvider.notifier).scanPath(targetPath);
     bool latchedAbort = false;
     bool checkAbort() {
@@ -790,7 +791,9 @@ class DspNlpWorkspace extends ConsumerWidget {
 
       await lane();
 
-      if (!checkAbort()) {
+      if (checkAbort()) {
+        pipe.confirmCancelled();
+      } else {
         pipe.updateProgress(
           total,
           total,
