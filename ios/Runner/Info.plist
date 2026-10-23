@@ -30,6 +30,8 @@
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>GatoMix recibe la música de la laptop por la red local.</string>
+	<key>NSAppleMusicUsageDescription</key>
+	<string>GatoMix lee las canciones locales, sin DRM, para armar la biblioteca.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

@@ -8,7 +8,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/brand_paths.dart';
 import '../../djiphone/iphone_library.dart';
 import '../../providers/directory_provider.dart';
+import '../../providers/library_provider.dart';
 import '../../providers/automix_provider.dart';
+import '../../services/library/library_models.dart';
+import '../../services/library/library_sources.dart';
 import '../../providers/pipeline_provider.dart';
 import '../../providers/theme_provider.dart';
 
@@ -95,66 +98,49 @@ class LibraryTreePanel extends ConsumerStatefulWidget {
 }
 
 class _LibraryTreePanelState extends ConsumerState<LibraryTreePanel> {
-  String _rootPath = '';
-  List<Directory> _subDirs = [];
-
   NotifierProvider<DirectoryNotifier, DirectoryState> get _dir =>
       widget.provider ?? directoryProvider;
 
-  @override
-  void initState() {
-    super.initState();
-    _initializeRoot();
-  }
-
-  void _initializeRoot() {
-    if (Platform.isIOS) {
-      _rootPath = IphoneLibrary.musicRoot;
-      _loadSubDirs();
-      return;
-    }
-    if (Platform.isWindows) {
-      final userProfile = Platform.environment['USERPROFILE'];
-      _rootPath = userProfile != null ? '$userProfile\\Music' : 'C:\\Music';
-    } else if (Platform.isAndroid) {
-      _rootPath = '/storage/emulated/0/Music';
-    } else if (Platform.isMacOS || Platform.isLinux) {
-      final home = Platform.environment['HOME'];
-      _rootPath = home != null ? '$home/Music' : '/';
-    } else {
-      _rootPath = '/';
-    }
-    _loadSubDirs();
-  }
-
-  void _loadSubDirs() {
-    final dir = Directory(_rootPath);
-    try {
-      if (dir.existsSync()) {
-        setState(() {
-          _subDirs = dir.listSync().whereType<Directory>().toList()
-            ..sort((a, b) => a.path.compareTo(b.path));
-        });
-      }
-    } catch (e) {
-      debugPrint(
-        "⚠️ [I/O ERROR]: Acceso denegado o ruta inválida en $_rootPath: $e",
-      );
-      setState(() {
-        _subDirs = [];
-      });
-    }
-  }
-
   Future<void> _changeRootDirectory() async {
     await ref.read(_dir.notifier).loadDirectory();
-    final newPath = ref.read(_dir).currentPath;
-    if (newPath.isNotEmpty && newPath != _rootPath) {
-      setState(() {
-        _rootPath = newPath;
-        _loadSubDirs();
-      });
-    }
+  }
+
+  Future<void> _importAudioFiles() async {
+    final String? imported = await LibrarySources.importAudioFiles();
+    if (!mounted || imported == null) return;
+    await ref.read(libraryFoldersProvider.notifier).add(imported);
+    await ref.read(_dir.notifier).scanPath(imported);
+  }
+
+  Widget _removeButton(String path) {
+    return IconButton(
+      icon: const Icon(Icons.close, color: GatoMixTheme.textMuted, size: 14),
+      onPressed: () => ref.read(libraryFoldersProvider.notifier).remove(path),
+      tooltip: "Quitar de la biblioteca",
+      padding: EdgeInsets.zero,
+      constraints: const BoxConstraints(),
+    );
+  }
+
+  Widget _nodeTitle(
+    String label,
+    String path, {
+    required bool root,
+    required TextStyle style,
+  }) {
+    return Row(
+      children: [
+        Expanded(
+          child: Text(
+            label,
+            style: style,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        if (root) _removeButton(path),
+      ],
+    );
   }
 
   Widget _buildFolderNode(Directory dir, int depth, Set<String> expandedPaths) {
@@ -176,11 +162,11 @@ class _LibraryTreePanelState extends ConsumerState<LibraryTreePanel> {
             right: 10.0,
           ),
           leading: const Icon(Icons.folder, color: Colors.white54, size: 16),
-          title: Text(
+          title: _nodeTitle(
             dir.path.replaceAll('\\', '/').split('/').last,
+            dir.path,
+            root: depth == 0,
             style: const TextStyle(fontSize: 12, color: Colors.white70),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
           ),
           onTap: () => ref.read(_dir.notifier).scanPath(dir.path),
           hoverColor: Colors.white10,
@@ -211,15 +197,15 @@ class _LibraryTreePanelState extends ConsumerState<LibraryTreePanel> {
           color: Color(0xFF00FFFF),
           size: 16,
         ),
-        title: Text(
+        title: _nodeTitle(
           dir.path.replaceAll('\\', '/').split('/').last,
+          dir.path,
+          root: depth == 0,
           style: const TextStyle(
             fontSize: 12,
             color: Colors.white,
             fontWeight: FontWeight.bold,
           ),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
         ),
         children: childDirs
             .map(
@@ -231,12 +217,32 @@ class _LibraryTreePanelState extends ConsumerState<LibraryTreePanel> {
     );
   }
 
+  List<Directory> _existingRoots(List<LibraryFolderRecord> records) {
+    final List<Directory> dirs = <Directory>[];
+    for (final LibraryFolderRecord record in records) {
+      if (!isFileSystemFolder(record.path)) continue;
+      try {
+        final Directory dir = Directory(record.path);
+        if (dir.existsSync()) dirs.add(dir);
+      } catch (_) {}
+    }
+    return dirs;
+  }
+
   @override
   Widget build(BuildContext context) {
     final expandedPaths = ref.watch(
       _dir.select((s) => s.expandedPaths),
     );
+    final List<LibraryFolderRecord>? records = ref.watch(libraryFoldersProvider);
     final bool isMobile = MediaQuery.of(context).size.width < 800;
+    final List<LibraryFolderRecord> accepted =
+        records ?? const <LibraryFolderRecord>[];
+    final List<Directory> roots = _existingRoots(accepted);
+    final List<LibraryFolderRecord> virtual = <LibraryFolderRecord>[
+      for (final LibraryFolderRecord record in accepted)
+        if (!isFileSystemFolder(record.path)) record,
+    ];
 
     return Column(
       children: [
@@ -257,22 +263,49 @@ class _LibraryTreePanelState extends ConsumerState<LibraryTreePanel> {
                   fontSize: isMobile ? 11 : 13,
                 ),
               ),
-              IconButton(
-                icon: Icon(
-                  Icons.add_to_drive,
-                  color: const Color(0xFF00FFFF),
-                  size: isMobile ? 15 : 18,
-                ),
-                onPressed: _changeRootDirectory,
-                tooltip: "Cambiar Raíz",
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(),
+              Row(
+                children: [
+                  if (Platform.isIOS)
+                    IconButton(
+                      icon: Icon(
+                        Icons.file_upload,
+                        color: const Color(0xFF00FFFF),
+                        size: isMobile ? 15 : 18,
+                      ),
+                      onPressed: _importAudioFiles,
+                      tooltip: "Importar canciones",
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                    ),
+                  IconButton(
+                    icon: Icon(
+                      Icons.add_to_drive,
+                      color: const Color(0xFF00FFFF),
+                      size: isMobile ? 15 : 18,
+                    ),
+                    onPressed: _changeRootDirectory,
+                    tooltip: "Añadir carpeta",
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                  ),
+                ],
               ),
             ],
           ),
         ),
         Expanded(
-          child: _subDirs.isEmpty
+          child: records == null
+              ? const Center(
+                  child: SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: GatoMixTheme.deckA,
+                    ),
+                  ),
+                )
+              : (roots.isEmpty && virtual.isEmpty)
               ? const Center(
                   child: Text(
                     "Vacío",
@@ -280,9 +313,40 @@ class _LibraryTreePanelState extends ConsumerState<LibraryTreePanel> {
                   ),
                 )
               : ListView.builder(
-                  itemCount: _subDirs.length,
-                  itemBuilder: (context, index) =>
-                      _buildFolderNode(_subDirs[index], 0, expandedPaths),
+                  itemCount: virtual.length + roots.length,
+                  itemBuilder: (context, index) {
+                    if (index < virtual.length) {
+                      final LibraryFolderRecord record = virtual[index];
+                      return ListTile(
+                        dense: true,
+                        visualDensity: const VisualDensity(vertical: -4),
+                        minVerticalPadding: 0,
+                        contentPadding: const EdgeInsets.only(
+                          left: 15,
+                          right: 10,
+                        ),
+                        leading: const Icon(
+                          Icons.folder,
+                          color: Colors.white54,
+                          size: 16,
+                        ),
+                        title: _nodeTitle(
+                          record.label,
+                          record.path,
+                          root: true,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: Colors.white70,
+                          ),
+                        ),
+                      );
+                    }
+                    return _buildFolderNode(
+                      roots[index - virtual.length],
+                      0,
+                      expandedPaths,
+                    );
+                  },
                 ),
         ),
       ],

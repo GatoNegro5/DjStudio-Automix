@@ -111,9 +111,6 @@ class _LanSyncWorkspaceState extends ConsumerState<LanSyncWorkspace>
       setState(() => _currentLog = "⚙️ Solicitando permisos de Android...");
       await Permission.audio.request();
       await Permission.storage.request();
-      if (await Permission.manageExternalStorage.isDenied) {
-        await Permission.manageExternalStorage.request();
-      }
     }
 
     if (Platform.isWindows) {

@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 
 // 🛠️ INYECCIÓN: Uso estricto de la capa HAL
 import '../core/hal/platform_strategy.dart';
+import 'library_provider.dart';
 
 class DirectoryState {
   final String currentPath;
@@ -108,6 +109,7 @@ class DirectoryNotifier extends Notifier<DirectoryState> {
     final String? selectedDirectory = await getDirectoryPath();
     if (selectedDirectory != null) {
       await scanPath(selectedDirectory);
+      await ref.read(libraryFoldersProvider.notifier).add(selectedDirectory);
     }
   }
 
