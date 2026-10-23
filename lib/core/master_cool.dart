@@ -1,4 +1,22 @@
-/// Turno de núcleo y pausa de enfriamiento de Masterizar.
+/// Par de núcleos de una canción. `low` es decode/análisis, `high` es
+/// encoder/limitador. Con un solo núcleo los dos coinciden.
+class MasterPair {
+  final int low;
+  final int high;
+
+  const MasterPair(this.low, this.high);
+
+  String get label => low == high ? '$low' : '$low-$high';
+
+  @override
+  bool operator ==(Object other) =>
+      other is MasterPair && other.low == low && other.high == high;
+
+  @override
+  int get hashCode => Object.hash(low, high);
+}
+
+/// Turno de núcleos y pausa de enfriamiento de Masterizar.
 /// Puro: sin Flutter, para poder probarlo.
 class MasterCool {
   static const int pauseMinMs = 10000;
@@ -12,11 +30,26 @@ class MasterCool {
     return ms;
   }
 
-  /// Núcleo de esta canción. Rota 0, 1, …, n-1 y vuelve a empezar.
-  static int coreForSong(int songIndex, int processors) {
+  /// Turnos de pares. 8 o más núcleos: 4 (0-1, 2-3, 4-5, 6-7).
+  /// Con menos, los pares que caben (4 núcleos → 2 turnos).
+  static int pairTurns(int processors) {
+    final int n = processors < 1 ? 1 : processors;
+    final int pairs = n ~/ 2;
+    if (pairs < 1) return 1;
+    if (pairs > 4) return 4;
+    return pairs;
+  }
+
+  /// Par de esta canción. Canción 0 → 0-1, 1 → 2-3, y así. Con 2 turnos
+  /// o más, dos canciones seguidas no comparten par.
+  static MasterPair pairForSong(int songIndex, int processors) {
     final int n = processors < 1 ? 1 : processors;
     final int i = songIndex < 0 ? 0 : songIndex;
-    return i % n;
+    final int slot = i % pairTurns(n);
+    if (n < 2) return const MasterPair(0, 0);
+    final int low = slot * 2;
+    final int high = low + 1;
+    return MasterPair(low, high < n ? high : n - 1);
   }
 
   /// Texto exacto de la barra: `Enfriando… Ns`.

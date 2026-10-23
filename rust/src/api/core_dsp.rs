@@ -2800,28 +2800,66 @@ pub struct MasterRewrite {
     pub residual_ms: u32,
 }
 
-/// Índice de núcleo: `requested % ncpu`. Cero CPUs cuenta como una.
-fn master_core_index(requested: usize, ncpu: usize) -> usize {
-    if ncpu == 0 {
-        0
+thread_local! {
+    static MASTER_PAIR: std::cell::Cell<Option<(usize, usize)>> = std::cell::Cell::new(None);
+}
+
+/// Turnos de pares. 8 o más núcleos: 4. Con menos, los pares que caben.
+#[cfg(test)]
+fn master_pair_turns(ncpu: usize) -> usize {
+    let n = if ncpu == 0 { 1 } else { ncpu };
+    let pairs = n / 2;
+    if pairs < 1 {
+        1
     } else {
-        requested % ncpu
+        pairs.min(4)
     }
 }
 
-/// Ancla el hilo actual al núcleo pedido.
+/// Par de la canción: 0-1, 2-3, 4-5, 6-7 y vuelve a empezar.
+#[cfg(test)]
+fn master_pair_for_song(song: usize, ncpu: usize) -> (usize, usize) {
+    let n = if ncpu == 0 { 1 } else { ncpu };
+    let slot = song % master_pair_turns(n);
+    if n < 2 {
+        return (0, 0);
+    }
+    let low = slot * 2;
+    let high = (low + 1).min(n - 1);
+    (low, high)
+}
+
+fn parse_master_pair(raw: &str) -> Option<(usize, usize)> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if let Some((a, b)) = raw.split_once('-') {
+        let a = a.trim().parse::<usize>().ok()?;
+        let b = b.trim().parse::<usize>().ok()?;
+        return Some((a, b));
+    }
+    let a = raw.parse::<usize>().ok()?;
+    Some((a, a))
+}
+
+/// Ancla el hilo a uno o dos núcleos.
 /// Linux/Android: `sched_setaffinity`. Windows: `SetThreadGroupAffinity`.
-/// macOS/iOS no tienen afinidad: QoS utility y el llamador ya va en un hilo.
-fn pin_current_thread(requested: usize) {
+/// macOS/iOS no tienen afinidad: QoS utility.
+fn pin_cores(first: usize, second: usize) {
     let n = std::thread::available_parallelism()
         .map(|p| p.get())
-        .unwrap_or(1);
-    let core = master_core_index(requested, n);
+        .unwrap_or(1)
+        .max(1);
+    let a = first.min(n - 1);
+    let b = second.min(n - 1);
     #[cfg(any(target_os = "linux", target_os = "android"))]
     unsafe {
         let mut set = [0u8; 128];
-        if core < 128 * 8 {
-            set[core / 8] |= 1u8 << (core % 8);
+        for core in [a, b] {
+            if core < 128 * 8 {
+                set[core / 8] |= 1u8 << (core % 8);
+            }
         }
         extern "C" {
             fn sched_setaffinity(pid: i32, cpusetsize: usize, mask: *const u8) -> i32;
@@ -2845,15 +2883,19 @@ fn pin_current_thread(requested: usize) {
             ) -> i32;
             fn SetThreadAffinityMask(thread: isize, mask: usize) -> usize;
         }
-        let bit = core % 64;
+        let group_id = (a / 64) as u16;
+        let mut mask = 1usize << (a % 64);
+        if b / 64 == a / 64 {
+            mask |= 1usize << (b % 64);
+        }
         let group = GroupAffinity {
-            mask: 1usize << bit,
-            group: (core / 64) as u16,
+            mask,
+            group: group_id,
             reserved: [0; 3],
         };
         let thread = GetCurrentThread();
         if SetThreadGroupAffinity(thread, &group, std::ptr::null_mut()) == 0 {
-            let _ = SetThreadAffinityMask(thread, 1usize << bit);
+            let _ = SetThreadAffinityMask(thread, mask);
         }
     }
     #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -2863,11 +2905,11 @@ fn pin_current_thread(requested: usize) {
         }
         const QOS_CLASS_UTILITY: u32 = 0x11;
         let _ = pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
-        let _ = core;
+        let _ = (a, b);
     }
 }
 
-fn limit_omp_to_one() {
+fn limit_omp_to_two() {
     #[cfg(any(
         target_os = "linux",
         target_os = "android",
@@ -2879,7 +2921,7 @@ fn limit_omp_to_one() {
             fn setenv(name: *const i8, value: *const i8, overwrite: i32) -> i32;
         }
         let name = b"OMP_NUM_THREADS\0";
-        let value = b"1\0";
+        let value = b"2\0";
         let _ = setenv(
             name.as_ptr() as *const i8,
             value.as_ptr() as *const i8,
@@ -2895,26 +2937,52 @@ fn limit_omp_to_one() {
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect();
-        let value: Vec<u16> = "1".encode_utf16().chain(std::iter::once(0)).collect();
+        let value: Vec<u16> = "2".encode_utf16().chain(std::iter::once(0)).collect();
         let _ = SetEnvironmentVariableW(name.as_ptr(), value.as_ptr());
     }
 }
 
-/// Lee `GMX_MASTER_CORE` (lo publica Dart antes de cada canción) y ancla
-/// este hilo. Vacío o ausente: no toca la afinidad.
+/// Lee `GMX_MASTER_CORE` (`0-1`) y deja el hilo en el núcleo bajo del par
+/// (decode/análisis). Vacío o ausente: no toca la afinidad.
 fn bind_master_thread() {
     let Ok(raw) = std::env::var("GMX_MASTER_CORE") else {
+        MASTER_PAIR.with(|p| p.set(None));
         return;
     };
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return;
-    }
-    let Ok(requested) = raw.parse::<usize>() else {
+    let Some((a, b)) = parse_master_pair(&raw) else {
+        MASTER_PAIR.with(|p| p.set(None));
         return;
     };
-    pin_current_thread(requested);
-    limit_omp_to_one();
+    let n = std::thread::available_parallelism()
+        .map(|p| p.get())
+        .unwrap_or(1)
+        .max(1);
+    let pair = (a.min(n - 1), b.min(n - 1));
+    MASTER_PAIR.with(|p| p.set(Some(pair)));
+    pin_cores(pair.0, pair.0);
+    limit_omp_to_two();
+}
+
+fn pin_analysis_core() {
+    let Some((a, _)) = MASTER_PAIR.with(|p| p.get()) else {
+        return;
+    };
+    pin_cores(a, a);
+}
+
+fn pin_encoder_core() {
+    let Some((_, b)) = MASTER_PAIR.with(|p| p.get()) else {
+        return;
+    };
+    pin_cores(b, b);
+}
+
+/// Los dos núcleos del par, para un pool de 2 hilos (karaoke).
+fn pin_pair_mask() {
+    let Some((a, b)) = MASTER_PAIR.with(|p| p.get()) else {
+        return;
+    };
+    pin_cores(a, b);
 }
 
 /// Recorta silencios y/o normaliza a −14 LUFS. Una sola generación si hacen
@@ -3037,6 +3105,7 @@ pub fn master_rewrite(
         };
         let audio_change = head_s > 0 || tail_s > 0 || lufs_encode;
         if audio_change {
+            pin_encoder_core();
             let tmp = format!("{input_path}.gmxpart");
             residual_ms = encode_master_span(
                 &input_path,
@@ -3054,6 +3123,7 @@ pub fn master_rewrite(
                 let _ = std::fs::remove_file(&tmp);
                 e
             })?;
+            pin_analysis_core();
             bpm_path = tmp;
             rewritten = true;
         } else {
@@ -3455,8 +3525,8 @@ impl KStft {
 
 type KInfer = Box<dyn FnMut(&[f32]) -> Result<Vec<f32>, String>>;
 
-/// Escritorio (Windows/macOS): ONNX Runtime oficial (MIT). Un solo hilo,
-/// el mismo que ancló Masterizar: sin pool intra/inter.
+/// Escritorio (Windows/macOS): ONNX Runtime oficial (MIT). Pool de 2 hilos
+/// dentro del par de núcleos que fijó Masterizar.
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 fn karaoke_backend(model_path: &str) -> Result<KInfer, String> {
     use ort::session::{builder::GraphOptimizationLevel, Session};
@@ -3465,7 +3535,7 @@ fn karaoke_backend(model_path: &str) -> Result<KInfer, String> {
         .map_err(|e| e.to_string())?
         .with_optimization_level(GraphOptimizationLevel::Level3)
         .map_err(|e| e.to_string())?
-        .with_intra_threads(1)
+        .with_intra_threads(2)
         .map_err(|e| e.to_string())?
         .with_inter_threads(1)
         .map_err(|e| e.to_string())?
@@ -3496,7 +3566,7 @@ fn karaoke_backend(model_path: &str) -> Result<KInfer, String> {
         .map_err(|e| e.to_string())?
         .into_runnable()
         .map_err(|e| e.to_string())?;
-    let pool = tract_onnx::tract_core::internal::multithread::Executor::SingleThread;
+    let pool = tract_onnx::tract_core::internal::multithread::Executor::multithread(2);
     Ok(Box::new(move |data: &[f32]| {
         let input = Tensor::from_shape(&[1, 4, K_DIM_F, K_DIM_T], data).map_err(|e| e.to_string())?;
         let out = tract_onnx::tract_core::internal::multithread::multithread_tract_scope(
@@ -3512,6 +3582,7 @@ fn karaoke_backend(model_path: &str) -> Result<KInfer, String> {
 /// `model_path` = UVR-MDX-NET-Inst_HQ_3.onnx. Sin Python ni FFmpeg.
 pub fn karaoke_separate(input_path: String, model_path: String, output_path: String) -> Result<bool, String> {
     bind_master_thread();
+    pin_pair_mask();
     KAR_CANCEL.store(false, Ordering::Relaxed);
     KAR_PROGRESS.store(0, Ordering::Relaxed);
 
@@ -4202,15 +4273,39 @@ mod karaoke_tests {
 
 #[cfg(test)]
 mod affinity_tests {
-    use super::{master_core_index, pin_current_thread};
+    use super::{master_pair_for_song, master_pair_turns, pin_cores};
 
     #[test]
-    fn el_nucleo_rota_y_el_ancla_no_entra_en_panico() {
-        assert_eq!(master_core_index(0, 4), 0);
-        assert_eq!(master_core_index(5, 4), 1);
-        assert_eq!(master_core_index(3, 1), 0);
-        assert_eq!(master_core_index(2, 0), 0);
-        pin_current_thread(0);
+    fn el_par_rota_en_cuatro_turnos_y_no_se_repite() {
+        assert_eq!(master_pair_turns(8), 4);
+        assert_eq!(master_pair_turns(16), 4);
+        assert_eq!(master_pair_turns(4), 2);
+        assert_eq!(master_pair_turns(6), 3);
+        assert_eq!(master_pair_turns(2), 1);
+        assert_eq!(master_pair_for_song(0, 8), (0, 1));
+        assert_eq!(master_pair_for_song(1, 8), (2, 3));
+        assert_eq!(master_pair_for_song(2, 8), (4, 5));
+        assert_eq!(master_pair_for_song(3, 8), (6, 7));
+        assert_eq!(master_pair_for_song(4, 8), (0, 1));
+        assert_eq!(master_pair_for_song(1, 4), (2, 3));
+        assert_eq!(master_pair_for_song(0, 1), (0, 0));
+        for n in [4usize, 6, 8, 16] {
+            for song in 0..10 {
+                assert_ne!(
+                    master_pair_for_song(song, n),
+                    master_pair_for_song(song + 1, n),
+                    "n={n} canción {song}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn el_par_ancla_los_dos_nucleos() {
+        let n = std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(1);
+        pin_cores(0, 1);
         #[cfg(any(target_os = "linux", target_os = "android"))]
         unsafe {
             extern "C" {
@@ -4220,35 +4315,37 @@ mod affinity_tests {
             let mut set = [0u8; 128];
             assert_eq!(sched_getaffinity(0, set.len(), set.as_mut_ptr()), 0);
             let bits: u32 = set.iter().map(|b| b.count_ones()).sum();
-            assert_eq!(bits, 1, "el hilo quedó en un solo núcleo");
-            assert_eq!(set[0] & 1, 1, "el núcleo pedido fue el 0");
-            let n = std::thread::available_parallelism()
-                .map(|p| p.get())
-                .unwrap_or(1)
-                .min(1024);
+            if n >= 2 {
+                assert_eq!(bits, 2, "el hilo quedó en el par");
+                assert_eq!(set[0] & 0b11, 0b11, "núcleos 0 y 1");
+            } else {
+                assert_eq!(bits, 1);
+            }
             let mut all = [0u8; 128];
-            for i in 0..n {
+            let cap = n.min(1024);
+            for i in 0..cap {
                 all[i / 8] |= 1u8 << (i % 8);
             }
             let _ = sched_setaffinity(0, all.len(), all.as_ptr());
         }
-        pin_current_thread(99999);
+        let _ = n;
+        pin_cores(99999, 99998);
     }
 
     #[test]
-    fn el_nucleo_publicado_se_lee_sin_cache() {
+    fn el_par_publicado_se_lee_sin_cache() {
         unsafe {
             extern "C" {
                 fn setenv(name: *const i8, value: *const i8, overwrite: i32) -> i32;
             }
             let name = b"GMX_MASTER_CORE\0";
-            let value = b"2\0";
+            let value = b"2-3\0";
             assert_eq!(
                 setenv(name.as_ptr() as *const i8, value.as_ptr() as *const i8, 1),
                 0
             );
         }
-        assert_eq!(std::env::var("GMX_MASTER_CORE").ok().as_deref(), Some("2"));
+        assert_eq!(std::env::var("GMX_MASTER_CORE").ok().as_deref(), Some("2-3"));
         super::bind_master_thread();
         unsafe {
             extern "C" {

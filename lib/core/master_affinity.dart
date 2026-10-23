@@ -4,14 +4,14 @@ import 'dart:io';
 import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart';
 
-/// Publica el núcleo de esta canción para que el hilo Rust
+/// Publica el par de esta canción (`0-1`) para que el hilo Rust
 /// (`master_rewrite`, karaoke) se ancle al leer `GMX_MASTER_CORE`.
 class MasterAffinity {
   static const String envKey = 'GMX_MASTER_CORE';
 
-  static void publish(int core) {
+  static void publish(int low, int high) {
     try {
-      _set(envKey, '$core');
+      _set(envKey, '$low-$high');
     } catch (e) {
       debugPrint('MASTER afinidad no publicada: $e');
     }
@@ -25,12 +25,12 @@ class MasterAffinity {
     }
   }
 
-  /// Lo que quedó publicado. Null si está vacío o no es un número.
-  static int? current() {
+  /// Lo que quedó publicado (`0-1`). Null si está vacío.
+  static String? current() {
     try {
       final String? raw = _get(envKey);
       if (raw == null || raw.isEmpty) return null;
-      return int.tryParse(raw);
+      return raw;
     } catch (_) {
       return null;
     }

@@ -12,14 +12,35 @@ void main() {
     expect(MasterCool.clampPauseMs(15000), 15000);
   });
 
-  test('el núcleo rota por canción y vuelve a empezar', () {
-    expect(MasterCool.coreForSong(0, 4), 0);
-    expect(MasterCool.coreForSong(1, 4), 1);
-    expect(MasterCool.coreForSong(3, 4), 3);
-    expect(MasterCool.coreForSong(4, 4), 0);
-    expect(MasterCool.coreForSong(5, 3), 2);
-    expect(MasterCool.coreForSong(0, 0), 0);
-    expect(MasterCool.coreForSong(-1, 8), 0);
+  test('el par rota en 4 turnos y no se repite seguido', () {
+    expect(MasterCool.pairTurns(8), 4);
+    expect(MasterCool.pairTurns(16), 4);
+    expect(MasterCool.pairTurns(4), 2);
+    expect(MasterCool.pairTurns(6), 3);
+    expect(MasterCool.pairTurns(2), 1);
+    expect(MasterCool.pairForSong(0, 8), const MasterPair(0, 1));
+    expect(MasterCool.pairForSong(1, 8), const MasterPair(2, 3));
+    expect(MasterCool.pairForSong(2, 8), const MasterPair(4, 5));
+    expect(MasterCool.pairForSong(3, 8), const MasterPair(6, 7));
+    expect(MasterCool.pairForSong(4, 8), const MasterPair(0, 1));
+    expect(MasterCool.pairForSong(0, 4), const MasterPair(0, 1));
+    expect(MasterCool.pairForSong(1, 4), const MasterPair(2, 3));
+    expect(MasterCool.pairForSong(2, 4), const MasterPair(0, 1));
+    expect(MasterCool.pairForSong(0, 6), const MasterPair(0, 1));
+    expect(MasterCool.pairForSong(2, 6), const MasterPair(4, 5));
+    expect(MasterCool.pairForSong(0, 16), const MasterPair(0, 1));
+    expect(MasterCool.pairForSong(4, 16), const MasterPair(0, 1));
+    expect(MasterCool.pairForSong(0, 1), const MasterPair(0, 0));
+    expect(MasterCool.pairForSong(-1, 8), const MasterPair(0, 1));
+    for (final int n in [4, 6, 8, 12, 16]) {
+      for (var i = 0; i < 10; i++) {
+        expect(
+          MasterCool.pairForSong(i, n) == MasterCool.pairForSong(i + 1, n),
+          isFalse,
+          reason: 'n=$n canción $i',
+        );
+      }
+    }
   });
 
   test('la barra dice Enfriando… Ns', () {
@@ -97,9 +118,9 @@ void main() {
     expect(MasterCool.thermalIsHigh(platform: 'android', status: null), isFalse);
   });
 
-  test('el núcleo publicado se lee y se limpia', () {
-    MasterAffinity.publish(3);
-    expect(MasterAffinity.current(), 3);
+  test('el par publicado se lee y se limpia', () {
+    MasterAffinity.publish(2, 3);
+    expect(MasterAffinity.current(), '2-3');
     MasterAffinity.clear();
     expect(MasterAffinity.current(), isNull);
   });

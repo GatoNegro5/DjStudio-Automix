@@ -536,20 +536,20 @@ class DspNlpWorkspace extends ConsumerWidget {
             continue;
           }
 
-          final int core = MasterCool.coreForSong(
+          final MasterPair pair = MasterCool.pairForSong(
             songSlot,
             Platform.numberOfProcessors,
           );
           songSlot++;
-          MasterAffinity.publish(core);
+          MasterAffinity.publish(pair.low, pair.high);
           final Stopwatch trackClock = Stopwatch()..start();
           void logSong(int pauseMs) {
             if (trackClock.isRunning) trackClock.stop();
-            final String nucleo = (Platform.isIOS || Platform.isMacOS)
-                ? '$core/qos'
-                : '$core';
+            final String par = (Platform.isIOS || Platform.isMacOS)
+                ? '${pair.label}/qos'
+                : pair.label;
             debugPrint(
-              'MASTER núcleo=$nucleo proceso=${trackClock.elapsedMilliseconds}ms pausa=${pauseMs}ms $originalName',
+              'MASTER par=$par proceso=${trackClock.elapsedMilliseconds}ms pausa=${pauseMs}ms $originalName',
             );
           }
 
