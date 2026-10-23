@@ -515,7 +515,7 @@ fn detect_bpm(mono: &[f32], rate: u32, prior: Option<f64>) -> Option<f64> {
         if let Some(lag) = lag_matching_prior(lag_f, &scores, env_rate, min_lag, max_lag, want) {
             lag_f = lag;
         }
-        // Con TBPM previo manda el alias (±2 %). No se empuja a 90–180:
+        // Con TBPM previo manda el alias (±2 %). La ventana 56–180 no corre:
         // una cumbia en 108 se queda en 108 aunque 144 puntúe más.
         return Some(fold_bpm_band(60.0 * env_rate / lag_f));
     }
@@ -523,7 +523,9 @@ fn detect_bpm(mono: &[f32], rate: u32, prior: Option<f64>) -> Option<f64> {
 }
 
 /// Sin TBPM previo: el lag ganador y sus vecinos ×2, ÷2, ×4/3 y ×3/4.
-/// Gana el de mayor autocorrelación cuyo BPM cae en 90–180 (pop, rock, disco).
+/// Gana el de mayor autocorrelación dentro de 56–180.
+/// Una balada en ~62 y una cumbia en ~89 no se doblan para entrar en 90–180,
+/// y un pop en ~169 no se parte por pasar de 165.
 /// Si ninguno entra, se pliega a 78–165 como antes.
 fn prefer_dance_tempo(
     lag_f: f64,
@@ -545,7 +547,7 @@ fn prefer_dance_tempo(
             continue;
         }
         let bpm = 60.0 * env_rate / lag;
-        if !(90.0..=180.0).contains(&bpm) {
+        if !(56.0..=180.0).contains(&bpm) {
             continue;
         }
         if best.map(|(s, _)| score > s).unwrap_or(true) {
@@ -1269,10 +1271,13 @@ const HEAD_KEEP_MS: u64 = 150;
 const TAIL_FADE_MS: u64 = 300;
 /// −1 dBTP. Por encima de esto el master vuelve a codificar.
 const TP_CEILING: f32 = 0.8912509381337456;
-/// Techo del limitador (−1,5 dBFS): margen para el overshoot del MP3.
-const TP_LIMIT: f32 = 0.8413951416451951;
-/// Segundo pase si el MP3 sigue por encima de −1 dBTP.
-const TP_LIMIT_RETRY: f32 = 0.7943282347242815;
+/// Techo inicial del limitador (−2,5 dBFS). A 320 kbps el MP3 pasa
+/// unos 1,5 dB del pico del PCM; −1,5 dBFS llegaba a −0,9 dBTP.
+const TP_LIMIT: f32 = 0.7498942093324558;
+/// No bajar el techo de aquí (−6 dBFS): por debajo el limitador aplasta.
+const TP_LIMIT_FLOOR: f32 = 0.5011872336272722;
+/// El LUFS medido en el MP3 ya codificado tiene que caer aquí.
+const LUFS_TOL: f64 = 0.3;
 
 fn bitrate_at_most(kbps: u32) -> mp3lame_encoder::Bitrate {
     use mp3lame_encoder::Bitrate as B;
@@ -1867,8 +1872,8 @@ fn encode_span(
     Ok(gap.residual_ms)
 }
 
-/// Codifica y, si el limitador está activo, mide el MP3. Si el pico real
-/// sigue por encima de −1 dBTP, repite una vez con el techo de −2 dBFS.
+/// Codifica y mide el MP3. Si el pico real pasa de −1 dBTP, baja el techo.
+/// Si el LUFS medido se sale de −14 ±0,3, corrige la ganancia y repite.
 fn encode_master_span(
     input_path: &str,
     tmp: &str,
@@ -1877,7 +1882,7 @@ fn encode_master_span(
     samples: u64,
     head: u64,
     tail: u64,
-    gain: f32,
+    mut gain: f32,
     limit: bool,
     kbps: u32,
 ) -> Result<u32, String> {
@@ -1887,27 +1892,30 @@ fn encode_master_span(
             TP_LIMIT,
         );
     }
-    let residual = encode_span(
-        input_path, tmp, rate_hint, channels, samples, head, tail, gain, true, kbps, TP_LIMIT,
-    )?;
-    let peak = measure_stream(tmp)?.true_peak;
-    if peak <= TP_CEILING {
-        return Ok(residual);
+    let gain0 = gain;
+    let mut ceiling = TP_LIMIT;
+    let mut residual = 0u32;
+    for attempt in 0..4 {
+        residual = encode_span(
+            input_path, tmp, rate_hint, channels, samples, head, tail, gain, true, kbps, ceiling,
+        )?;
+        let measured = measure_stream(tmp)?;
+        let out_lufs = lufs_of(&measured.k_ms);
+        let tp_ok = measured.true_peak <= TP_CEILING;
+        let lufs_ok = out_lufs > -50.0 && (out_lufs - TARGET_LUFS).abs() <= LUFS_TOL;
+        if (tp_ok && lufs_ok) || attempt == 3 {
+            return Ok(residual);
+        }
+        let _ = std::fs::remove_file(tmp);
+        if !lufs_ok && out_lufs > -50.0 {
+            let db = (TARGET_LUFS - out_lufs).clamp(-3.0, 3.0);
+            gain = (gain * 10f32.powf((db / 20.0) as f32)).clamp(gain0 * 0.5, gain0 * 2.0);
+        }
+        if !tp_ok {
+            ceiling = (ceiling * 10f32.powf(-1.0 / 20.0)).max(TP_LIMIT_FLOOR);
+        }
     }
-    let _ = std::fs::remove_file(tmp);
-    encode_span(
-        input_path,
-        tmp,
-        rate_hint,
-        channels,
-        samples,
-        head,
-        tail,
-        gain,
-        true,
-        kbps,
-        TP_LIMIT_RETRY,
-    )
+    Ok(residual)
 }
 
 struct SpanPlan {
@@ -3201,37 +3209,69 @@ mod master_guard_tests {
         let lag_169 = ((60.0 * env_rate / 169.0) as f64).round() as usize;
         let lag_85 = ((60.0 * env_rate / 84.5) as f64).round() as usize;
         let mut scores = vec![0.0; lag_85 + 8];
-        scores[lag_169] = 6.0;
-        scores[lag_85] = 9.0;
-        let bpm = prefer_dance_tempo(lag_85 as f64, &scores, env_rate, 20, lag_85 + 4);
+        scores[lag_169] = 8.0;
+        scores[lag_85] = 3.0;
+        let bpm = prefer_dance_tempo(lag_169 as f64, &scores, env_rate, 20, lag_85 + 4);
         assert!(
             bpm > 160.0 && bpm < 180.0,
-            "con medio tiempo más fuerte eligió {bpm}"
+            "Take On Me debía quedarse en ~169 y salió {bpm}"
         );
 
-        let only_slow = {
-            let mut s = vec![0.0; lag_85 + 8];
-            s[lag_85] = 9.0;
-            prefer_dance_tempo(lag_85 as f64, &s, env_rate, 20, lag_85 + 4)
-        };
+        let lag_178 = ((60.0 * env_rate / 178.0) as f64).round() as usize;
+        let slow89 = (lag_178 as f64 * 2.0).round() as usize;
+        let mut cumbia_scores = vec![0.0; slow89 + 8];
+        cumbia_scores[slow89] = 9.0;
+        cumbia_scores[lag_178] = 6.0;
+        let got89 = prefer_dance_tempo(
+            lag_178 as f64,
+            &cumbia_scores,
+            env_rate,
+            20,
+            slow89 + 4,
+        );
         assert!(
-            (only_slow - 84.5).abs() < 1.0,
-            "sin candidato en 90–180 debía plegar, salió {only_slow}"
+            (got89 - 89.0).abs() < 3.0,
+            "la cumbia en 89 no debía doblarse a {got89}"
         );
 
-        let audio = clicks(169.0, 12.0);
-        let got = detect_bpm(&audio, 44100, None).expect("bpm");
+        let lag_124 = ((60.0 * env_rate / 124.0) as f64).round() as usize;
+        let slow62 = (lag_124 as f64 * 2.0).round() as usize;
+        let mut ballad = vec![0.0; slow62 + 8];
+        ballad[slow62] = 9.0;
+        ballad[lag_124] = 5.0;
+        let got62 = prefer_dance_tempo(lag_124 as f64, &ballad, env_rate, 20, slow62 + 4);
         assert!(
-            got > 155.0 && got < 185.0,
-            "Take On Me quedó en {got} en vez de ~169"
+            (got62 - 62.0).abs() < 3.0,
+            "Hello debía volver a ~62 y salió {got62}"
         );
+
+        let near = |got: f64, want: f64| (got - want).abs() < 3.0;
+        let hello = detect_bpm(&clicks(62.0, 12.0), 44100, None).expect("62");
+        assert!(near(hello, 62.0), "Hello quedó en {hello}");
+        let mirlos = detect_bpm(&clicks(89.0, 12.0), 44100, None).expect("89");
+        assert!(near(mirlos, 89.0), "Los Mirlos quedó en {mirlos}");
+        let aha = detect_bpm(&clicks(169.0, 12.0), 44100, None).expect("169");
+        assert!(near(aha, 169.0), "Take On Me quedó en {aha}");
+
+        let mut con_guiro = clicks(89.0, 12.0);
+        let step = ((44100.0 * 60.0 / 178.0) as f64).round() as usize;
+        let mut i = step;
+        while i + 4 < con_guiro.len() {
+            con_guiro[i] += 0.35;
+            i += step;
+        }
+        let guiro = detect_bpm(&con_guiro, 44100, None).expect("guiro");
+        assert!(near(guiro, 89.0), "la cumbia con subdivisión quedó en {guiro}");
+
         let kept = detect_bpm(&clicks(108.0, 12.0), 44100, Some(108.0)).expect("108");
-        assert!(
-            (kept - 108.0).abs() < 3.0,
-            "la cumbia con TBPM 108 pasó a {kept}"
-        );
+        assert!((kept - 108.0).abs() < 3.0, "TBPM 108 pasó a {kept}");
         let plain = detect_bpm(&clicks(110.0, 12.0), 44100, Some(110.0)).expect("110");
         assert!((plain - 110.0).abs() < 3.0, "TBPM 110 pasó a {plain}");
+        let prior169 = detect_bpm(&clicks(84.5, 12.0), 44100, Some(169.0)).expect("prior 169");
+        assert!(
+            (prior169 - 169.0).abs() < 4.0 || (prior169 - 84.5).abs() < 4.0,
+            "con TBPM 169 no debía inventar otro tempo: {prior169}"
+        );
     }
 
     #[test]
@@ -3264,14 +3304,14 @@ mod master_guard_tests {
         let measured = measure_stream(&path_s).unwrap();
         let dbtp = 20.0 * (measured.true_peak as f64).max(1e-9).log10();
         assert!(
-            dbtp <= -1.0 + 0.05,
+            dbtp <= -1.0,
             "true peak {dbtp:.2} dBTP (lineal {})",
             measured.true_peak
         );
         let lufs = lufs_of(&measured.k_ms);
         assert!(
-            (lufs - TARGET_LUFS).abs() <= 0.5,
-            "LUFS {lufs:.2}, se pedía −14 ±0,5"
+            (lufs - TARGET_LUFS).abs() <= LUFS_TOL,
+            "LUFS {lufs:.2}, se pedía −14 ±0,3"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

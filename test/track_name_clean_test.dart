@@ -42,6 +42,33 @@ void main() {
     expect(n.stem, 'Earth Wind - September');
   });
 
+  test('quita el sello o el canal entre paréntesis, en cualquier caja', () {
+    expect(
+      cleanTrackFileName('Los Mirlos - La Danza de los Mirlos (Infopesa).mp3').stem,
+      'Los Mirlos - La Danza de los Mirlos',
+    );
+    expect(
+      cleanTrackFileName('Los Mirlos - La Danza (infopesa).mp3').stem,
+      'Los Mirlos - La Danza',
+    );
+    expect(
+      cleanTrackFileName('Artista - Tema [INFOPESA].mp3').stem,
+      'Artista - Tema',
+    );
+    expect(
+      cleanTrackFileName('Artista - Tema (Discos Fuentes).mp3').stem,
+      'Artista - Tema',
+    );
+    expect(
+      cleanTrackFileName('Artista - Tema (Vevo).mp3').stem,
+      'Artista - Tema',
+    );
+    expect(
+      cleanTrackFileName('Artista - Tema (En Vivo).mp3').stem,
+      'Artista - Tema (En Vivo)',
+    );
+  });
+
   test('si el nombre choca, agrega (2) y no pisa', () {
     final String name = uniqueMp3Name(
       'Artista - Titulo',

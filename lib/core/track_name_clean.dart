@@ -30,7 +30,14 @@ class CleanTrackName {
 }
 
 final RegExp _ytJunk = RegExp(
-  r'\s*[\[\(][^\]\)]*(?:official(?:\s+music)?\s+video|official\s+audio|music\s+video|lyric\s+video|lyrics?|letras?|audio|video|hq|hd|4k|visuali[sz]er|topic|extended(?:\s+mix|\s+version)?|remaster(?:ed)?)[^\]\)]*[\]\)]',
+  r'\s*[\[\(][^\]\)]*(?:official(?:\s+music)?\s+video|official\s+audio|video\s+oficial|audio\s+oficial|music\s+video|lyric\s+video|lyrics?|letras?|audio|video|hq|hd|4k|visuali[sz]er|topic|extended(?:\s+mix|\s+version)?|remaster(?:ed)?|oficial)[^\]\)]*[\]\)]',
+  caseSensitive: false,
+);
+
+/// Sello o canal entre paréntesis o corchetes, sin importar mayúsculas.
+/// (Infopesa), (infopesa), (Discos Fuentes), (Vevo). No toca (En Vivo) ni (Live).
+final RegExp _labelTag = RegExp(
+  r'\s*[\[\(][^\]\)]*\b(?:infopesa|discos|codiscos|peerless|musart|fania|orfe[oó]n|sono\s*radio|ieesa|vevo|records?|recording|sello|canal|channel|productions?|entertainment)\b[^\]\)]*[\]\)]',
   caseSensitive: false,
 );
 
@@ -89,6 +96,7 @@ CleanTrackName cleanTrackFileName(
   }
 
   name = name.replaceAll(_ytJunk, ' ');
+  name = name.replaceAll(_labelTag, ' ');
   name = name.replaceAll(RegExp(r'\s*-\s*-+\s*'), ' - ');
   name = name.replaceAll('_', ' ');
   name = name.replaceAll(RegExp(r'\s{2,}'), ' ').trim();
