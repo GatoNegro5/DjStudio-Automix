@@ -1146,6 +1146,146 @@ fn num_from(s: &str) -> f64 {
     t.parse::<f64>().unwrap_or(0.0)
 }
 
+/// Número de un TBPM ya escrito. Acepta `144`, `144.00`, espacios, nulos y
+/// una coma decimal. No pliega ni descarta por rango: si hay cifra, existe.
+fn parse_tbpm_text(raw: &str) -> Option<(f64, String)> {
+    let token = raw
+        .split('\0')
+        .map(str::trim)
+        .find(|s| !s.is_empty())?
+        .trim_matches(|c: char| c == '\u{feff}' || c.is_whitespace());
+    if token.is_empty() {
+        return None;
+    }
+    let mut num = String::new();
+    for c in token.chars() {
+        if c.is_ascii_digit() || c == '.' || c == ',' || c == '-' {
+            if c == ',' && num.contains('.') {
+                break;
+            }
+            num.push(if c == ',' { '.' } else { c });
+        } else if !num.is_empty() {
+            break;
+        }
+    }
+    let value: f64 = num.parse().ok()?;
+    if value.is_finite() && value > 0.0 {
+        Some((value, token.to_string()))
+    } else {
+        None
+    }
+}
+
+fn decode_tbpm_body(encoding: u8, body: &[u8]) -> Option<(f64, String)> {
+    let text = match encoding {
+        0 => body.iter().map(|b| *b as char).collect::<String>(),
+        3 => String::from_utf8(body.to_vec()).ok()?,
+        1 => {
+            if body.len() < 2 {
+                return None;
+            }
+            let (bom_le, data) = if body[0] == 0xFF && body[1] == 0xFE {
+                (true, &body[2..])
+            } else if body[0] == 0xFE && body[1] == 0xFF {
+                (false, &body[2..])
+            } else {
+                (true, body)
+            };
+            utf16_units(data, bom_le)?
+        }
+        2 => utf16_units(body, false)?,
+        _ => return None,
+    };
+    parse_tbpm_text(&text)
+}
+
+fn utf16_units(data: &[u8], little: bool) -> Option<String> {
+    let mut units = Vec::with_capacity(data.len() / 2);
+    for chunk in data.chunks_exact(2) {
+        let u = if little {
+            u16::from_le_bytes([chunk[0], chunk[1]])
+        } else {
+            u16::from_be_bytes([chunk[0], chunk[1]])
+        };
+        units.push(u);
+    }
+    String::from_utf16(&units).ok()
+}
+
+/// Frame TBPM (o TBP de v2.2) en un ID3v2.2/2.3/2.4, sin pasar por la crate.
+fn tbpm_in_id3(data: &[u8]) -> Option<(f64, String)> {
+    if data.len() < 10 || &data[0..3] != b"ID3" {
+        return None;
+    }
+    let ver = data[3];
+    if ver < 2 || ver > 4 {
+        return None;
+    }
+    let mut pos = 10usize;
+    let end = (10 + syncsafe_u32(&data[6..10])).min(data.len());
+    if ver >= 3 && data[5] & 0x40 != 0 && pos + 4 <= end {
+        let ext = if ver == 4 {
+            syncsafe_u32(&data[pos..pos + 4])
+        } else {
+            u32::from_be_bytes(data[pos..pos + 4].try_into().ok()?) as usize
+        };
+        pos = pos.saturating_add(ext).min(end);
+    }
+    let hdr = if ver == 2 { 6 } else { 10 };
+    while pos + hdr <= end {
+        if data[pos] == 0 {
+            break;
+        }
+        let (id, size) = if ver == 2 {
+            let id = std::str::from_utf8(&data[pos..pos + 3]).ok()?;
+            let size = ((data[pos + 3] as usize) << 16)
+                | ((data[pos + 4] as usize) << 8)
+                | data[pos + 5] as usize;
+            (id, size)
+        } else {
+            let id = std::str::from_utf8(&data[pos..pos + 4]).ok()?;
+            let size = if ver == 4 {
+                syncsafe_u32(&data[pos + 4..pos + 8])
+            } else {
+                u32::from_be_bytes(data[pos + 4..pos + 8].try_into().ok()?) as usize
+            };
+            (id, size)
+        };
+        let body = pos + hdr;
+        let body_end = body.saturating_add(size).min(end);
+        if id == "TBPM" || id == "TBP" {
+            if body + 1 <= body_end {
+                return decode_tbpm_body(data[body], &data[body + 1..body_end]);
+            }
+            return None;
+        }
+        if size == 0 {
+            break;
+        }
+        pos = body_end;
+    }
+    None
+}
+
+struct StoredBpm {
+    value: f64,
+    token: String,
+    /// El frame ya está cargado en el tag. No hay que reescribirlo.
+    in_tag: bool,
+}
+
+/// TBPM que el archivo ya tiene. La crate primero; si no lo ve, los bytes.
+fn stored_bpm(path: &str, tag: &Tag) -> Option<StoredBpm> {
+    if let Some(text) = tag.get("TBPM").and_then(|f| f.content().text()) {
+        if let Some((value, token)) = parse_tbpm_text(text) {
+            return Some(StoredBpm { value, token, in_tag: true });
+        }
+    }
+    let data = std::fs::read(path).ok()?;
+    let (value, token) = tbpm_in_id3(&data)?;
+    Some(StoredBpm { value, token, in_tag: false })
+}
+
 fn is_mp3(path: &str) -> bool {
     path.to_lowercase().ends_with(".mp3")
 }
@@ -1160,7 +1300,7 @@ pub async fn read_master_tags(input_path: String) -> MasterTags {
         Ok(t) => t,
         Err(_) => return empty,
     };
-    let bpm = tag.get("TBPM").and_then(|f| f.content().text()).map(num_from).unwrap_or(0.0);
+    let bpm = stored_bpm(&input_path, &tag).map(|s| s.value).unwrap_or(0.0);
     if !is_mastered(&tag) {
         return MasterTags { bpm, ..empty };
     }
@@ -1195,11 +1335,13 @@ fn analyze_and_tag(input_path: &str, force: bool) -> Result<bool, String> {
     set_ext(&mut tag, KEY_LUFS, format!("{:.2}", a.lufs));
     set_ext(&mut tag, KEY_LEAD, a.lead_ms.to_string());
     set_ext(&mut tag, KEY_TAIL, a.tail_ms.to_string());
-    let has_bpm = tag.get("TBPM").and_then(|f| f.content().text()).map(num_from).unwrap_or(0.0) > 0.0;
-    if !has_bpm {
-        if let Some(b) = a.bpm {
-            tag.set_text("TBPM", b.round().to_string());
+    let stored = stored_bpm(input_path, &tag);
+    if let Some(s) = &stored {
+        if !s.in_tag {
+            tag.set_text("TBPM", s.token.clone());
         }
+    } else if let Some(b) = a.bpm {
+        tag.set_text("TBPM", b.round().to_string());
     }
     set_ext(&mut tag, KEY_V, MASTER_VERSION.to_string());
     tag.write_to_path(input_path, Version::Id3v24).map_err(|e| format!("Fallo I/O al guardar etiquetas: {}", e))?;
@@ -1239,6 +1381,12 @@ fn auto_detect_body(input_path: String) -> Result<f64, String> {
     let _prio = PriorityGuard::enter();
     let _watch = CancelWatch::enter();
     cancel_now()?;
+    if is_mp3(&input_path) {
+        let tag = Tag::read_from_path(&input_path).unwrap_or_else(|_| Tag::new());
+        if let Some(s) = stored_bpm(&input_path, &tag) {
+            return Ok(s.value);
+        }
+    }
     // La pista completa. 150 s en Hello se quedaban en el verso (~235 BPM)
     // y el pliegue 60–180 lo mostraba como 117,45.
     let d = decode_channels(&input_path, 0, MAX_ANALYZE_SECS, 2)
@@ -1768,8 +1916,18 @@ const TP_CEILING: f32 = 0.8912509381337456;
 const TP_LIMIT: f32 = 0.7498942093324558;
 /// No bajar el techo de aquí (−6 dBFS): por debajo el limitador aplasta.
 const TP_LIMIT_FLOOR: f32 = 0.5011872336272722;
-/// El LUFS medido en el MP3 ya codificado tiene que caer aquí.
+/// El LUFS medido al decodificar, y el del MP3 ya codificado, caen aquí.
 const LUFS_TOL: f64 = 0.3;
+
+/// Hay que recodificar el −14. La tolerancia para saltar es ±0,3. Un pico
+/// por encima de −1 dBTP también obliga. Los frames dañados no entran.
+fn lufs_encode_decision(do_lufs: bool, lufs: f64, peak: f32, decode_errors: u32) -> bool {
+    let delta = ((TARGET_LUFS - lufs).abs() * 100.0).round() / 100.0;
+    do_lufs
+        && decode_errors == 0
+        && lufs >= -60.0
+        && (delta > LUFS_TOL || peak > TP_CEILING)
+}
 
 fn bitrate_at_most(kbps: u32) -> mp3lame_encoder::Bitrate {
     use mp3lame_encoder::Bitrate as B;
@@ -2085,25 +2243,12 @@ fn fix_bpm_range(bpm: f64) -> Option<f64> {
     }
 }
 
-/// El medido es el mismo tempo que el TBPM, corrido ×4/3, ×3/4, ×2 o ÷2.
-fn tempo_alias(measured: f64, existing: f64) -> bool {
-    const RATIOS: [f64; 4] = [4.0 / 3.0, 3.0 / 4.0, 2.0, 0.5];
-    RATIOS.iter().any(|r| {
-        let expect = existing * r;
-        expect > 0.0 && (measured - expect).abs() <= expect * 0.02
-    })
-}
-
-/// Si el TBPM ya es válido y el medido es un alias armónico, se conserva el TBPM.
+/// Un TBPM ya escrito se respeta tal cual. El medido solo entra si no hay.
 fn resolve_bpm(measured: Option<f64>, existing: f64) -> f64 {
-    let existing_ok = fix_bpm_range(existing);
-    let measured_ok = measured.and_then(fix_bpm_range);
-    match (measured_ok, existing_ok) {
-        (Some(m), Some(e)) if tempo_alias(m, e) => e,
-        (Some(m), _) => m,
-        (None, Some(e)) => e,
-        _ => 0.0,
+    if existing.is_finite() && existing > 0.0 {
+        return existing;
     }
+    measured.and_then(fix_bpm_range).unwrap_or(0.0)
 }
 
 fn syncsafe_u32(b: &[u8]) -> usize {
@@ -2489,10 +2634,8 @@ fn plan_span(
     if end_w > head_w {
         lufs = lufs_of(&m.k_ms[head_w..end_w]);
     }
-    let delta_lufs = (TARGET_LUFS - lufs).abs();
-    let mut lufs_encode =
-        do_lufs && lufs >= -60.0 && (delta_lufs > 0.5 || m.true_peak > TP_CEILING);
-    let mut lufs_seal = do_lufs && lufs >= -60.0 && !lufs_encode;
+    let mut lufs_encode = lufs_encode_decision(do_lufs, lufs, m.true_peak, m.decode_errors);
+    let mut lufs_seal = do_lufs && m.decode_errors == 0 && lufs >= -60.0 && !lufs_encode;
     if m.decode_errors > 0 {
         cut_head_ms = 0;
         cut_tail_ms = 0;
@@ -2641,7 +2784,7 @@ pub fn read_gmx_marks(input_path: String) -> GmxMarks {
         Ok(t) => t,
         Err(_) => return empty,
     };
-    let bpm = tag.get("TBPM").and_then(|f| f.content().text()).map(num_from).unwrap_or(0.0);
+    let bpm = stored_bpm(&input_path, &tag).map(|s| s.value).unwrap_or(0.0);
     let sealed = tag.comments().any(|c| c.text == SEAL_TEXT);
     let marks = GmxMarks {
         version: ext_text(&tag, KEY_V).unwrap_or_default(),
@@ -3212,15 +3355,14 @@ pub fn master_rewrite(
         kbps = average_kbps(&input_path, m.samples, m.rate);
     }
 
-    // Recodifica solo si hay corte de verdad (≥ 50 ms), el LUFS se aleja más
-    // de 0,5 dB, o el pico pasa de −1 dBTP. Si no, solo se escriben marcas.
-    // Un paquete MP3 rechazado deja el audio intacto: el PCM ya no es el archivo.
+    // Recodifica solo si hay corte de verdad (≥ 50 ms), el LUFS medido al
+    // decodificar se sale de −14 ±0,3, o el pico pasa de −1 dBTP. Si no, solo
+    // se escriben marcas. Un paquete MP3 rechazado deja el audio intacto.
     let decode_errors = measured.as_ref().map(|m| m.decode_errors).unwrap_or(0);
     let blocked = decode_errors > 0;
     let peak = measured.as_ref().map(|m| m.true_peak).unwrap_or(0.0);
-    let delta_lufs = (TARGET_LUFS - lufs).abs();
-    let mut lufs_encode = do_lufs && lufs >= -60.0 && (delta_lufs > 0.5 || peak > TP_CEILING);
-    let mut lufs_seal = do_lufs && lufs >= -60.0 && !lufs_encode;
+    let mut lufs_encode = lufs_encode_decision(do_lufs, lufs, peak, decode_errors);
+    let mut lufs_seal = do_lufs && !blocked && lufs >= -60.0 && !lufs_encode;
     if blocked {
         cut_head_ms = 0;
         cut_tail_ms = 0;
@@ -3284,13 +3426,11 @@ pub fn master_rewrite(
     } else {
         (0u64, 0u32)
     };
-    let existing_bpm = tag
-        .get("TBPM")
-        .and_then(|f| f.content().text())
-        .map(num_from)
-        .unwrap_or(0.0);
+    let stored = stored_bpm(&input_path, &tag);
+    let existing_bpm = stored.as_ref().map(|s| s.value).unwrap_or(0.0);
     // Con paquetes rotos el medido sale de un PCM incompleto: no pisa el TBPM.
-    let measured_bpm = if blocked {
+    // Si el archivo ya trae TBPM, no se mide para reemplazarlo.
+    let measured_bpm = if blocked || stored.is_some() {
         None
     } else {
         detect_validated(
@@ -3298,7 +3438,7 @@ pub fn master_rewrite(
             samples_for_bpm,
             rate_for_bpm,
             intro_bpm,
-            fix_bpm_range(existing_bpm),
+            None,
         )
     };
     if let Err(e) = cancel_now() {
@@ -3326,7 +3466,13 @@ pub fn master_rewrite(
         set_ext(&mut tag, "REPLAYGAIN_TRACK_PEAK", format!("{TP_CEILING:.6}"));
     }
     if bpm > 0.0 {
-        tag.set_text("TBPM", format!("{}", bpm.round() as i32));
+        if let Some(s) = &stored {
+            if !s.in_tag {
+                tag.set_text("TBPM", s.token.clone());
+            }
+        } else {
+            tag.set_text("TBPM", format!("{}", bpm.round() as i32));
+        }
         set_ext(&mut tag, KEY_BPM_OK, "1".to_string());
         set_ext(
             &mut tag,
@@ -4006,18 +4152,23 @@ mod master_guard_tests {
     use super::*;
 
     #[test]
-    fn el_tbpm_previo_gana_si_el_medido_es_alias() {
+    fn el_tbpm_previo_no_se_sobrescribe() {
+        // Blondie: el archivo trae 144 y el medido es 141,18. Se queda 144.
+        assert_eq!(resolve_bpm(Some(141.18), 144.0), 144.0);
         assert_eq!(resolve_bpm(Some(144.0), 108.0), 108.0);
-        assert_eq!(resolve_bpm(Some(147.0), 110.0), 110.0);
-        assert_eq!(resolve_bpm(Some(140.0), 105.0), 105.0);
-        assert_eq!(resolve_bpm(Some(81.0), 108.0), 108.0);
-        assert_eq!(resolve_bpm(Some(180.0), 90.0), 90.0);
-        assert_eq!(resolve_bpm(Some(90.0), 180.0), 180.0);
-        // 3 % ya no es el alias: se queda el medido.
-        assert_eq!(resolve_bpm(Some(148.4), 108.0), 148.4);
-        assert_eq!(resolve_bpm(Some(120.0), 108.0), 120.0);
+        assert_eq!(resolve_bpm(Some(148.4), 108.0), 108.0);
+        assert_eq!(resolve_bpm(Some(120.0), 108.0), 108.0);
         assert_eq!(resolve_bpm(None, 108.0), 108.0);
-        assert_eq!(resolve_bpm(Some(144.0), 0.0), 144.0);
+        let libre = resolve_bpm(Some(141.18), 0.0);
+        assert!((libre - 141.18).abs() < 0.011, "{libre}");
+        let (v, _) = parse_tbpm_text("144.00").unwrap();
+        assert_eq!(v, 144.0);
+        let (v, _) = parse_tbpm_text(" 144 \0").unwrap();
+        assert_eq!(v, 144.0);
+        let (v, _) = parse_tbpm_text("144\0\0").unwrap();
+        assert_eq!(v, 144.0);
+        assert!(parse_tbpm_text("").is_none());
+        assert!(parse_tbpm_text("0").is_none());
     }
 
     #[test]
@@ -4157,6 +4308,139 @@ mod master_guard_tests {
         assert_eq!(marks.trim_ms, -1, "no se sella un corte que no se hizo");
         assert!(!marks.lufs_done);
         let _ = audio_before;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn id3_frame(ver: u8, encoding: u8, text: &[u8]) -> Vec<u8> {
+        let mut body = vec![encoding];
+        body.extend_from_slice(text);
+        let mut tag = vec![b'I', b'D', b'3', ver, 0, 0, 0, 0, 0, 0];
+        let mut frame = Vec::new();
+        if ver == 2 {
+            frame.extend_from_slice(b"TBP");
+            let n = body.len();
+            frame.push(((n >> 16) & 0xff) as u8);
+            frame.push(((n >> 8) & 0xff) as u8);
+            frame.push((n & 0xff) as u8);
+        } else {
+            frame.extend_from_slice(b"TBPM");
+            let n = body.len() as u32;
+            if ver == 4 {
+                frame.push(((n >> 21) & 0x7f) as u8);
+                frame.push(((n >> 14) & 0x7f) as u8);
+                frame.push(((n >> 7) & 0x7f) as u8);
+                frame.push((n & 0x7f) as u8);
+            } else {
+                frame.extend_from_slice(&n.to_be_bytes());
+            }
+            frame.extend_from_slice(&[0, 0]);
+        }
+        frame.extend_from_slice(&body);
+        let size = frame.len() as u32;
+        tag[6] = ((size >> 21) & 0x7f) as u8;
+        tag[7] = ((size >> 14) & 0x7f) as u8;
+        tag[8] = ((size >> 7) & 0x7f) as u8;
+        tag[9] = (size & 0x7f) as u8;
+        tag.extend_from_slice(&frame);
+        tag
+    }
+
+    fn utf16_le(text: &str) -> Vec<u8> {
+        let mut v = vec![0xFF, 0xFE];
+        for u in text.encode_utf16() {
+            v.extend_from_slice(&u.to_le_bytes());
+        }
+        v.extend_from_slice(&[0, 0]);
+        v
+    }
+
+    #[test]
+    fn el_tbpm_se_lee_en_v23_v24_y_utf16() {
+        let (v, _) = tbpm_in_id3(&id3_frame(3, 0, b"144.00\0")).unwrap();
+        assert_eq!(v, 144.0);
+        let (v, _) = tbpm_in_id3(&id3_frame(3, 0, b" 144 \0\0")).unwrap();
+        assert_eq!(v, 144.0);
+        let (v, _) = tbpm_in_id3(&id3_frame(4, 3, b"144.00")).unwrap();
+        assert_eq!(v, 144.0);
+        let (v, _) = tbpm_in_id3(&id3_frame(3, 1, &utf16_le("144.00"))).unwrap();
+        assert_eq!(v, 144.0);
+        let (v, _) = tbpm_in_id3(&id3_frame(4, 1, &utf16_le("144"))).unwrap();
+        assert_eq!(v, 144.0);
+        assert!(lufs_encode_decision(true, -13.67, TP_CEILING, 0));
+        assert!(!lufs_encode_decision(true, -14.0, TP_CEILING, 0));
+        assert!(!lufs_encode_decision(true, TARGET_LUFS + LUFS_TOL, TP_CEILING, 0));
+        assert!(!lufs_encode_decision(true, TARGET_LUFS - LUFS_TOL, TP_CEILING, 0));
+        assert!(lufs_encode_decision(true, TARGET_LUFS + LUFS_TOL + 0.01, TP_CEILING, 0));
+        assert!(!lufs_encode_decision(true, -13.67, TP_CEILING, 3));
+        assert!(lufs_encode_decision(true, -14.0, TP_CEILING + 0.01, 0));
+    }
+
+    #[test]
+    fn un_tbpm_de_144_no_pasa_a_141_y_el_lufs_fuera_se_recodifica() {
+        let _g = guard_master();
+        let dir = std::env::temp_dir().join(format!("gmx_tbpm144_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("callme.mp3");
+        let path_s = path.to_string_lossy().to_string();
+        let rate = 44100u32;
+        let secs = 2usize;
+        let mut pcm = vec![0f32; rate as usize * secs];
+        for (i, s) in pcm.iter_mut().enumerate() {
+            *s = (i as f32 * 2.0 * std::f32::consts::PI * 440.0 / rate as f32).sin() * 0.2;
+        }
+        let mut sink = Mp3Sink::new(&path_s, rate, false, 192).unwrap();
+        sink.push(&pcm, 1).unwrap();
+        sink.finish().unwrap();
+
+        let audio = std::fs::read(&path_s).unwrap();
+        let tag = id3_frame(3, 1, &utf16_le("144.00"));
+        let mut file = tag.clone();
+        file.extend_from_slice(&audio);
+        std::fs::write(&path_s, &file).unwrap();
+        let (got, _) = tbpm_in_id3(&std::fs::read(&path_s).unwrap()).unwrap();
+        assert_eq!(got, 144.0);
+
+        let before = average_kbps(&path_s, (rate as u64) * secs as u64, rate);
+        let src = measure_stream(&path_s).unwrap();
+        let src_lufs = lufs_of(&src.k_ms);
+        assert!(
+            (src_lufs - TARGET_LUFS).abs() > LUFS_TOL,
+            "el seno de prueba salió en {src_lufs}, fuera del caso −13,67"
+        );
+        let rw = master_rewrite(path_s.clone(), false, true, false, -1, -1).unwrap();
+        assert!(rw.rewritten, "LUFS {src_lufs} debía recodificar");
+        assert!(
+            rw.bitrate_kbps <= before,
+            "subió el bitrate de {before} a {}",
+            rw.bitrate_kbps
+        );
+        let after = Tag::read_from_path(&path_s).unwrap();
+        let kept = stored_bpm(&path_s, &after).unwrap();
+        assert_eq!(kept.value, 144.0, "el TBPM quedó en {}", kept.value);
+        assert!(
+            !after.get("TBPM").and_then(|f| f.content().text()).unwrap_or("").contains("141"),
+            "se reescribió el frame"
+        );
+        let out = measure_stream(&path_s).unwrap();
+        let out_lufs = lufs_of(&out.k_ms);
+        assert!(out.true_peak <= TP_CEILING, "TP {}", out.true_peak);
+        assert!(
+            (out_lufs - TARGET_LUFS).abs() <= LUFS_TOL,
+            "el encode dejó {out_lufs}"
+        );
+
+        let mut tag = Tag::read_from_path(&path_s).unwrap();
+        tag.remove_extended_text(Some(KEY_LUFS_DONE), None);
+        tag.remove_extended_text(Some(KEY_LUFS), None);
+        tag.write_to_path(&path_s, Version::Id3v24).unwrap();
+        let again = master_rewrite(path_s.clone(), false, true, false, -1, -1).unwrap();
+        let still = stored_bpm(&path_s, &Tag::read_from_path(&path_s).unwrap()).unwrap();
+        assert_eq!(still.value, 144.0);
+        let quiet = measure_stream(&path_s).unwrap();
+        let quiet_lufs = lufs_of(&quiet.k_ms);
+        if (quiet_lufs - TARGET_LUFS).abs() <= LUFS_TOL && quiet.true_peak <= TP_CEILING {
+            assert!(!again.rewritten, "dentro de ±0,3 no se recodifica ({quiet_lufs})");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

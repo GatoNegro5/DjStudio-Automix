@@ -3,12 +3,13 @@ import 'thermal_status.dart';
 
 /// Pausa entre canciones. Sale en el siguiente tick (~100 ms) si [cancelled]
 /// pasa a true, también a mitad del enfriamiento. Si el térmico sigue alto
-/// al cumplir la base, alarga hasta que baje.
+/// al cumplir la base y [allowThermal] es true, alarga hasta que baje.
 class MasterPause {
   static Future<int> run({
     required int baseMs,
     required bool Function() cancelled,
     required void Function(String label) onTick,
+    bool allowThermal = true,
   }) async {
     final int gap = MasterCool.clampPauseMs(baseMs);
     final Stopwatch sw = Stopwatch()..start();
@@ -17,7 +18,7 @@ class MasterPause {
     while (true) {
       if (cancelled()) break;
       final int elapsed = sw.elapsedMilliseconds;
-      if (elapsed >= gap && elapsed - lastProbe >= 1000) {
+      if (allowThermal && elapsed >= gap && elapsed - lastProbe >= 1000) {
         lastProbe = elapsed;
         hot = await ThermalProbe.isHigh();
         if (cancelled()) break;
@@ -25,7 +26,7 @@ class MasterPause {
       if (!MasterCool.keepWaiting(
         elapsedMs: elapsed,
         baseMs: gap,
-        thermalHigh: elapsed >= gap && hot,
+        thermalHigh: allowThermal && elapsed >= gap && hot,
         cancelled: false,
       )) {
         break;

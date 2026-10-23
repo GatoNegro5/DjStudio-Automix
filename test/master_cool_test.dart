@@ -90,6 +90,31 @@ void main() {
       ),
       20000,
     );
+    expect(
+      MasterCool.simulate(
+        baseMs: 12000,
+        tickMs: 100,
+        hotAt: (_) => true,
+        cancelledAt: (_) => false,
+        allowThermal: false,
+      ),
+      12000,
+    );
+  });
+
+  test('la pausa entra en la 6.ª y el térmico en la 15.ª', () {
+    for (var n = 1; n <= 5; n++) {
+      expect(MasterCool.pauseAfterSong(n), isFalse, reason: 'canción $n');
+      expect(MasterCool.thermalAfterSong(n), isFalse, reason: 'canción $n');
+    }
+    for (var n = 6; n <= 14; n++) {
+      expect(MasterCool.pauseAfterSong(n), isTrue, reason: 'canción $n');
+      expect(MasterCool.thermalAfterSong(n), isFalse, reason: 'canción $n');
+    }
+    expect(MasterCool.pauseAfterSong(15), isTrue);
+    expect(MasterCool.thermalAfterSong(15), isTrue);
+    expect(MasterCool.pauseAfterSong(16), isTrue);
+    expect(MasterCool.thermalAfterSong(40), isTrue);
   });
 
   test('térmico alto: Android SEVERE o headroom, iOS serious', () {

@@ -5,6 +5,12 @@ class MasterCool {
   static const int pauseMaxMs = 15000;
   static const int pauseDefaultMs = 12000;
 
+  /// La 1.ª a la 5.ª canción del lote no esperan.
+  static const int pauseFromSong = 6;
+
+  /// La espera extra por temperatura entra en la 15.ª.
+  static const int thermalFromSong = 15;
+
   /// La pausa configurada entra en 10–15 s. 12 s es el valor de fábrica.
   static int clampPauseMs(int ms) {
     if (ms < pauseMinMs) return pauseMinMs;
@@ -64,6 +70,12 @@ class MasterCool {
     final int left = baseMs - elapsedMs;
     return left < 0 ? 0 : left;
   }
+
+  /// 1-based. Desde la 6.ª hay pausa de 12 s; antes, no.
+  static bool pauseAfterSong(int songNumber) => songNumber >= pauseFromSong;
+
+  /// La extensión térmica solo a partir de la 15.ª.
+  static bool thermalAfterSong(int songNumber) => songNumber >= thermalFromSong;
 
   /// Sigue en pausa mientras no se cancele, falte la base, o el equipo
   /// siga caliente después de la base.
@@ -148,13 +160,14 @@ class MasterCool {
     required bool Function(int elapsedMs) hotAt,
     required bool Function(int elapsedMs) cancelledAt,
     int guardMs = 180000,
+    bool allowThermal = true,
   }) {
     final int gap = clampPauseMs(baseMs);
     final int step = tickMs < 1 ? 1 : tickMs;
     var elapsed = 0;
     while (elapsed <= guardMs) {
       if (cancelledAt(elapsed)) break;
-      final bool hot = elapsed >= gap && hotAt(elapsed);
+      final bool hot = allowThermal && elapsed >= gap && hotAt(elapsed);
       if (!keepWaiting(
         elapsedMs: elapsed,
         baseMs: gap,
