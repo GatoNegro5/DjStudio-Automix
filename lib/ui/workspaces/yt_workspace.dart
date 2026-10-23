@@ -1,5 +1,7 @@
 import 'dart:io';
+import 'package:gatomix/core/master_profile.dart';
 import 'package:gatomix/services/karaoke_engine.dart';
+import 'package:gatomix/services/master_track.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
@@ -8,7 +10,6 @@ import 'package:media_kit/media_kit.dart';
 import '../../core/net/safe_download.dart';
 
 import 'package:gatomix/src/rust/api/core_dsp.dart' as rust_dsp;
-import '../../providers/metadata_provider.dart';
 import '../../providers/nlp_provider.dart';
 import '../../providers/dsp_provider.dart';
 import '../../providers/db_provider.dart';
@@ -163,6 +164,7 @@ class _YoutubeSearchAndDownloadWorkspaceState
     );
   }
 
+  // ignore: unused_element
   Future<int> _getAudioDurationMs(String path) async {
     try {
       // Rust/symphonia: sin ffprobe, igual en las 4 plataformas.
@@ -172,6 +174,23 @@ class _YoutubeSearchAndDownloadWorkspaceState
     }
   }
 
+  String _ytStageLabel(String stage) {
+    switch (stage) {
+      case 'METADATA_CLEANUP':
+        return '⚙️ Arreglando el nombre...';
+      case 'LYRICS':
+        return '📝 Bajando y confirmando la letra...';
+      case 'DSP_ANALYSIS':
+        return '🔊 Quitando silencios, BPM y −14 LUFS...';
+      case 'WATERMARK_ID3':
+        return '🔐 Guardando marcas...';
+      default:
+        return '⚙️ Masterizando...';
+    }
+  }
+
+  // El pipeline desplaza con los ms exactos de Rust (MasterTrack).
+  // ignore: unused_element
   Future<void> _offsetLrcTimeline(String lrcPath, int trimmedMs) async {
     final file = File(lrcPath);
     if (!file.existsSync() || trimmedMs <= 0) return;
@@ -636,54 +655,30 @@ class _YoutubeSearchAndDownloadWorkspaceState
     String currentPath = initialPath;
 
     try {
-      setState(() => _statusText = "⚙️ Limpieza de metadatos...");
-      currentPath = await ref
-          .read(metadataWorkerProvider)
-          .processSingleFile(currentPath);
+      setState(() => _statusText = "⚙️ Nombre, letra, corte y −14 LUFS...");
+      final outcome = await MasterTrack.run(
+        ref: ref,
+        path: currentPath,
+        withLyrics: true,
+        writeCues: false,
+        onStage: (String stage) {
+          if (!mounted) return;
+          setState(() => _statusText = _ytStageLabel(stage));
+        },
+      );
+      currentPath = outcome.path;
+      if (outcome.detail.isNotEmpty && mounted) {
+        setState(() => _statusText = outcome.detail);
+      }
 
-      // 🧠 LÓGICA DE BYPASS POR PESO FÍSICO (REMIX/MEGAMIX)
+      // Megamix (>16 MB): corte + −14 + BPM de entrada. Sin letra y sin _K.
       final double fileSizeMB = File(currentPath).lengthSync() / (1024 * 1024);
-      final bool isHeavyMix = fileSizeMB > 16.0; // > 7 minutos a 320kbps
+      final bool isHeavyMix = fileSizeMB > 16.0;
 
       final lrcPath = currentPath.replaceAll(
         RegExp(r'\.mp3$|\.webm$', caseSensitive: false),
         '.lrc',
       );
-      final hasPreIngestedLrc = File(lrcPath).existsSync();
-
-      if (isHeavyMix) {
-        setState(
-          () => _statusText =
-              "⏭️ Mix Pesado detectado (${fileSizeMB.toStringAsFixed(1)}MB). Omitiendo NLP...",
-        );
-        debugPrint(
-          "🟢 [TRACKER] Mix/Remix detectado. Bypass de NLP y Karaoke activado.",
-        );
-        await Future.delayed(const Duration(seconds: 1));
-      } else {
-        if (!hasPreIngestedLrc) {
-          setState(() => _statusText = "📝 Scraping LRCLIB (NLP)...");
-          await ref.read(nlpWorkerProvider).processSingleFile(currentPath);
-        } else {
-          debugPrint(
-            "🟢 [TRACKER PIPELINE] NLP Omitido. Procesando letra verificada por el usuario.",
-          );
-        }
-      }
-
-      setState(() => _statusText = "🔊 Aplicando DSP (C++) & Trim...");
-      final durationBeforeMs = await _getAudioDurationMs(currentPath);
-      await ref.read(dspWorkerProvider).processSingleFile(currentPath);
-      final durationAfterMs = await _getAudioDurationMs(currentPath);
-      final trimmedMs = durationBeforeMs - durationAfterMs;
-
-      if (trimmedMs > 50) {
-        setState(
-          () => _statusText =
-              "⏱️ Realineando vector de subtítulos (-$trimmedMs ms)...",
-        );
-        await _offsetLrcTimeline(lrcPath, trimmedMs);
-      }
 
       setState(() => _statusText = "🔐 Inyectando Sello Watermark...");
       await rust_dsp.injectWatermark(inputPath: currentPath);
@@ -793,12 +788,17 @@ class _YoutubeSearchAndDownloadWorkspaceState
       await ref.read(dspWorkerProvider).generateStaticBpmCache(parentDir);
 
       // 🛠️ INYECCIÓN KRAEOKE FIRE-AND-FORGET POST-MASTERIZACIÓN (BYPASS APLICADO)
-      if (!isHeavyMix) {
+      if (!isHeavyMix && MasterProfile.current().allowKaraoke) {
         setState(
           () => _statusText =
               "✅ Automix listo. 🤖 Generando Karaoke en 2do plano...",
         );
         KaraokeAIEngine.spawnBackgroundExtraction(currentPath);
+      } else if (!isHeavyMix) {
+        setState(
+          () => _statusText =
+              "✅ Automix listo. Karaoke _K solo en Windows y Mac.",
+        );
       } else {
         setState(
           () => _statusText = "✅ Automix listo. (Karaoke IA omitido por peso)",

@@ -38,7 +38,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.12.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -378390165;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1784870712;
 
 // Section: executor
 
@@ -570,6 +570,51 @@ fn wire__crate__api__core_dsp__karaoke_separate_impl(
         },
     )
 }
+fn wire__crate__api__core_dsp__master_rewrite_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "master_rewrite",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_input_path = <String>::sse_decode(&mut deserializer);
+            let api_do_trim = <bool>::sse_decode(&mut deserializer);
+            let api_do_lufs = <bool>::sse_decode(&mut deserializer);
+            let api_intro_bpm = <bool>::sse_decode(&mut deserializer);
+            let api_force_head_ms = <i32>::sse_decode(&mut deserializer);
+            let api_force_tail_ms = <i32>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok = crate::api::core_dsp::master_rewrite(
+                        api_input_path,
+                        api_do_trim,
+                        api_do_lufs,
+                        api_intro_bpm,
+                        api_force_head_ms,
+                        api_force_tail_ms,
+                    )?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__api__core_dsp__normalize_lufs_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -796,6 +841,40 @@ fn wire__crate__api__core_dsp__read_audio_genre_impl(
         },
     )
 }
+fn wire__crate__api__core_dsp__read_gmx_marks_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "read_gmx_marks",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_input_path = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, ()>((move || {
+                    let output_ok =
+                        Result::<_, ()>::Ok(crate::api::core_dsp::read_gmx_marks(api_input_path))?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__api__core_dsp__read_master_tags_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -834,6 +913,42 @@ fn wire__crate__api__core_dsp__read_master_tags_impl(
         },
     )
 }
+fn wire__crate__api__core_dsp__set_gmx_mark_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "set_gmx_mark",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_input_path = <String>::sse_decode(&mut deserializer);
+            let api_key = <String>::sse_decode(&mut deserializer);
+            let api_value = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok =
+                        crate::api::core_dsp::set_gmx_mark(api_input_path, api_key, api_value)?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__api__core_dsp__start_master_recording_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -856,14 +971,14 @@ fn wire__crate__api__core_dsp__start_master_recording_impl(
             };
             let mut deserializer =
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_output_path = <String>::sse_decode(&mut deserializer);
-            let api_bitrate_kbps = <u32>::sse_decode(&mut deserializer);
+            let api__output_path = <String>::sse_decode(&mut deserializer);
+            let api__bitrate_kbps = <u32>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, String>((move || {
                     let output_ok = crate::api::core_dsp::start_master_recording(
-                        api_output_path,
-                        api_bitrate_kbps,
+                        api__output_path,
+                        api__bitrate_kbps,
                     )?;
                     Ok(output_ok)
                 })())
@@ -942,6 +1057,55 @@ impl SseDecode for f64 {
     }
 }
 
+impl SseDecode for crate::api::core_dsp::GmxMarks {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_version = <String>::sse_decode(deserializer);
+        let mut var_trackType = <String>::sse_decode(deserializer);
+        let mut var_nameOk = <bool>::sse_decode(deserializer);
+        let mut var_lyr = <String>::sse_decode(deserializer);
+        let mut var_lyrStartMs = <i32>::sse_decode(deserializer);
+        let mut var_trimMs = <i32>::sse_decode(deserializer);
+        let mut var_trimTailMs = <i32>::sse_decode(deserializer);
+        let mut var_lrcShift = <bool>::sse_decode(deserializer);
+        let mut var_bpm = <f64>::sse_decode(deserializer);
+        let mut var_bpmOk = <bool>::sse_decode(deserializer);
+        let mut var_bpmScope = <String>::sse_decode(deserializer);
+        let mut var_lufs = <f64>::sse_decode(deserializer);
+        let mut var_lufsDone = <bool>::sse_decode(deserializer);
+        let mut var_karaoke = <bool>::sse_decode(deserializer);
+        let mut var_backup = <bool>::sse_decode(deserializer);
+        let mut var_sealed = <bool>::sse_decode(deserializer);
+        let mut var_leadMs = <i32>::sse_decode(deserializer);
+        return crate::api::core_dsp::GmxMarks {
+            version: var_version,
+            track_type: var_trackType,
+            name_ok: var_nameOk,
+            lyr: var_lyr,
+            lyr_start_ms: var_lyrStartMs,
+            trim_ms: var_trimMs,
+            trim_tail_ms: var_trimTailMs,
+            lrc_shift: var_lrcShift,
+            bpm: var_bpm,
+            bpm_ok: var_bpmOk,
+            bpm_scope: var_bpmScope,
+            lufs: var_lufs,
+            lufs_done: var_lufsDone,
+            karaoke: var_karaoke,
+            backup: var_backup,
+            sealed: var_sealed,
+            lead_ms: var_leadMs,
+        };
+    }
+}
+
+impl SseDecode for i32 {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        deserializer.cursor.read_i32::<NativeEndian>().unwrap()
+    }
+}
+
 impl SseDecode for Vec<String> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -963,6 +1127,32 @@ impl SseDecode for Vec<u8> {
             ans_.push(<u8>::sse_decode(deserializer));
         }
         return ans_;
+    }
+}
+
+impl SseDecode for crate::api::core_dsp::MasterRewrite {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_trimHeadMs = <u32>::sse_decode(deserializer);
+        let mut var_trimTailMs = <u32>::sse_decode(deserializer);
+        let mut var_leadMs = <u32>::sse_decode(deserializer);
+        let mut var_tailMs = <u32>::sse_decode(deserializer);
+        let mut var_bpm = <f64>::sse_decode(deserializer);
+        let mut var_lufs = <f64>::sse_decode(deserializer);
+        let mut var_lufsApplied = <bool>::sse_decode(deserializer);
+        let mut var_bitrateKbps = <u32>::sse_decode(deserializer);
+        let mut var_rewritten = <bool>::sse_decode(deserializer);
+        return crate::api::core_dsp::MasterRewrite {
+            trim_head_ms: var_trimHeadMs,
+            trim_tail_ms: var_trimTailMs,
+            lead_ms: var_leadMs,
+            tail_ms: var_tailMs,
+            bpm: var_bpm,
+            lufs: var_lufs,
+            lufs_applied: var_lufsApplied,
+            bitrate_kbps: var_bitrateKbps,
+            rewritten: var_rewritten,
+        };
     }
 }
 
@@ -1014,13 +1204,6 @@ impl SseDecode for () {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {}
 }
 
-impl SseDecode for i32 {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        deserializer.cursor.read_i32::<NativeEndian>().unwrap()
-    }
-}
-
 fn pde_ffi_dispatcher_primary_impl(
     func_id: i32,
     port: flutter_rust_bridge::for_generated::MessagePort,
@@ -1056,32 +1239,35 @@ fn pde_ffi_dispatcher_primary_impl(
         12 => wire__crate__api__core_dsp__karaoke_cancel_impl(port, ptr, rust_vec_len, data_len),
         13 => wire__crate__api__core_dsp__karaoke_progress_impl(port, ptr, rust_vec_len, data_len),
         14 => wire__crate__api__core_dsp__karaoke_separate_impl(port, ptr, rust_vec_len, data_len),
-        15 => wire__crate__api__core_dsp__normalize_lufs_impl(port, ptr, rust_vec_len, data_len),
-        16 => {
+        15 => wire__crate__api__core_dsp__master_rewrite_impl(port, ptr, rust_vec_len, data_len),
+        16 => wire__crate__api__core_dsp__normalize_lufs_impl(port, ptr, rust_vec_len, data_len),
+        17 => {
             wire__crate__api__core_dsp__outro_energy_end_ms_impl(port, ptr, rust_vec_len, data_len)
         }
-        17 => wire__crate__api__core_dsp__process_auto_trim_impl(port, ptr, rust_vec_len, data_len),
-        18 => wire__crate__api__core_dsp__process_full_pipeline_impl(
+        18 => wire__crate__api__core_dsp__process_auto_trim_impl(port, ptr, rust_vec_len, data_len),
+        19 => wire__crate__api__core_dsp__process_full_pipeline_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        19 => wire__crate__api__core_metadata__process_metadata_impl(
+        20 => wire__crate__api__core_metadata__process_metadata_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        20 => wire__crate__api__core_dsp__read_audio_genre_impl(port, ptr, rust_vec_len, data_len),
-        21 => wire__crate__api__core_dsp__read_master_tags_impl(port, ptr, rust_vec_len, data_len),
-        22 => wire__crate__api__core_dsp__start_master_recording_impl(
+        21 => wire__crate__api__core_dsp__read_audio_genre_impl(port, ptr, rust_vec_len, data_len),
+        22 => wire__crate__api__core_dsp__read_gmx_marks_impl(port, ptr, rust_vec_len, data_len),
+        23 => wire__crate__api__core_dsp__read_master_tags_impl(port, ptr, rust_vec_len, data_len),
+        24 => wire__crate__api__core_dsp__set_gmx_mark_impl(port, ptr, rust_vec_len, data_len),
+        25 => wire__crate__api__core_dsp__start_master_recording_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        23 => wire__crate__api__core_dsp__stop_master_recording_impl(
+        26 => wire__crate__api__core_dsp__stop_master_recording_impl(
             port,
             ptr,
             rust_vec_len,
@@ -1124,6 +1310,70 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::core_dsp::BeatGrid>
     for crate::api::core_dsp::BeatGrid
 {
     fn into_into_dart(self) -> crate::api::core_dsp::BeatGrid {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::core_dsp::GmxMarks {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.version.into_into_dart().into_dart(),
+            self.track_type.into_into_dart().into_dart(),
+            self.name_ok.into_into_dart().into_dart(),
+            self.lyr.into_into_dart().into_dart(),
+            self.lyr_start_ms.into_into_dart().into_dart(),
+            self.trim_ms.into_into_dart().into_dart(),
+            self.trim_tail_ms.into_into_dart().into_dart(),
+            self.lrc_shift.into_into_dart().into_dart(),
+            self.bpm.into_into_dart().into_dart(),
+            self.bpm_ok.into_into_dart().into_dart(),
+            self.bpm_scope.into_into_dart().into_dart(),
+            self.lufs.into_into_dart().into_dart(),
+            self.lufs_done.into_into_dart().into_dart(),
+            self.karaoke.into_into_dart().into_dart(),
+            self.backup.into_into_dart().into_dart(),
+            self.sealed.into_into_dart().into_dart(),
+            self.lead_ms.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::core_dsp::GmxMarks
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::core_dsp::GmxMarks>
+    for crate::api::core_dsp::GmxMarks
+{
+    fn into_into_dart(self) -> crate::api::core_dsp::GmxMarks {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::core_dsp::MasterRewrite {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.trim_head_ms.into_into_dart().into_dart(),
+            self.trim_tail_ms.into_into_dart().into_dart(),
+            self.lead_ms.into_into_dart().into_dart(),
+            self.tail_ms.into_into_dart().into_dart(),
+            self.bpm.into_into_dart().into_dart(),
+            self.lufs.into_into_dart().into_dart(),
+            self.lufs_applied.into_into_dart().into_dart(),
+            self.bitrate_kbps.into_into_dart().into_dart(),
+            self.rewritten.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::core_dsp::MasterRewrite
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::core_dsp::MasterRewrite>
+    for crate::api::core_dsp::MasterRewrite
+{
+    fn into_into_dart(self) -> crate::api::core_dsp::MasterRewrite {
         self
     }
 }
@@ -1184,6 +1434,36 @@ impl SseEncode for f64 {
     }
 }
 
+impl SseEncode for crate::api::core_dsp::GmxMarks {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.version, serializer);
+        <String>::sse_encode(self.track_type, serializer);
+        <bool>::sse_encode(self.name_ok, serializer);
+        <String>::sse_encode(self.lyr, serializer);
+        <i32>::sse_encode(self.lyr_start_ms, serializer);
+        <i32>::sse_encode(self.trim_ms, serializer);
+        <i32>::sse_encode(self.trim_tail_ms, serializer);
+        <bool>::sse_encode(self.lrc_shift, serializer);
+        <f64>::sse_encode(self.bpm, serializer);
+        <bool>::sse_encode(self.bpm_ok, serializer);
+        <String>::sse_encode(self.bpm_scope, serializer);
+        <f64>::sse_encode(self.lufs, serializer);
+        <bool>::sse_encode(self.lufs_done, serializer);
+        <bool>::sse_encode(self.karaoke, serializer);
+        <bool>::sse_encode(self.backup, serializer);
+        <bool>::sse_encode(self.sealed, serializer);
+        <i32>::sse_encode(self.lead_ms, serializer);
+    }
+}
+
+impl SseEncode for i32 {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        serializer.cursor.write_i32::<NativeEndian>(self).unwrap();
+    }
+}
+
 impl SseEncode for Vec<String> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -1201,6 +1481,21 @@ impl SseEncode for Vec<u8> {
         for item in self {
             <u8>::sse_encode(item, serializer);
         }
+    }
+}
+
+impl SseEncode for crate::api::core_dsp::MasterRewrite {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <u32>::sse_encode(self.trim_head_ms, serializer);
+        <u32>::sse_encode(self.trim_tail_ms, serializer);
+        <u32>::sse_encode(self.lead_ms, serializer);
+        <u32>::sse_encode(self.tail_ms, serializer);
+        <f64>::sse_encode(self.bpm, serializer);
+        <f64>::sse_encode(self.lufs, serializer);
+        <bool>::sse_encode(self.lufs_applied, serializer);
+        <u32>::sse_encode(self.bitrate_kbps, serializer);
+        <bool>::sse_encode(self.rewritten, serializer);
     }
 }
 
@@ -1241,13 +1536,6 @@ impl SseEncode for u8 {
 impl SseEncode for () {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {}
-}
-
-impl SseEncode for i32 {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        serializer.cursor.write_i32::<NativeEndian>(self).unwrap();
-    }
 }
 
 #[cfg(not(target_family = "wasm"))]

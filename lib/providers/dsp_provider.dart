@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/foundation.dart';
 // 🛠️ INYECTADO: Backend FFI Nativo
 import 'package:gatomix/src/rust/api/core_dsp.dart' as rust_dsp;
+import '../core/bpm_range.dart';
 import 'pipeline_provider.dart';
 import 'db_provider.dart'; // 🛠️ FIX: Enlace al controlador de ISAR
 
@@ -168,9 +169,11 @@ class DspWorker {
         await Future.delayed(const Duration(milliseconds: 30));
 
         final bpm = await _extractBpmFromID3(absolutePath);
+        final double? ranged = bpm > 0 ? fixBpmRange(bpm) : null;
 
-        if (bpm > 0) {
-          cacheData[absolutePath] = bpm;
+        if (ranged != null) {
+          cacheData[absolutePath] = ranged;
+          cacheData[filename] = ranged;
         } else {
           final match = RegExp(
             r'(?:\b|_|-)(\d{2,3}(?:\.\d+)?)\s*bpm\b',
@@ -178,7 +181,11 @@ class DspWorker {
           ).firstMatch(filename);
 
           if (match != null) {
-            cacheData[absolutePath] = double.parse(match.group(1)!);
+            final double? fromName = fixBpmRange(double.parse(match.group(1)!));
+            if (fromName != null) {
+              cacheData[absolutePath] = fromName;
+              cacheData[filename] = fromName;
+            }
           } else {
             pipe.updateProgress(
               currentIndex,
@@ -192,7 +199,9 @@ class DspWorker {
                   .autoDetectAndInjectBpm(inputPath: absolutePath)
                   .timeout(const Duration(seconds: 45));
 
-              cacheData[absolutePath] = detectedBpm;
+              final double? fixedDetected = fixBpmRange(detectedBpm);
+              cacheData[absolutePath] = fixedDetected ?? 0.0;
+              if (fixedDetected != null) cacheData[filename] = fixedDetected;
               debugPrint(
                 "✅ [FFT BPM] Matemático: $detectedBpm BPM -> $filename",
               );

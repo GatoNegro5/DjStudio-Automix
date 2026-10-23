@@ -6,8 +6,8 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `analyze_and_tag`, `analyze_file`, `dbg_err`, `decode_channels`, `detect_bpm`, `edge_silence_ms`, `ext_text`, `finish`, `forward`, `integrated_lufs`, `inverse`, `is_mp3`, `k_weight`, `karaoke_backend`, `lame_bitrate`, `new`, `new`, `new`, `num_from`, `open_format`, `process`, `push`, `rec_stream`, `run`, `set_ext`, `to_mono`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Analysis`, `Biquad`, `Decoded`, `KStft`, `Mp3Sink`, `RecHandle`, `Resampler`
+// These functions are ignored because they are not marked as `pub`: `analyze_and_tag`, `analyze_file`, `average_kbps`, `bitrate_at_most`, `consider_peak`, `dbg_err`, `decode_channels`, `decode_frames`, `detect_bpm`, `detect_validated`, `edge_silence_ms`, `edges_from`, `encode_span`, `ext_any`, `ext_text`, `finish`, `fix_bpm_range`, `flag_on`, `flush`, `forward`, `gain_for`, `gmx_key_ok`, `integrated_lufs`, `inverse`, `is_mastered`, `is_mp3`, `k_one`, `k_stages`, `k_weight`, `karaoke_backend`, `lame_bitrate`, `legacy_brand`, `lufs_of`, `measure_stream`, `ms_to_samples`, `new_no_upsample`, `new`, `new`, `new`, `new`, `num_from`, `open_format`, `open`, `opt_i32`, `process`, `push`, `push`, `run`, `set_ext`, `tick`, `to_mono`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Analysis`, `Biquad`, `Decoded`, `KStft`, `LookLim`, `Mp3Sink`, `RecHandle`, `Resampler`, `StreamMeasure`
 
 /// Decodifica un tramo a PCM mono s16le a `target_rate` Hz (EQ adaptativa).
 Future<Uint8List> decodeMonoPcm({
@@ -84,7 +84,7 @@ Future<bool> checkWatermark({required String inputPath}) =>
     RustLib.instance.api.crateApiCoreDspCheckWatermark(inputPath: inputPath);
 
 /// Reset de SONIDO: quita el sello y las etiquetas de masterizado (ReplayGain,
-/// DJS_*). No toca letras (.lrc) ni el resto de las etiquetas del archivo.
+/// GMX_* y las DJS_* anteriores). No toca letras (.lrc) ni el resto de las etiquetas.
 Future<bool> clearWatermark({required String inputPath}) =>
     RustLib.instance.api.crateApiCoreDspClearWatermark(inputPath: inputPath);
 
@@ -101,6 +101,40 @@ Future<bool> encodeToMp3({
   bitrateKbps: bitrateKbps,
 );
 
+Future<GmxMarks> readGmxMarks({required String inputPath}) =>
+    RustLib.instance.api.crateApiCoreDspReadGmxMarks(inputPath: inputPath);
+
+/// Escribe una marca GMX de la lista blanca. No crea marcas arbitrarias.
+Future<bool> setGmxMark({
+  required String inputPath,
+  required String key,
+  required String value,
+}) => RustLib.instance.api.crateApiCoreDspSetGmxMark(
+  inputPath: inputPath,
+  key: key,
+  value: value,
+);
+
+/// Recorta silencios y/o normaliza a −14 LUFS. Una sola generación si hacen
+/// falta los dos. `force_head_ms` / `force_tail_ms` < 0 = detectar; si no,
+/// cortar exactamente esos ms (el `_K` acompaña a la pista). Una pista que
+/// ya tiene `GMX_TRIM_MS` no se vuelve a cortar.
+Future<MasterRewrite> masterRewrite({
+  required String inputPath,
+  required bool doTrim,
+  required bool doLufs,
+  required bool introBpm,
+  required int forceHeadMs,
+  required int forceTailMs,
+}) => RustLib.instance.api.crateApiCoreDspMasterRewrite(
+  inputPath: inputPath,
+  doTrim: doTrim,
+  doLufs: doLufs,
+  introBpm: introBpm,
+  forceHeadMs: forceHeadMs,
+  forceTailMs: forceTailMs,
+);
+
 /// Dónde muere la energía del outro: inicio (ms absolutos) de la última racha
 /// de ≥ 0.4 s por debajo de -32 dBFS en los últimos ~12 s. 0 = no hay.
 /// Reemplaza al antiguo `ffmpeg silencedetect`.
@@ -115,9 +149,6 @@ Future<BigInt> outroEnergyEndMs({
 Future<bool> isMasterRecording() =>
     RustLib.instance.api.crateApiCoreDspIsMasterRecording();
 
-/// Graba la salida master a MP3 320 kbps. Windows: loopback WASAPI del
-/// dispositivo de salida. macOS: entrada de audio predeterminada.
-/// Android/iOS: no disponible (el sistema lo veta).
 Future<void> startMasterRecording({
   required String outputPath,
   required int bitrateKbps,
@@ -170,6 +201,143 @@ class BeatGrid {
           ok == other.ok &&
           bpm == other.bpm &&
           beatMs == other.beatMs;
+}
+
+/// Marcas GMX de una pista, sin decodificar. Igual en las 4 plataformas.
+class GmxMarks {
+  final String version;
+  final String trackType;
+  final bool nameOk;
+  final String lyr;
+  final int lyrStartMs;
+  final int trimMs;
+  final int trimTailMs;
+  final bool lrcShift;
+  final double bpm;
+  final bool bpmOk;
+  final String bpmScope;
+  final double lufs;
+  final bool lufsDone;
+  final bool karaoke;
+  final bool backup;
+  final bool sealed;
+  final int leadMs;
+
+  const GmxMarks({
+    required this.version,
+    required this.trackType,
+    required this.nameOk,
+    required this.lyr,
+    required this.lyrStartMs,
+    required this.trimMs,
+    required this.trimTailMs,
+    required this.lrcShift,
+    required this.bpm,
+    required this.bpmOk,
+    required this.bpmScope,
+    required this.lufs,
+    required this.lufsDone,
+    required this.karaoke,
+    required this.backup,
+    required this.sealed,
+    required this.leadMs,
+  });
+
+  @override
+  int get hashCode =>
+      version.hashCode ^
+      trackType.hashCode ^
+      nameOk.hashCode ^
+      lyr.hashCode ^
+      lyrStartMs.hashCode ^
+      trimMs.hashCode ^
+      trimTailMs.hashCode ^
+      lrcShift.hashCode ^
+      bpm.hashCode ^
+      bpmOk.hashCode ^
+      bpmScope.hashCode ^
+      lufs.hashCode ^
+      lufsDone.hashCode ^
+      karaoke.hashCode ^
+      backup.hashCode ^
+      sealed.hashCode ^
+      leadMs.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is GmxMarks &&
+          runtimeType == other.runtimeType &&
+          version == other.version &&
+          trackType == other.trackType &&
+          nameOk == other.nameOk &&
+          lyr == other.lyr &&
+          lyrStartMs == other.lyrStartMs &&
+          trimMs == other.trimMs &&
+          trimTailMs == other.trimTailMs &&
+          lrcShift == other.lrcShift &&
+          bpm == other.bpm &&
+          bpmOk == other.bpmOk &&
+          bpmScope == other.bpmScope &&
+          lufs == other.lufs &&
+          lufsDone == other.lufsDone &&
+          karaoke == other.karaoke &&
+          backup == other.backup &&
+          sealed == other.sealed &&
+          leadMs == other.leadMs;
+}
+
+/// Resultado de reescribir una pista. `trim_head_ms` es lo cortado EN ESTA
+/// pasada (0 si ya estaba cortada: no hay que mover la letra otra vez).
+class MasterRewrite {
+  final int trimHeadMs;
+  final int trimTailMs;
+  final int leadMs;
+  final int tailMs;
+  final double bpm;
+  final double lufs;
+  final bool lufsApplied;
+  final int bitrateKbps;
+  final bool rewritten;
+
+  const MasterRewrite({
+    required this.trimHeadMs,
+    required this.trimTailMs,
+    required this.leadMs,
+    required this.tailMs,
+    required this.bpm,
+    required this.lufs,
+    required this.lufsApplied,
+    required this.bitrateKbps,
+    required this.rewritten,
+  });
+
+  @override
+  int get hashCode =>
+      trimHeadMs.hashCode ^
+      trimTailMs.hashCode ^
+      leadMs.hashCode ^
+      tailMs.hashCode ^
+      bpm.hashCode ^
+      lufs.hashCode ^
+      lufsApplied.hashCode ^
+      bitrateKbps.hashCode ^
+      rewritten.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is MasterRewrite &&
+          runtimeType == other.runtimeType &&
+          trimHeadMs == other.trimHeadMs &&
+          trimTailMs == other.trimTailMs &&
+          leadMs == other.leadMs &&
+          tailMs == other.tailMs &&
+          bpm == other.bpm &&
+          lufs == other.lufs &&
+          lufsApplied == other.lufsApplied &&
+          bitrateKbps == other.bitrateKbps &&
+          rewritten == other.rewritten;
 }
 
 /// Resultado leído de las etiquetas de una pista (sin decodificar).

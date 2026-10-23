@@ -4,6 +4,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 // 🛠️ FIX: Requerido para leer el sello de agua y saltar I/O
 import 'package:gatomix/src/rust/api/core_dsp.dart' as rust_dsp;
 
+import '../core/id3_names.dart';
+import '../core/track_name_clean.dart';
+import '../services/id3_title_artist.dart';
+
 final metadataWorkerProvider = Provider((ref) => MetadataWorker());
 
 class MetadataWorker {
@@ -81,13 +85,19 @@ class MetadataWorker {
         continue; // Bypass atómico: El bucle jamás se detiene
       }
 
-      final cleanName = _cleanFilename(filename);
+      final cleanName = _uniqueName(
+        file.parent,
+        _cleanFilename(filename),
+        file.path,
+      );
       if (cleanName != filename) {
         final newPath =
             '${file.parent.path}${Platform.pathSeparator}$cleanName';
         if (!File(newPath).existsSync()) {
           try {
             await file.rename(newPath);
+            await _syncAssociatedFile(file.path, newPath, '.lrc');
+            await _syncKaraokeFile(file.path, newPath);
           } catch (e) {
             debugPrint("🔴 [I/O Lock]: No se pudo renombrar $filename - $e");
           }
@@ -99,35 +109,40 @@ class MetadataWorker {
     }
   }
 
-  String _cleanFilename(String filename) {
-    String name = filename.substring(0, filename.length - 4);
-    String ext = filename.substring(filename.length - 4);
-
-    if (name.endsWith("_R") || name.endsWith(" R")) {
-      name = name.substring(0, name.length - 2);
-    }
-
-    String cleanName = name.replaceAll(_garbageRegex, " ").trim();
-    cleanName = cleanName.replaceAll(_dashRegex, " - ");
-    cleanName = cleanName.replaceAll("_", " ");
-    cleanName = cleanName.replaceAll(_spacesRegex, " ");
-
-    List<String> parts = cleanName.split(" - ");
-    String finalName = "";
-
-    if (parts.length >= 2) {
-      String artist = _toTitleCase(parts[0].trim());
-      String title = _toTitleCase(parts[1].trim());
-      // Reensamblaje estricto: Artista - Título
-      finalName = "$artist - $title$ext";
+  String _cleanFilename(
+    String filename, {
+    String id3Artist = '',
+    String id3Title = '',
+  }) {
+    var prepared = filename.replaceAll(_garbageRegex, ' ');
+    prepared = prepared.replaceAll(_dashRegex, ' - ');
+    prepared = prepared.replaceAll('_', ' ');
+    prepared = prepared.replaceAll(_spacesRegex, ' ');
+    final CleanTrackName cleaned = cleanTrackFileName(
+      prepared,
+      id3Artist: id3Artist,
+      id3Title: id3Title,
+    );
+    final String stem;
+    if (cleaned.artist.isNotEmpty && cleaned.title.isNotEmpty) {
+      stem = '${_toTitleCase(cleaned.artist)} - ${_toTitleCase(cleaned.title)}';
+    } else if (cleaned.title.isNotEmpty) {
+      stem = _toTitleCase(cleaned.title);
+    } else if (cleaned.artist.isNotEmpty) {
+      stem = _toTitleCase(cleaned.artist);
     } else {
-      String title = _toTitleCase(cleanName.trim());
-      finalName = "$title$ext";
+      stem = 'Pista';
     }
+    return stem.replaceAll(_invalidCharsRegex, '');
+  }
 
-    // Amputación final de caracteres ilegales en Windows
-    finalName = finalName.replaceAll(_invalidCharsRegex, "");
-    return finalName;
+  String _uniqueName(Directory parent, String stem, String currentPath) {
+    final String sep = Platform.pathSeparator;
+    return uniqueMp3Name(stem, (String fileName) {
+      final String p = '${parent.path}$sep$fileName';
+      return p.toLowerCase() != currentPath.toLowerCase() &&
+          File(p).existsSync();
+    });
   }
 
   String _toTitleCase(String text) {
@@ -146,7 +161,16 @@ class MetadataWorker {
     if (!file.existsSync()) return filePath;
 
     final filename = file.uri.pathSegments.last;
-    final cleanName = _cleanFilename(filename);
+    final Id3Names id3 = await loadId3TitleArtist(filePath);
+    final cleanName = _uniqueName(
+      file.parent,
+      _cleanFilename(
+        filename,
+        id3Artist: id3.artist,
+        id3Title: id3.title,
+      ),
+      filePath,
+    );
 
     if (cleanName != filename) {
       final targetPath =
@@ -168,8 +192,10 @@ class MetadataWorker {
           }
         }
 
-        // ¡Magia inyectada! Sincronizamos la letra antigua si existía
+        // Letra, texto y pista _K siguen al MP3 renombrado.
         await _syncAssociatedFile(filePath, targetPath, '.lrc');
+        await _syncAssociatedFile(filePath, targetPath, '.txt');
+        await _syncKaraokeFile(filePath, targetPath);
 
         return targetPath;
       } catch (e) {
@@ -208,6 +234,19 @@ class MetadataWorker {
         await oldFile.copy(newFile.path);
         await oldFile.delete();
       }
+    } catch (_) {}
+  }
+
+  Future<void> _syncKaraokeFile(String oldMp3, String newMp3) async {
+    final RegExp ext = RegExp(r'\.mp3$', caseSensitive: false);
+    final File oldFile = File(oldMp3.replaceAll(ext, '_K.mp3'));
+    final File newFile = File(newMp3.replaceAll(ext, '_K.mp3'));
+    if (!oldFile.existsSync()) return;
+    if (oldFile.path.toLowerCase() == newFile.path.toLowerCase()) return;
+    if (newFile.existsSync()) return;
+    try {
+      await oldFile.copy(newFile.path);
+      await oldFile.delete();
     } catch (_) {}
   }
 }

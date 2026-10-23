@@ -49,8 +49,9 @@ class AdaptiveEq {
   /// Interruptor global (por defecto activo).
   static bool enabled = true;
 
-  /// Sonoridad objetivo (LUFS). Algo sobre los -18 de ReplayGain para no
-  /// perder presencia (las pistas que ya traen etiquetas RG usan las suyas).
+  /// Sonoridad objetivo (LUFS). La mide este módulo (K-weighting, 30 s) y la
+  /// aplica como desplazamiento de equalizer. No lee etiquetas ReplayGain:
+  /// el −16 LUFS de aquí es independiente del −14 del archivo.
   static const double targetLufs = -16.0;
 
   static const List<int> bands = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];

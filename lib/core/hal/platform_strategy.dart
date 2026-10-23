@@ -4,9 +4,10 @@ import '../../djiphone/iphone_library.dart';
 import '../audio/af_caps.dart';
 
 /// Limitador final. Va DESPUÉS del ecualizador. Solo se aplica si el libmpv
-/// empaquetado lo trae (el de Windows NO: ver `AfCaps`). Sin limitador, el
-/// margen lo da el diseño: ningún realce neto sobre 0 dB y el nivelador
-/// nunca sube una pista más allá de su pico medido.
+/// empaquetado lo trae. En Windows, si `alimiter` no está, `AfCaps` prueba
+/// un limitador equivalente y `WindowsMixStrategy` usa esa cadena. Sin
+/// ninguno que la sonda acepte, no se inserta un filtro: un nombre inválido
+/// tumbaría toda la cadena `af`.
 const String kHifiLimiter = 'alimiter=limit=0.95:level=disabled';
 
 abstract class PlatformMixStrategy {
@@ -29,6 +30,16 @@ abstract class PlatformMixStrategy {
 }
 
 class WindowsMixStrategy extends PlatformMixStrategy {
+  /// La cadena exacta que la sonda aceptó. Las otras plataformas siguen
+  /// con [kHifiLimiter] solo si `AfCaps.has('alimiter')`.
+  @override
+  String get limiterFilter {
+    if (AfCaps.windowsSafetyLimiter.isNotEmpty) {
+      return AfCaps.windowsSafetyLimiter;
+    }
+    return super.limiterFilter;
+  }
+
   @override
   String getSessionPath() {
     final dir = Directory(

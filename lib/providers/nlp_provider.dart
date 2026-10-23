@@ -32,9 +32,10 @@ class NlpWorker {
         if (res.statusCode == 200) return res;
 
         // 🛠️ EXPONENTIAL BACKOFF: Si es Rate Limit (429) o Server Error (5xx), esperamos y reintentamos.
-        if (res.statusCode == 429 || res.statusCode >= 500) {
+        // 429 / 503 / 5xx: reintento. No es "no hay letra".
+        if (res.statusCode == 429 || res.statusCode == 503 || res.statusCode >= 500) {
           if (attempt == maxRetries - 1) {
-            return res; // Último intento, devolvemos el error.
+            return res;
           }
 
           final delay = baseDelayMs * (1 << attempt); // 1.5s -> 3s -> 6s
@@ -49,7 +50,7 @@ class NlpWorker {
       } catch (e) {
         if (attempt == maxRetries - 1) {
           debugPrint(
-            "🟡 [NLP Circuit Breaker] Conexión directa falló tras $maxRetries intentos. Saltando a Proxy...",
+            "🟡 [NLP] LRCLIB no respondió tras $maxRetries intentos: $e",
           );
           break;
         }
@@ -59,12 +60,11 @@ class NlpWorker {
       }
     }
 
-    // 🛠️ FALLBACK: Proxy de última instancia
-    final proxyUri = Uri.parse(
-      'https://api.allorigins.win/raw?url=${Uri.encodeComponent(targetUrl)}',
-    );
-    return await http.get(proxyUri).timeout(const Duration(seconds: 8));
+    throw Exception('LRCLIB no responde');
   }
+
+  /// Último detalle para mostrarlo en pantalla (servidor caído, sin coincidencia).
+  String lastDetail = '';
 
   // 🛠️ MÓDULO V4.1: CÁLCULO DE COLISIÓN VOCAL CON ESCUDO ANTI-BASURA
   // 🛠️ MÓDULO V4.2: CÁLCULO DE COLISIÓN VOCAL (BLINDADO CONTRA CUES MANUALES)
@@ -361,13 +361,18 @@ class NlpWorker {
     required String artist,
     required String title,
     required int localSec,
+    bool allowPlain = false,
+    bool ignoreDuration = false,
   }) {
     Map<String, dynamic>? best;
     double bestScore = 0.0;
     for (final raw in items) {
       if (raw is! Map) continue;
       final synced = raw['syncedLyrics']?.toString() ?? '';
-      if (synced.trim().isEmpty) continue;
+      final plain = raw['plainLyrics']?.toString() ?? '';
+      if (synced.trim().isEmpty && !(allowPlain && plain.trim().isNotEmpty)) {
+        continue;
+      }
 
       final double titleSim = _similar(title, raw['trackName']?.toString() ?? '');
       if (titleSim < 0.75) continue;
@@ -390,11 +395,11 @@ class NlpWorker {
 
       final int apiDur = (raw['duration'] as num?)?.toInt() ?? 0;
       double durScore = 0.5;
-      if (localSec > 0 && apiDur > 0) {
+      if (!ignoreDuration && localSec > 0 && apiDur > 0) {
         final int diff = (apiDur - localSec).abs();
-        if (diff > 8) continue; // otra versión / otra canción
-        durScore = 1.0 - (diff / 8.0) * 0.5;
-      } else if (titleSim < 0.99 || artistSim < 0.99) {
+        if (diff > 30) continue; // ±30 s: extended / otra edición se filtra aparte
+        durScore = 1.0 - (diff / 30.0) * 0.5;
+      } else if (!ignoreDuration && (titleSim < 0.99 || artistSim < 0.99)) {
         // Sin duración que lo confirme solo vale una coincidencia exacta.
         continue;
       }
@@ -408,21 +413,30 @@ class NlpWorker {
     return best;
   }
 
-  Future<List<dynamic>> _lrclibSearch(String url) async {
+  Future<({List<dynamic> items, bool serverDown})> _lrclibSearch(String url) async {
     try {
       final response = await _resilientGet(url);
       if (response.statusCode == 200) {
         final parsed = jsonDecode(response.body);
-        if (parsed is List) return parsed;
+        if (parsed is List) return (items: parsed, serverDown: false);
+        return (items: const [], serverDown: false);
+      }
+      if (response.statusCode == 429 ||
+          response.statusCode == 503 ||
+          response.statusCode >= 500) {
+        lastDetail = 'LRCLIB respondió HTTP ${response.statusCode}';
+        return (items: const [], serverDown: true);
       }
     } catch (e) {
+      lastDetail = 'LRCLIB no responde: $e';
       debugPrint("🟡 [NLP Tracker] Búsqueda evadió error: $e");
+      return (items: const [], serverDown: true);
     }
-    return const [];
+    return (items: const [], serverDown: false);
   }
 
-  /// true = letra guardada. false = sin coincidencia segura (no se escribe nada).
-  Future<bool> _fetchAndSaveLrc(String audioPath, String lrcPath) async {
+  /// Letra sincronizada, plana, sin coincidencia, o servidor caído (reintento).
+  Future<LyricStatus> _fetchAndSaveLrc(String audioPath, String lrcPath) async {
     try {
       final filename = audioPath
           .split(RegExp(r'[\\/]'))
@@ -448,31 +462,82 @@ class NlpWorker {
         'https://lrclib.net/api/search?q=${Uri.encodeComponent(artist.isEmpty ? cleanTitle : '$artist $cleanTitle')}',
       ];
 
-      for (final url in urls) {
-        final items = await _lrclibSearch(url);
-        final best = _bestSafeMatch(
-          items,
-          artist: artist,
-          title: title,
-          localSec: localSec,
-        );
-        if (best != null) {
-          final String synced = best['syncedLyrics'].toString();
-          await File(lrcPath).writeAsString(synced);
-          await _markAuto(lrcPath);
-          await _processVocalBoundingBox(audioPath, synced, localSec);
-          debugPrint(
-            "🟢 [NLP Tracker] Letra segura: ${best['artistName']} - ${best['trackName']} (${best['duration']}s vs $localSec s)",
+      final bool extended = RegExp(
+        r'extended|extendid|versi[oó]n larga',
+        caseSensitive: false,
+      ).hasMatch('$filename $title');
+      bool serverDown = false;
+
+      Future<LyricStatus?> tryUrls({required bool ignoreDuration, required bool plain}) async {
+        for (final url in urls) {
+          final found = await _lrclibSearch(url);
+          if (found.serverDown) serverDown = true;
+          final best = _bestSafeMatch(
+            found.items,
+            artist: artist,
+            title: title,
+            localSec: localSec,
+            allowPlain: plain,
+            ignoreDuration: ignoreDuration,
           );
-          return true;
+          if (best == null) {
+            await Future.delayed(const Duration(milliseconds: 250));
+            continue;
+          }
+          final String synced = best['syncedLyrics']?.toString() ?? '';
+          if (!plain && synced.trim().isNotEmpty) {
+            await File(lrcPath).writeAsString(synced);
+            await _markAuto(lrcPath);
+            await _processVocalBoundingBox(audioPath, synced, localSec);
+            lastDetail = '';
+            debugPrint(
+              "🟢 [NLP Tracker] Letra segura: ${best['artistName']} - ${best['trackName']} (${best['duration']}s vs $localSec s)",
+            );
+            return LyricStatus.ok;
+          }
+          final String plainText = best['plainLyrics']?.toString() ?? '';
+          if (plain && synced.trim().isEmpty && plainText.trim().isNotEmpty) {
+            await File(lrcPath).writeAsString('[gmx_plain:1]\n$plainText');
+            await _markAuto(lrcPath);
+            lastDetail = 'Letra plana (sin tiempos)';
+            return LyricStatus.plain;
+          }
+          await Future.delayed(const Duration(milliseconds: 250));
         }
-        await Future.delayed(const Duration(milliseconds: 250));
+        return null;
       }
+
+      final syncedHit = await tryUrls(ignoreDuration: false, plain: false);
+      if (syncedHit != null) return syncedHit;
+      if (extended || localSec >= 420) {
+        final loose = await tryUrls(ignoreDuration: true, plain: false);
+        if (loose != null) return loose;
+      }
+      final plainHit = await tryUrls(
+        ignoreDuration: extended || localSec >= 420,
+        plain: true,
+      );
+      if (plainHit != null) return plainHit;
+
+      if (serverDown) {
+        lastDetail = lastDetail.isEmpty ? 'Servidor de letras caído' : lastDetail;
+        debugPrint("🟡 [NLP Tracker] Servidor caído, se reintenta: $filename");
+        return LyricStatus.retry;
+      }
+      lastDetail = 'Sin coincidencia segura';
       debugPrint("🟡 [NLP Tracker] Sin coincidencia segura: $filename");
-      return false;
+      return LyricStatus.noMatch;
     } catch (e) {
+      lastDetail = '$e';
       debugPrint("🔴 [NLP Tracker] Excepción crítica de I/O: $e");
-      return false;
+      final String msg = e.toString();
+      if (msg.contains('LRCLIB') ||
+          msg.contains('Socket') ||
+          msg.contains('Timeout') ||
+          msg.contains('ClientException')) {
+        return LyricStatus.retry;
+      }
+      return LyricStatus.failed;
     }
   }
 
@@ -597,9 +662,7 @@ class NlpWorker {
     }
 
     try {
-      return await _fetchAndSaveLrc(filePath, lrcPath)
-          ? LyricStatus.ok
-          : LyricStatus.noMatch;
+      return await _fetchAndSaveLrc(filePath, lrcPath);
     } catch (e) {
       debugPrint("🔴 [NLP Scraper Fatal Error]: $e");
       return LyricStatus.failed;
@@ -642,4 +705,4 @@ class NlpWorker {
   }
 }
 
-enum LyricStatus { ok, kept, noMatch, failed }
+enum LyricStatus { ok, kept, noMatch, failed, retry, plain }
