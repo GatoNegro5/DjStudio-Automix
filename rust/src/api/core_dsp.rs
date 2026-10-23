@@ -442,10 +442,622 @@ fn lag_matching_prior(
     chosen.map(|(_, lag)| lag)
 }
 
-/// BPM por autocorrelación del flujo de onsets, con refuerzo de armónicos y
-/// plegado a 78-165. Usa un tramo central (hasta 80 s) de la pista.
-/// `prior` es el TBPM ya escrito, si es válido: desempata ×4/3 y ×3/4.
+const TEMPO_PRIOR_BPM: f64 = 115.0;
+const TEMPO_PRIOR_SIGMA: f64 = 0.42;
+const TEMPO_ANALYZE_SECS: f64 = 60.0;
+
+fn tempo_log_prior(bpm: f64) -> f64 {
+    if bpm <= 1.0 {
+        return 0.0;
+    }
+    let z = (bpm.ln() - TEMPO_PRIOR_BPM.ln()) / TEMPO_PRIOR_SIGMA;
+    (-0.5 * z * z).exp()
+}
+
+fn tempo_window(mono: &[f32], rate: u32) -> &[f32] {
+    if rate == 0 || mono.is_empty() {
+        return &[];
+    }
+    let total = mono.len() as f64 / rate as f64;
+    let (from, len) = if total > 100.0 {
+        (20.0, TEMPO_ANALYZE_SECS)
+    } else {
+        (0.0, total.min(TEMPO_ANALYZE_SECS))
+    };
+    let s0 = ((from * rate as f64) as usize).min(mono.len());
+    let s1 = (((from + len) * rate as f64) as usize).min(mono.len());
+    &mono[s0..s1]
+}
+
+fn moving_mean(x: &[f64], win: usize) -> Vec<f64> {
+    let n = x.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let w = win.clamp(1, n);
+    let mut pref = vec![0.0; n + 1];
+    for i in 0..n {
+        pref[i + 1] = pref[i] + x[i];
+    }
+    let r = w / 2;
+    (0..n)
+        .map(|i| {
+            let a = i.saturating_sub(r);
+            let b = (i + w - r).clamp(a + 1, n);
+            (pref[b] - pref[a]) / (b - a) as f64
+        })
+        .collect()
+}
+
+/// Centra, recorta a positivo y deja la media (con los ceros) en 1.
+fn prep_odf(raw: &[f64]) -> Vec<f64> {
+    let n = raw.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let sm = moving_mean(raw, 3);
+    let mean = sm.iter().sum::<f64>() / n as f64;
+    let mut y: Vec<f64> = sm.into_iter().map(|v| (v - mean).max(0.0)).collect();
+    let m = y.iter().sum::<f64>() / n as f64;
+    if m > 1e-12 {
+        for v in &mut y {
+            *v /= m;
+        }
+    }
+    y
+}
+
+fn positive_highpass(x: &[f64], win: usize) -> Vec<f64> {
+    let mean = moving_mean(x, win);
+    x.iter().zip(mean).map(|(v, m)| (v - m).max(0.0)).collect()
+}
+
+/// Autocorrelación normalizada. Índice = lag en cuadros.
+fn autocorr_norm(odf: &[f64], min_lag: usize, max_lag: usize) -> Vec<f64> {
+    let n = odf.len();
+    let mut out = vec![0.0; max_lag + 1];
+    if n < max_lag + 8 || min_lag > max_lag {
+        return out;
+    }
+    let mut c0 = 0.0;
+    for v in odf {
+        c0 += v * v;
+    }
+    let norm0 = (c0 / n as f64).max(1e-12);
+    for lag in min_lag..=max_lag {
+        if lag >= n {
+            break;
+        }
+        let m = n - lag;
+        let mut c = 0.0;
+        for i in 0..m {
+            c += odf[i] * odf[i + lag];
+        }
+        out[lag] = (c / m as f64) / norm0;
+    }
+    out
+}
+
+fn ac_at(curve: &[f64], lag: f64) -> f64 {
+    if !lag.is_finite() || lag < 1.0 {
+        return 0.0;
+    }
+    let i = lag.floor() as usize;
+    if i + 1 >= curve.len() {
+        return 0.0;
+    }
+    let f = lag - i as f64;
+    curve[i] * (1.0 - f) + curve[i + 1] * f
+}
+
+fn pick_tempo_peaks(
+    curve: &[f64],
+    min_lag: usize,
+    max_lag: usize,
+    env_rate: f64,
+) -> Vec<(f64, f64)> {
+    let mut ps = Vec::new();
+    let last = max_lag.min(curve.len().saturating_sub(2));
+    let start = min_lag.max(1);
+    if start >= last {
+        return ps;
+    }
+    for lag in start..last {
+        let y = curve[lag];
+        if y >= curve[lag - 1] && y > curve[lag + 1] && y > 0.05 {
+            let (a, b, c) = (curve[lag - 1], y, curve[lag + 1]);
+            let denom = a - 2.0 * b + c;
+            let mut lf = lag as f64;
+            if denom.abs() > 1e-12 {
+                lf += (0.5 * (a - c) / denom).clamp(-0.5, 0.5);
+            }
+            if lf < 1.0 {
+                continue;
+            }
+            let bpm = 60.0 * env_rate / lf;
+            if (48.0..=200.0).contains(&bpm) && bpm.is_finite() {
+                ps.push((bpm, y));
+            }
+        }
+    }
+    ps.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    ps.truncate(8);
+    ps
+}
+
+fn cluster_bpm(mut xs: Vec<f64>) -> Vec<f64> {
+    xs.retain(|b| b.is_finite() && (50.0..=190.0).contains(b));
+    xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mut out: Vec<f64> = Vec::new();
+    for b in xs {
+        if let Some(prev) = out.last_mut() {
+            if (b - *prev).abs() <= 1.6 {
+                *prev = 0.5 * (*prev + b);
+                continue;
+            }
+        }
+        out.push(b);
+    }
+    out
+}
+
+fn harmonic_tempo(bpm: f64, kick: f64) -> bool {
+    if kick <= 0.0 {
+        return false;
+    }
+    let r = bpm / kick;
+    const RATIOS: [f64; 9] = [
+        1.0,
+        2.0,
+        0.5,
+        1.5,
+        2.0 / 3.0,
+        3.0,
+        1.0 / 3.0,
+        4.0 / 3.0,
+        0.75,
+    ];
+    RATIOS.iter().any(|f| (r - f).abs() <= f * 0.04)
+}
+
+fn peak_near(odf: &[f64], t: f64) -> f64 {
+    let i = t.round() as isize;
+    let mut m = 0.0f64;
+    for d in -1..=1 {
+        let j = i + d;
+        if j >= 0 {
+            let j = j as usize;
+            if j < odf.len() {
+                m = m.max(odf[j]);
+            }
+        }
+    }
+    m
+}
+
+fn grid_mean(odf: &[f64], phase: f64, period: f64) -> f64 {
+    let n = odf.len() as f64;
+    if period < 2.0 || n < 8.0 {
+        return 0.0;
+    }
+    let mut t = phase % period;
+    if t < 0.0 {
+        t += period;
+    }
+    let mut sum = 0.0;
+    let mut cnt = 0.0;
+    while t + 1.0 < n {
+        sum += peak_near(odf, t);
+        cnt += 1.0;
+        t += period;
+    }
+    if cnt < 4.0 {
+        0.0
+    } else {
+        sum / cnt
+    }
+}
+
+fn best_grid(odf: &[f64], period: f64) -> (f64, f64) {
+    let n = odf.len();
+    if period < 2.0 || n < 8 {
+        return (0.0, 0.0);
+    }
+    let mut idxs = Vec::new();
+    for i in 1..n - 1 {
+        if odf[i] >= odf[i - 1] && odf[i] > odf[i + 1] && odf[i] > 0.4 {
+            idxs.push(i);
+        }
+    }
+    idxs.sort_by(|&a, &b| {
+        odf[b]
+            .partial_cmp(&odf[a])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    idxs.truncate(36);
+    if idxs.is_empty() {
+        let i = odf
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        idxs.push(i);
+    }
+    let mut best_e = 0.0;
+    let mut best_p = 0.0;
+    for &i in &idxs {
+        let phase = (i as f64) % period;
+        let e = grid_mean(odf, phase, period);
+        if e > best_e {
+            best_e = e;
+            best_p = phase;
+        }
+    }
+    (best_e, best_p)
+}
+
+struct OnsetBands {
+    low: Vec<f64>,
+    mid: Vec<f64>,
+    snap: Vec<f64>,
+    env: Vec<f64>,
+    env_rate: f64,
+}
+
+/// Flujo espectral (spectral flux) en graves y medios, más el chasquido
+/// de la caja (2–5,5 kHz) y la envolvente de magnitud grave.
+fn spectral_onsets(mono: &[f32], rate: u32) -> Option<OnsetBands> {
+    let n_fft = 2048usize;
+    if rate < 8000 || mono.len() < n_fft * 2 {
+        return None;
+    }
+    let hop = (rate as usize / 200).max(1);
+    let env_rate = rate as f64 / hop as f64;
+    let frames = (mono.len() - n_fft) / hop;
+    if frames < 400 {
+        return None;
+    }
+    let mut planner = rustfft::FftPlanner::<f32>::new();
+    let fft = planner.plan_fft_forward(n_fft);
+    let hann: Vec<f32> = (0..n_fft)
+        .map(|i| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / (n_fft as f32)).cos())
+        .collect();
+    let half = n_fft / 2;
+    let bin =
+        |hz: f64| -> usize { ((hz * n_fft as f64 / rate as f64).round() as usize).clamp(1, half) };
+    let lo0 = bin(40.0);
+    let lo1 = bin(180.0).max(lo0 + 1);
+    let md0 = bin(200.0);
+    let md1 = bin(2000.0).max(md0 + 1);
+    let sn0 = bin(2000.0);
+    let sn1 = bin(5500.0).min(half).max(sn0 + 1);
+    let mut prev = vec![0f32; half + 1];
+    let mut low_f = Vec::with_capacity(frames);
+    let mut mid_f = Vec::with_capacity(frames);
+    let mut snap_f = Vec::with_capacity(frames);
+    let mut low_m = Vec::with_capacity(frames);
+    let mut buf = vec![rustfft::num_complex::Complex32::new(0.0, 0.0); n_fft];
+    for frame in 0..frames {
+        let s = frame * hop;
+        for i in 0..n_fft {
+            buf[i] = rustfft::num_complex::Complex32::new(mono[s + i] * hann[i], 0.0);
+        }
+        fft.process(&mut buf);
+        let mut fl = 0.0;
+        let mut fm = 0.0;
+        let mut fs = 0.0;
+        let mut ml = 0.0;
+        for k in 1..=half {
+            let mag = buf[k].re.hypot(buf[k].im);
+            let logm = (1.0 + mag).ln();
+            let d = if frame == 0 {
+                0.0
+            } else {
+                (logm - prev[k]).max(0.0)
+            };
+            prev[k] = logm;
+            if k >= lo0 && k < lo1 {
+                fl += d as f64;
+                ml += mag as f64;
+            } else if k >= md0 && k < md1 {
+                fm += d as f64;
+            } else if k >= sn0 && k < sn1 {
+                fs += d as f64;
+            }
+        }
+        low_f.push(fl);
+        mid_f.push(fm);
+        snap_f.push(fs);
+        low_m.push(ml);
+    }
+    // ~350 ms: sigue el grave del bombo/bajo y quita el sostenido.
+    let hp_win = ((env_rate * 0.35).round() as usize).clamp(8, 200);
+    let env = prep_odf(&positive_highpass(&low_m, hp_win));
+    Some(OnsetBands {
+        low: prep_odf(&low_f),
+        mid: prep_odf(&mid_f),
+        snap: prep_odf(&snap_f),
+        env,
+        env_rate,
+    })
+}
+
+#[derive(Clone)]
+struct ScoredTempo {
+    bpm: f64,
+    cl: f64,
+    cm: f64,
+    coh: f64,
+    prior: f64,
+    rel: f64,
+    score: f64,
+}
+
+/// Tempo sin TBPM previo.
+/// 1. Onset strength por spectral flux (graves + medios).
+/// 2. Autocorrelación / tempograma, con prior log-normal ~115 BPM.
+/// 3. Candidatos ×2, ÷2, ×3/2 y ×2/3.
+/// 4. El peine (comb) alinea el bombo y la caja. Si el grave va en el
+///    tiempo y la caja en el contrapulso, el tactus es el doble (169, no 85).
+///    Si grave y medio caen juntos y el contrapulso está vacío, se queda
+///    el lento (62, no 124; 89, no 178).
+/// 5. Una subdivisión que no cae en el rejilla del grave (136 frente a 62)
+///    pierde por coherencia de picos de baja frecuencia.
+fn estimate_tempo_spectral(mono: &[f32], rate: u32) -> Option<f64> {
+    let seg = tempo_window(mono, rate);
+    let bands = spectral_onsets(seg, rate)?;
+    let env_rate = bands.env_rate;
+    let min_lag = (env_rate * 60.0 / 210.0).round().max(2.0) as usize;
+    let max_lag = (env_rate * 60.0 / 48.0).round() as usize;
+    if max_lag + 8 >= bands.low.len() || min_lag >= max_lag {
+        return None;
+    }
+    let ac_low = autocorr_norm(&bands.low, min_lag, max_lag);
+    let ac_mid = autocorr_norm(&bands.mid, min_lag, max_lag);
+    let sum: Vec<f64> = bands
+        .low
+        .iter()
+        .zip(&bands.mid)
+        .map(|(a, b)| a + b)
+        .collect();
+    let ac_sum = autocorr_norm(&sum, min_lag, max_lag);
+    let ac_env = autocorr_norm(&bands.env, min_lag, max_lag);
+    let peaks_low = pick_tempo_peaks(&ac_low, min_lag, max_lag, env_rate);
+    let peaks_mid = pick_tempo_peaks(&ac_mid, min_lag, max_lag, env_rate);
+    let peaks_sum = pick_tempo_peaks(&ac_sum, min_lag, max_lag, env_rate);
+    let peaks_env = pick_tempo_peaks(&ac_env, min_lag, max_lag, env_rate);
+
+    let mut seeds = Vec::new();
+    for list in [&peaks_low, &peaks_mid, &peaks_sum, &peaks_env] {
+        for (bpm, _) in list.iter().take(5) {
+            seeds.push(*bpm);
+        }
+    }
+    let base = seeds.clone();
+    for b in &base {
+        for f in [2.0, 0.5, 1.5, 2.0 / 3.0] {
+            seeds.push(b * f);
+        }
+    }
+    let cands = cluster_bpm(seeds);
+    if cands.is_empty() {
+        return None;
+    }
+    let strong_low: Vec<(f64, f64)> = peaks_env
+        .iter()
+        .chain(peaks_low.iter())
+        .copied()
+        .filter(|(_, sc)| *sc > 0.05)
+        .collect();
+    let max_low = strong_low.iter().map(|(_, sc)| *sc).fold(0.0_f64, f64::max);
+    let debug = std::env::var_os("GMX_BPM_DEBUG").is_some();
+    if debug {
+        let fmt = |ps: &[(f64, f64)]| -> String {
+            ps.iter()
+                .take(5)
+                .map(|(b, s)| format!("{b:.1}:{s:.2}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        eprintln!(
+            "picos low[{}] env[{}] mid[{}] sum[{}]",
+            fmt(&peaks_low),
+            fmt(&peaks_env),
+            fmt(&peaks_mid),
+            fmt(&peaks_sum)
+        );
+        let mut curve = String::new();
+        let mut b = 50.0;
+        while b <= 185.0 {
+            let lag = env_rate * 60.0 / b;
+            curve.push_str(&format!(" {b:.0}:{:.2}", ac_at(&ac_env, lag).max(0.0)));
+            b += 5.0;
+        }
+        eprintln!("env_ac{curve}");
+    }
+
+    let mut rows: Vec<ScoredTempo> = Vec::with_capacity(cands.len());
+    for bpm in cands {
+        let period = env_rate * 60.0 / bpm;
+        let (cl, _) = best_grid(&bands.low, period);
+        let (cm, _) = best_grid(&bands.mid, period);
+        let coh = ac_at(&ac_env, period)
+            .max(0.0)
+            .max(ac_at(&ac_low, period).max(0.0));
+        let prior = tempo_log_prior(bpm);
+        let rel = if max_low <= 0.0 {
+            1.0
+        } else if strong_low
+            .iter()
+            .any(|(k, sc)| *sc >= max_low * 0.62 && harmonic_tempo(bpm, *k))
+        {
+            1.0
+        } else {
+            0.22
+        };
+        // El prior solo desempata: entre 62 y 124 no puede decidir él.
+        let gate = 0.90 + 0.10 * prior;
+        let ac_s = ac_at(&ac_sum, period).max(0.0);
+        let score =
+            gate * rel * (0.58 * cl + 0.18 * cm + 1.35 * ac_s) * (0.58 + 0.42 * coh.min(1.0));
+        rows.push(ScoredTempo {
+            bpm,
+            cl,
+            cm,
+            coh,
+            prior,
+            rel,
+            score,
+        });
+    }
+    let best_coh = rows.iter().map(|r| r.coh).fold(0.0_f64, f64::max);
+    if best_coh > 0.05 {
+        for r in &mut rows {
+            if r.coh < best_coh * 0.30 {
+                r.score *= 0.65;
+            }
+        }
+    }
+
+    let n = rows.len();
+    let mut mul = vec![1.0_f64; n];
+    let mut floor_at = vec![0.0_f64; n];
+    let mut cap_at = vec![f64::MAX; n];
+    for i in 0..n {
+        let slow = rows[i].bpm;
+        let want = slow * 2.0;
+        let js: Vec<usize> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| (r.bpm - want).abs() <= want * 0.035)
+            .map(|(j, _)| j)
+            .collect();
+        if js.is_empty() {
+            continue;
+        }
+        let period = env_rate * 60.0 / slow;
+        let (_, phase) = best_grid(&bands.low, period);
+        let low_on = grid_mean(&bands.low, phase, period);
+        let low_off = grid_mean(&bands.low, phase + period * 0.5, period);
+        let mid_on = grid_mean(&bands.mid, phase, period);
+        let mid_off = grid_mean(&bands.mid, phase + period * 0.5, period);
+        let snap_on = grid_mean(&bands.snap, phase, period);
+        let snap_off = grid_mean(&bands.snap, phase + period * 0.5, period);
+        // Caja clara en el contrapulso (Take On Me: medios 8.6 contra 5.4).
+        // Un guiro o un tumbao solo un poco más fuerte en el contratiempo
+        // (Los Mirlos ~1.25) no dobla el tactus.
+        let low_leads = low_on > 0.8 && low_on > low_off * 1.18;
+        let snare_between = mid_on > 0.4 && mid_off > mid_on * 1.45 && snap_off >= snap_on * 0.95;
+        let backbeat = low_leads && snare_between;
+        let kicks_on_offbeat = low_on > 0.8 && low_off > low_on * 0.82;
+        let downbeat = low_on > 0.8 && low_on > low_off * 1.12;
+        let fast_cl = js.iter().map(|&j| rows[j].cl).fold(0.0, f64::max);
+        if debug {
+            eprintln!(
+                "par {slow:.1}/{want:.1} backbeat={backbeat} kicks_off={kicks_on_offbeat} downbeat={downbeat} low {low_on:.2}/{low_off:.2} mid {mid_on:.2}/{mid_off:.2} snap {snap_on:.2}/{snap_off:.2}"
+            );
+        }
+        let slow_score = rows[i].score;
+        if backbeat {
+            mul[i] *= 0.40;
+            for j in &js {
+                floor_at[*j] = floor_at[*j].max(slow_score * 1.12);
+            }
+        } else if kicks_on_offbeat {
+            mul[i] *= 0.60;
+            for j in &js {
+                floor_at[*j] = floor_at[*j].max(slow_score * 1.02);
+            }
+        } else if downbeat && rows[i].cl >= fast_cl * 0.70 {
+            for j in &js {
+                cap_at[*j] = cap_at[*j].min(slow_score * 0.70);
+            }
+        }
+    }
+    for i in 0..n {
+        rows[i].score = (rows[i].score * mul[i])
+            .clamp(0.0, cap_at[i])
+            .max(floor_at[i]);
+    }
+    if debug {
+        let mut view = rows.clone();
+        view.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        for r in view.iter().take(8) {
+            eprintln!(
+                "cand {bpm:.2} cl {cl:.2} cm {cm:.2} coh {coh:.2} pri {pri:.2} rel {rel:.2} score {sc:.3}",
+                bpm = r.bpm,
+                cl = r.cl,
+                cm = r.cm,
+                coh = r.coh,
+                pri = r.prior,
+                rel = r.rel,
+                sc = r.score
+            );
+        }
+    }
+    let winner = rows.iter().max_by(|a, b| {
+        a.score
+            .partial_cmp(&b.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    })?;
+    if !winner.score.is_finite() || winner.score <= 0.02 {
+        return None;
+    }
+    // El peine elige la octava; el pico del tempograma afina el BPM.
+    Some(refine_bpm(winner.bpm, &ac_sum, env_rate))
+}
+
+fn refine_bpm(bpm: f64, curve: &[f64], env_rate: f64) -> f64 {
+    if bpm <= 0.0 || curve.len() < 4 {
+        return bpm;
+    }
+    let center = env_rate * 60.0 / bpm;
+    let lo = (center * 0.96).floor() as usize;
+    let hi = ((center * 1.04).ceil() as usize).min(curve.len().saturating_sub(2));
+    if lo < 1 || lo + 2 >= hi {
+        return bpm;
+    }
+    let mut best_i = lo;
+    let mut best = f64::MIN;
+    for i in lo..=hi {
+        if curve[i] > best {
+            best = curve[i];
+            best_i = i;
+        }
+    }
+    if best <= 0.02 || best_i == 0 || best_i + 1 >= curve.len() {
+        return bpm;
+    }
+    let (a, b, c) = (curve[best_i - 1], curve[best_i], curve[best_i + 1]);
+    let mut lf = best_i as f64;
+    let denom = a - 2.0 * b + c;
+    if denom.abs() > 1e-12 {
+        lf += (0.5 * (a - c) / denom).clamp(-0.5, 0.5);
+    }
+    if lf < 1.0 {
+        return bpm;
+    }
+    let refined = 60.0 * env_rate / lf;
+    if (refined - bpm).abs() <= bpm * 0.045 {
+        refined
+    } else {
+        bpm
+    }
+}
+
+/// BPM por autocorrelación del flujo de onsets.
+/// Con TBPM previo: desempata ×4/3 y ×3/4 y pliega a 78–165 (no se toca).
+/// Sin TBPM previo: spectral flux, tempograma y peine bombo/caja.
+/// Usa un tramo central de la pista.
 fn detect_bpm(mono: &[f32], rate: u32, prior: Option<f64>) -> Option<f64> {
+    if prior.and_then(fix_bpm_range).is_none() {
+        return estimate_tempo_spectral(mono, rate);
+    }
     let total_s = mono.len() as f64 / rate as f64;
     let (from, len) = if total_s > 100.0 { (20.0, 80.0) } else { (0.0, total_s) };
     let s0 = (from * rate as f64) as usize;
@@ -3272,6 +3884,138 @@ mod master_guard_tests {
             (prior169 - 169.0).abs() < 4.0 || (prior169 - 84.5).abs() < 4.0,
             "con TBPM 169 no debía inventar otro tempo: {prior169}"
         );
+    }
+
+    fn tone(pcm: &mut [f32], at: usize, freq: f32, rate: f32, ms: f32, amp: f32) {
+        let n = ((rate * ms / 1000.0) as usize).min(pcm.len().saturating_sub(at));
+        for i in 0..n {
+            let env = (-4.0 * i as f32 / n.max(1) as f32).exp();
+            let s = (i as f32 * freq * std::f32::consts::TAU / rate).sin();
+            pcm[at + i] += amp * env * s;
+        }
+    }
+
+    fn burst(pcm: &mut [f32], at: usize, rate: f32, ms: f32, amp: f32) {
+        let n = ((rate * ms / 1000.0) as usize).min(pcm.len().saturating_sub(at));
+        for i in 0..n {
+            let env = (-6.0 * i as f32 / n.max(1) as f32).exp();
+            let v = if i % 2 == 0 { 1.0 } else { -1.0 };
+            pcm[at + i] += amp * env * v;
+        }
+    }
+
+    /// `kind` 0 = caja a contratiempo, 1 = grave y medio juntos, 2 = bajo + guiro suave al doble.
+    fn ritmo(bpm: f64, seconds: f64, kind: u8) -> Vec<f32> {
+        let rate = 44100.0f32;
+        let n = (rate as f64 * seconds) as usize;
+        let mut pcm = vec![0f32; n];
+        let period = rate as f64 * 60.0 / bpm;
+        let mut k = 0.0;
+        while (k * period) as usize + 800 < n {
+            let at = (k * period) as usize;
+            let even = (k as usize) % 2 == 0;
+            match kind {
+                0 => {
+                    if even {
+                        tone(&mut pcm, at, 70.0, rate, 45.0, 0.95);
+                    } else {
+                        // Cuerpo de la caja en medios (200–2000 Hz) y chasquido.
+                        tone(&mut pcm, at, 380.0, rate, 40.0, 0.55);
+                        tone(&mut pcm, at, 900.0, rate, 30.0, 0.35);
+                        burst(&mut pcm, at, rate, 25.0, 0.45);
+                    }
+                }
+                1 => {
+                    tone(&mut pcm, at, 82.0, rate, 90.0, 0.85);
+                    tone(&mut pcm, at, 240.0, rate, 70.0, 0.40);
+                }
+                _ => {
+                    tone(&mut pcm, at, 78.0, rate, 70.0, 0.9);
+                    let half = at + (period * 0.5) as usize;
+                    burst(&mut pcm, half, rate, 12.0, 0.12);
+                }
+            }
+            k += 1.0;
+        }
+        pcm
+    }
+
+    #[test]
+    fn el_peine_separa_bombo_y_caja_sin_tbpm() {
+        let near = |got: f64, want: f64| (got - want).abs() < 3.0;
+        let pop = detect_bpm(&ritmo(169.0, 16.0, 0), 44100, None).expect("169");
+        assert!(
+            near(pop, 169.0),
+            "el backbeat debía quedar en ~169 y salió {pop}"
+        );
+        let ballad = detect_bpm(&ritmo(62.0, 16.0, 1), 44100, None).expect("62");
+        assert!(
+            near(ballad, 62.0),
+            "la balada debía quedar en ~62 y salió {ballad}"
+        );
+        assert!((ballad - 124.0).abs() > 8.0, "124 no es Hello: {ballad}");
+        let cumbia = detect_bpm(&ritmo(89.0, 16.0, 2), 44100, None).expect("89");
+        assert!(
+            near(cumbia, 89.0),
+            "la cumbia debía quedar en ~89 y salió {cumbia}"
+        );
+        let kept = detect_bpm(&clicks(108.0, 12.0), 44100, Some(108.0)).expect("108");
+        assert!((kept - 108.0).abs() < 3.0, "el TBPM 108 no se toca: {kept}");
+    }
+
+    #[test]
+    #[ignore = "MP3 reales en /tmp/gmx_bpm (Take On Me, Hello, La Danza de los Mirlos)"]
+    fn tempo_de_tres_canciones_reales() {
+        let dir = std::env::var("GMX_BPM_DIR").unwrap_or_else(|_| "/tmp/gmx_bpm".to_string());
+        let cases = [
+            ("take_on_me.mp3", 169.0),
+            ("take_on_me_single.mp3", 169.0),
+            ("hello.mp3", 62.0),
+            // Grandes Éxitos corre a ~92 (el método viejo también da 92.5), no a 178.
+            ("mirlos.mp3", 92.4),
+        ];
+        let mut fails: Vec<String> = Vec::new();
+        for (name, want) in cases {
+            let path = format!("{dir}/{name}");
+            let (mut format, track_id, params) = super::open_format(&path).expect(&path);
+            let rate = params.sample_rate.expect("rate");
+            let tb = params.time_base.expect("tb");
+            let mut total = 0u64;
+            while let Ok(p) = format.next_packet() {
+                if p.track_id() == track_id {
+                    total += p.dur;
+                }
+            }
+            let t = tb.calc_time(total);
+            let samples = t.seconds * rate as u64 + (t.frac * rate as f64) as u64;
+            let got = super::detect_validated(&path, samples, rate, false, None).expect(name);
+            eprintln!("RESULTADO {name} -> {got:.2} (se espera {want})");
+            let doubled = want < 80.0 && (got - want * 2.0).abs() <= 8.0;
+            if (got - want).abs() > 2.0 || doubled {
+                fails.push(format!("{name} midió {got:.2}, se esperaba {want}±2"));
+            }
+        }
+        // La misma cumbia, estirada al tempo que se cuenta (~89), no se va al doble.
+        let mirlos = format!("{dir}/mirlos.mp3");
+        let d = super::decode_channels(&mirlos, 50, 48, 2).expect("mirlos");
+        let mono = super::to_mono(&d);
+        let factor = 92.41 / 89.0;
+        let n = (mono.len() as f64 * factor) as usize;
+        let mut slowed = vec![0f32; n];
+        for i in 0..n {
+            let src = i as f64 / factor;
+            let j = src.floor() as usize;
+            let frac = (src - j as f64) as f32;
+            let a = mono[j.min(mono.len() - 1)];
+            let b = mono[(j + 1).min(mono.len() - 1)];
+            slowed[i] = a + (b - a) * frac;
+        }
+        let got89 = super::detect_bpm(&slowed, d.rate, None).expect("89");
+        eprintln!("RESULTADO mirlos estirado a 89 -> {got89:.2}");
+        if (got89 - 89.0).abs() > 2.0 || (got89 - 178.0).abs() < 8.0 {
+            fails.push(format!("la cumbia a 89 midió {got89:.2}"));
+        }
+        assert!(fails.is_empty(), "{}", fails.join(" | "));
     }
 
     #[test]
