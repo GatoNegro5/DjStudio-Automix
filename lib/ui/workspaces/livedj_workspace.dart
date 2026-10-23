@@ -226,7 +226,10 @@ class LiveDjFolderPanel extends ConsumerWidget {
 }
 
 class LiveDjPlayerPanel extends ConsumerStatefulWidget {
-  const LiveDjPlayerPanel({super.key});
+  /// Solo pruebas: fuerza el acomodo de teléfono o de escritorio.
+  final bool? compactOverride;
+
+  const LiveDjPlayerPanel({super.key, this.compactOverride});
 
   @override
   ConsumerState<LiveDjPlayerPanel> createState() => _LiveDjPlayerPanelState();
@@ -344,7 +347,8 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
                     : GatoMixTheme.syncActive));
 
     final isShuffle = state.mixStrategy == LiveDjMixStrategy.random;
-    final compact = Platform.isAndroid || Platform.isIOS;
+    final compact =
+        widget.compactOverride ?? (Platform.isAndroid || Platform.isIOS);
     final bool playlistOn = ref.watch(liveDjPlaylistViewProvider);
     final bool menuOpen = compact ? ref.watch(mobileNavOpenProvider) : false;
     final gap = compact ? 4.0 : 10.0;
@@ -553,10 +557,8 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
         radioChips,
         SizedBox(height: compact ? 4 : gap),
         if (compact)
-          SizedBox(
-            height: 32,
-            child: Row(
-              children: [
+          Row(
+            children: [
                 Text(
                   "${pos.inMinutes.toString().padLeft(2, '0')}:${(pos.inSeconds % 60).toString().padLeft(2, '0')}",
                   style: const TextStyle(
@@ -709,8 +711,7 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
                   ),
                 ),
               ],
-            ),
-          )
+            )
         else ...[
           Row(
             children: [
@@ -874,26 +875,12 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
             ],
           ),
         ],
-        if (nextName != null) ...[
-          SizedBox(height: compact ? 3 : 6),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-            color: const Color(0xFF00FFFF).withValues(alpha: 0.14),
-            child: Text(
-              nextName,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: const Color(0xFF00FFFF),
-                fontFamily: 'Consolas',
-                fontSize: compact ? 9 : 11,
-              ),
-            ),
-          ),
-        ],
       ],
     );
+
+    final Widget? nextStrip = nextName == null
+        ? null
+        : _NextTrackStrip(label: nextName, compact: compact);
 
     final songCard = Container(
       margin: EdgeInsets.all(compact ? 6 : 15),
@@ -1130,8 +1117,148 @@ class _LiveDjPlayerPanelState extends ConsumerState<LiveDjPlayerPanel> {
                 )
               : SingleChildScrollView(child: songCard),
         ),
+        ?nextStrip,
         if (!compact) routingBar,
       ],
+    );
+  }
+}
+
+/// Franja de la pista que sigue. Va fuera del bloque que se recorta,
+/// pegada encima de la barra de mezcla, con alto propio.
+class _NextTrackStrip extends StatelessWidget {
+  final String label;
+  final bool compact;
+
+  const _NextTrackStrip({required this.label, required this.compact});
+
+  @override
+  Widget build(BuildContext context) {
+    final double size = compact ? 12 : 13;
+    final TextStyle style = TextStyle(
+      color: const Color(0xFF00FFFF),
+      fontFamily: 'Consolas',
+      fontSize: size,
+      height: 1.25,
+    );
+    return Tooltip(
+      message: label,
+      child: ColoredBox(
+        key: const Key('live-dj-next-strip'),
+        color: const Color(0xFF00FFFF).withValues(alpha: 0.14),
+        child: SizedBox(
+          width: double.infinity,
+          child: Padding(
+            padding: EdgeInsets.symmetric(
+              horizontal: compact ? 10 : 14,
+              vertical: compact ? 6 : 7,
+            ),
+            child: _NextTrackLine(label: label, style: style),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Una línea. Si el nombre cabe, se queda (con puntos suspensivos de
+/// respaldo). Si no cabe, se desplaza dentro del recorte.
+class _NextTrackLine extends StatefulWidget {
+  final String label;
+  final TextStyle style;
+
+  const _NextTrackLine({required this.label, required this.style});
+
+  @override
+  State<_NextTrackLine> createState() => _NextTrackLineState();
+}
+
+class _NextTrackLineState extends State<_NextTrackLine>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _move;
+
+  @override
+  void initState() {
+    super.initState();
+    _move = AnimationController(vsync: this);
+  }
+
+  @override
+  void dispose() {
+    _move.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final double maxW = constraints.maxWidth;
+        final TextPainter painter = TextPainter(
+          text: TextSpan(text: widget.label, style: widget.style),
+          maxLines: 1,
+          textDirection: Directionality.of(context),
+        )..layout();
+        final double textW = painter.width;
+        final double textH = painter.height;
+        painter.dispose();
+        final bool overflow = maxW.isFinite && textW > maxW + 1;
+        if (!overflow) {
+          if (_move.isAnimating) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) _move.stop();
+            });
+          }
+          return Text(
+            widget.label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: widget.style,
+          );
+        }
+        final double travel = textW - maxW;
+        final int ms = (travel * 18).round().clamp(4000, 14000);
+        if (!_move.isAnimating) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted || _move.isAnimating) return;
+            _move.duration = Duration(milliseconds: ms);
+            _move.repeat();
+          });
+        }
+        // El texto mide su ancho real y se desliza; el recorte impide
+        // que pinte encima de la barra de mezcla.
+        return SizedBox(
+          width: maxW,
+          height: textH,
+          child: ClipRect(
+            child: AnimatedBuilder(
+              animation: _move,
+              builder: (context, _) {
+                final double t = Curves.easeInOut.transform(
+                  _move.value < 0.5 ? _move.value * 2 : (1 - _move.value) * 2,
+                );
+                return Transform.translate(
+                  offset: Offset(-travel * t, 0),
+                  child: OverflowBox(
+                    alignment: Alignment.centerLeft,
+                    minWidth: textW,
+                    maxWidth: textW,
+                    minHeight: textH,
+                    maxHeight: textH,
+                    child: Text(
+                      widget.label,
+                      maxLines: 1,
+                      softWrap: false,
+                      overflow: TextOverflow.visible,
+                      style: widget.style,
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        );
+      },
     );
   }
 }
