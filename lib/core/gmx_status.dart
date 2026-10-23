@@ -33,6 +33,9 @@ class GmxSnapshot {
   final bool allowKaraoke;
   final bool megamixBySize;
 
+  /// `decode_errors=N` cuando el audio no se recodificó.
+  final String reason;
+
   const GmxSnapshot({
     this.type = '',
     this.nameOk = false,
@@ -50,6 +53,7 @@ class GmxSnapshot {
     this.karaokeFile = false,
     this.allowKaraoke = false,
     this.megamixBySize = false,
+    this.reason = '',
   });
 
   bool get isMegamix =>
@@ -74,6 +78,9 @@ class SongAudit {
   /// Letra ya cortada y `.lrc` sin marca: no se toca, va al Laboratorio.
   final bool lyricsNeedLab;
 
+  /// Motivo de audio intacto, p. ej. `decode_errors=3`.
+  final String reason;
+
   const SongAudit({
     required this.path,
     required this.fileName,
@@ -89,6 +96,7 @@ class SongAudit {
     required this.backup,
     required this.sealed,
     required this.lyricsNeedLab,
+    required this.reason,
   });
 
   bool get audioRaw => !sealed && !lufsDoneLike && trim == AuditCell.bad;
@@ -113,7 +121,8 @@ class SongAudit {
   String csvLine() {
     String g(AuditCell c) => auditGlyph(c);
     final String tipo = megamix ? 'MEGAMIX' : 'SONG';
-    return '$fileName;$tipo;${g(name)};${g(lyrics)};${g(trim)};${g(shift)};${g(bpm)};${g(lufs)};${g(cues)};${g(karaoke)};${g(backup)}';
+    final String motivo = reason.replaceAll(';', ',');
+    return '$fileName;$tipo;${g(name)};${g(lyrics)};${g(trim)};${g(shift)};${g(bpm)};${g(lufs)};${g(cues)};${g(karaoke)};${g(backup)};$motivo';
   }
 }
 
@@ -184,5 +193,6 @@ SongAudit auditSong(String path, String fileName, GmxSnapshot s) {
     backup: backup,
     sealed: s.sealed,
     lyricsNeedLab: lyricsNeedLab,
+    reason: s.reason,
   );
 }

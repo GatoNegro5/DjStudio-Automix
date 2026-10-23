@@ -396,9 +396,56 @@ fn edge_silence_ms(mono: &[f32], rate: u32) -> (u64, u64) {
     }
 }
 
+/// 78–165, doblando o partiendo. Igual que el plegado histórico de `detect_bpm`.
+fn fold_bpm_band(mut bpm: f64) -> f64 {
+    while bpm < 78.0 {
+        bpm *= 2.0;
+    }
+    while bpm > 165.0 {
+        bpm /= 2.0;
+    }
+    bpm
+}
+
+fn near_bpm(measured: f64, reference: f64) -> bool {
+    reference > 0.0 && (measured - reference).abs() <= reference * 0.02
+}
+
+/// Entre el lag ganador y sus vecinos ×4/3 y ×3/4, si uno cae en el TBPM
+/// previo (±2 %) se queda con ese. Sin TBPM previo no elige.
+fn lag_matching_prior(
+    best_lag: f64,
+    scores: &[f64],
+    env_rate: f64,
+    min_lag: usize,
+    max_lag: usize,
+    prior: f64,
+) -> Option<f64> {
+    let mut chosen: Option<(f64, f64)> = None;
+    for factor in [1.0_f64, 4.0 / 3.0, 3.0 / 4.0] {
+        let ilag = (best_lag * factor).round() as usize;
+        if ilag < min_lag || ilag > max_lag || ilag >= scores.len() {
+            continue;
+        }
+        let bpm = 60.0 * env_rate / ilag as f64;
+        if !near_bpm(bpm, prior) && !near_bpm(fold_bpm_band(bpm), prior) {
+            continue;
+        }
+        let score = scores[ilag];
+        if score <= 0.0 {
+            continue;
+        }
+        if chosen.map(|(s, _)| score > s).unwrap_or(true) {
+            chosen = Some((score, ilag as f64));
+        }
+    }
+    chosen.map(|(_, lag)| lag)
+}
+
 /// BPM por autocorrelación del flujo de onsets, con refuerzo de armónicos y
 /// plegado a 78-165. Usa un tramo central (hasta 80 s) de la pista.
-fn detect_bpm(mono: &[f32], rate: u32) -> Option<f64> {
+/// `prior` es el TBPM ya escrito, si es válido: desempata ×4/3 y ×3/4.
+fn detect_bpm(mono: &[f32], rate: u32, prior: Option<f64>) -> Option<f64> {
     let total_s = mono.len() as f64 / rate as f64;
     let (from, len) = if total_s > 100.0 { (20.0, 80.0) } else { (0.0, total_s) };
     let s0 = (from * rate as f64) as usize;
@@ -464,14 +511,12 @@ fn detect_bpm(mono: &[f32], rate: u32) -> Option<f64> {
             lag_f += 0.5 * (a - c) / denom;
         }
     }
-    let mut bpm = 60.0 * env_rate / lag_f;
-    while bpm < 78.0 {
-        bpm *= 2.0;
+    if let Some(want) = prior.and_then(fix_bpm_range) {
+        if let Some(lag) = lag_matching_prior(lag_f, &scores, env_rate, min_lag, max_lag, want) {
+            lag_f = lag;
+        }
     }
-    while bpm > 165.0 {
-        bpm /= 2.0;
-    }
-    Some(bpm)
+    Some(fold_bpm_band(60.0 * env_rate / lag_f))
 }
 
 /// Rejilla de golpes de un tramo: BPM medido y posición (ms absolutos en la
@@ -491,7 +536,7 @@ pub async fn beat_grid(input_path: String, from_ms: u64, span_secs: u32) -> Beat
         Err(_) => return none,
     };
     let mono = to_mono(&d);
-    let bpm = match detect_bpm(&mono, d.rate) {
+    let bpm = match detect_bpm(&mono, d.rate, None) {
         Some(b) if b > 40.0 => b,
         _ => return none,
     };
@@ -563,7 +608,7 @@ fn analyze_file(input_path: &str) -> Result<Analysis, String> {
     let lufs = integrated_lufs(&d);
     let mono = to_mono(&d);
     let (lead_ms, tail_ms) = edge_silence_ms(&mono, d.rate);
-    let bpm = detect_bpm(&mono, d.rate);
+    let bpm = detect_bpm(&mono, d.rate, None);
     Ok(Analysis { lufs, peak, lead_ms, tail_ms, bpm })
 }
 
@@ -668,7 +713,7 @@ pub async fn auto_detect_and_inject_bpm(input_path: String) -> Result<f64, Strin
     }
     let d = decode_channels(&input_path, 0, 150, 2).map_err(|e| format!("Fallo DSP: {}", e))?;
     let mono = to_mono(&d);
-    let bpm = detect_bpm(&mono, d.rate).ok_or("Anomalía determinista: Sin periodicidad".to_string())?;
+    let bpm = detect_bpm(&mono, d.rate, None).ok_or("Anomalía determinista: Sin periodicidad".to_string())?;
     let rounded = bpm.round();
     if is_mp3(&input_path) {
         let mut tag = Tag::read_from_path(&input_path).unwrap_or_else(|_| Tag::new());
@@ -1097,6 +1142,8 @@ const KEY_BPM_SCOPE: &str = "GMX_BPM_SCOPE";
 const KEY_LUFS_DONE: &str = "GMX_LUFS_DONE";
 const KEY_K: &str = "GMX_K";
 const KEY_BACKUP: &str = "GMX_BACKUP";
+/// Motivo cuando el audio no se toca. Ej.: `decode_errors=3`.
+const KEY_REASON: &str = "GMX_REASON";
 const SCHEMA_V2: &str = "2";
 const TARGET_LUFS: f64 = -14.0;
 const HEAD_KEEP_MS: u64 = 150;
@@ -1162,6 +1209,8 @@ struct StreamMeasure {
     k_ms: Vec<f64>,
     /// Pico verdadero medido (4×). Por encima de −1 dBTP obliga a recodificar.
     true_peak: f32,
+    /// Paquetes MP3 que el decodificador rechazó. >0: no se recodifica.
+    decode_errors: u32,
 }
 
 fn consider_peak(hist: &mut [f32; 4], sample: f32, peak: &mut f32) {
@@ -1183,15 +1232,18 @@ fn consider_peak(hist: &mut [f32; 4], sample: f32, peak: &mut f32) {
     }
 }
 
+/// Decodifica la pista. Devuelve cuántos paquetes se descartaron por
+/// `DecodeError` (el audio de esos paquetes no entra en el PCM).
 fn decode_frames(
     input_path: &str,
     mut on_frame: impl FnMut(u32, usize, &[f32]) -> Result<(), String>,
-) -> Result<(), String> {
+) -> Result<u32, String> {
     let (mut format, track_id, params) = open_format(input_path)?;
     let rate = params.sample_rate.ok_or("Sin frecuencia de muestreo")?;
     let mut decoder = symphonia::default::get_codecs()
         .make(&params, &DecoderOptions::default())
         .map_err(|e| format!("Códec no soportado: {e}"))?;
+    let mut skipped = 0u32;
     loop {
         let packet = match format.next_packet() {
             Ok(p) => p,
@@ -1208,11 +1260,14 @@ fn decode_frames(
                 buf.copy_interleaved_ref(decoded);
                 on_frame(rate, n_ch, buf.samples())?;
             }
-            Err(SymError::DecodeError(_)) => continue,
+            Err(SymError::DecodeError(_)) => {
+                skipped += 1;
+                continue;
+            }
             Err(_) => break,
         }
     }
-    Ok(())
+    Ok(skipped)
 }
 
 fn measure_stream(input_path: &str) -> Result<StreamMeasure, String> {
@@ -1230,7 +1285,7 @@ fn measure_stream(input_path: &str) -> Result<StreamMeasure, String> {
     let mut hl = [0f32; 4];
     let mut hr = [0f32; 4];
 
-    decode_frames(input_path, |r, nch, inter| {
+    let decode_errors = decode_frames(input_path, |r, nch, inter| {
         if filt.is_none() {
             rate = r;
             channels = nch.max(1);
@@ -1268,7 +1323,15 @@ fn measure_stream(input_path: &str) -> Result<StreamMeasure, String> {
     if samples == 0 || rate == 0 {
         return Err("Sin audio decodificable".to_string());
     }
-    Ok(StreamMeasure { rate, channels, samples, mono_ms, k_ms, true_peak: peak })
+    Ok(StreamMeasure {
+        rate,
+        channels,
+        samples,
+        mono_ms,
+        k_ms,
+        true_peak: peak,
+        decode_errors,
+    })
 }
 
 fn edges_from(mono_ms: &[f32]) -> (u64, u64) {
@@ -1344,16 +1407,135 @@ fn fix_bpm_range(bpm: f64) -> Option<f64> {
     }
 }
 
-fn average_kbps(path: &str, samples: u64, rate: u32) -> u32 {
-    let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    if samples == 0 || rate == 0 || len == 0 {
+/// El medido es el mismo tempo que el TBPM, corrido ×4/3, ×3/4, ×2 o ÷2.
+fn tempo_alias(measured: f64, existing: f64) -> bool {
+    const RATIOS: [f64; 4] = [4.0 / 3.0, 3.0 / 4.0, 2.0, 0.5];
+    RATIOS.iter().any(|r| {
+        let expect = existing * r;
+        expect > 0.0 && (measured - expect).abs() <= expect * 0.02
+    })
+}
+
+/// Si el TBPM ya es válido y el medido es un alias armónico, se conserva el TBPM.
+fn resolve_bpm(measured: Option<f64>, existing: f64) -> f64 {
+    let existing_ok = fix_bpm_range(existing);
+    let measured_ok = measured.and_then(fix_bpm_range);
+    match (measured_ok, existing_ok) {
+        (Some(m), Some(e)) if tempo_alias(m, e) => e,
+        (Some(m), _) => m,
+        (None, Some(e)) => e,
+        _ => 0.0,
+    }
+}
+
+fn syncsafe_u32(b: &[u8]) -> usize {
+    ((b[0] as usize & 0x7f) << 21)
+        | ((b[1] as usize & 0x7f) << 14)
+        | ((b[2] as usize & 0x7f) << 7)
+        | (b[3] as usize & 0x7f)
+}
+
+fn id3v2_prefix_len(data: &[u8]) -> usize {
+    if data.len() < 10 || &data[0..3] != b"ID3" {
+        return 0;
+    }
+    let mut n = 10 + syncsafe_u32(&data[6..10]);
+    if data[5] & 0x10 != 0 {
+        n += 10;
+    }
+    if n > data.len() {
+        0
+    } else {
+        n
+    }
+}
+
+fn ape_suffix_len(data: &[u8], end: usize) -> usize {
+    if end < 32 || end > data.len() {
+        return 0;
+    }
+    let f = end - 32;
+    if &data[f..f + 8] != b"APETAGEX" {
+        return 0;
+    }
+    let size = u32::from_le_bytes(data[f + 12..f + 16].try_into().unwrap_or([0; 4])) as usize;
+    let flags = u32::from_le_bytes(data[f + 20..f + 24].try_into().unwrap_or([0; 4]));
+    let mut n = size;
+    if flags & 0x8000_0000 != 0 {
+        n += 32;
+    }
+    if n == 0 || n > end {
+        0
+    } else {
+        n
+    }
+}
+
+/// Inicio y fin (exclusivo) de los bytes de audio: fuera quedan ID3v2, ID3v1 y APE.
+fn audio_byte_range(data: &[u8]) -> (usize, usize) {
+    let mut start = id3v2_prefix_len(data);
+    let mut end = data.len();
+    if end.saturating_sub(start) >= 128 && &data[end - 128..end - 125] == b"TAG" {
+        end -= 128;
+    }
+    end = end.saturating_sub(ape_suffix_len(data, end));
+    if start > end {
+        start = end;
+    }
+    (start, end)
+}
+
+fn kbps_of_audio(audio_len: u64, samples: u64, rate: u32) -> u32 {
+    if samples == 0 || rate == 0 || audio_len == 0 {
         return 128;
     }
     let secs = samples as f64 / rate as f64;
     if secs < 0.4 {
         return 128;
     }
-    ((len as f64 * 8.0) / secs / 1000.0).round() as u32
+    ((audio_len as f64 * 8.0) / secs / 1000.0).round() as u32
+}
+
+/// Bitrate del primer frame MPEG válido (CBR del codec). No mira el tamaño del archivo.
+fn mpeg_bitrate_kbps(audio: &[u8]) -> Option<u32> {
+    const V1_L3: [u32; 16] = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0];
+    const V2_L3: [u32; 16] = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0];
+    let last = audio.len().saturating_sub(4).min(8192);
+    let mut i = 0usize;
+    while i < last {
+        if audio[i] == 0xFF && audio[i + 1] & 0xE0 == 0xE0 {
+            let ver = (audio[i + 1] >> 3) & 0x03;
+            let layer = (audio[i + 1] >> 1) & 0x03;
+            let br = (audio[i + 2] >> 4) & 0x0F;
+            if ver != 0x01 && layer == 0x01 && br != 0 && br != 0x0F {
+                let table = if ver == 0x03 { &V1_L3 } else { &V2_L3 };
+                let kbps = table[br as usize];
+                if kbps > 0 {
+                    return Some(kbps);
+                }
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// El tamaño no puede subir el bitrate por encima del que declara el frame.
+fn cap_kbps(from_size: u32, codec: Option<u32>) -> u32 {
+    match codec {
+        Some(c) if from_size > c => c,
+        _ => from_size,
+    }
+}
+
+fn average_kbps(path: &str, samples: u64, rate: u32) -> u32 {
+    let data = match std::fs::read(path) {
+        Ok(d) if !d.is_empty() => d,
+        _ => return 128,
+    };
+    let (start, end) = audio_byte_range(&data);
+    let from_size = kbps_of_audio((end - start) as u64, samples, rate);
+    cap_kbps(from_size, mpeg_bitrate_kbps(&data[start..end]))
 }
 
 struct LookLim {
@@ -1500,7 +1682,13 @@ fn encode_span(
     Ok(gap.residual_ms)
 }
 
-fn detect_validated(path: &str, samples: u64, rate: u32, intro: bool) -> Option<f64> {
+fn detect_validated(
+    path: &str,
+    samples: u64,
+    rate: u32,
+    intro: bool,
+    prior: Option<f64>,
+) -> Option<f64> {
     let (from, span) = if samples == 0 || rate == 0 {
         (0u32, if intro { 60u32 } else { 90u32 })
     } else {
@@ -1514,7 +1702,7 @@ fn detect_validated(path: &str, samples: u64, rate: u32, intro: bool) -> Option<
         }
     };
     let d = decode_channels(path, from, span.max(8), 2).ok()?;
-    let bpm = detect_bpm(&to_mono(&d), d.rate)?;
+    let bpm = detect_bpm(&to_mono(&d), d.rate, prior)?;
     fix_bpm_range(bpm)
 }
 
@@ -1548,6 +1736,7 @@ fn gmx_key_ok(key: &str) -> bool {
             | KEY_LUFS_DONE
             | KEY_K
             | KEY_BACKUP
+            | KEY_REASON
     )
 }
 
@@ -1570,6 +1759,8 @@ pub struct GmxMarks {
     pub backup: bool,
     pub sealed: bool,
     pub lead_ms: i32,
+    /// Vacío, o `decode_errors=N` si el audio no se recodificó por paquetes rotos.
+    pub reason: String,
 }
 
 pub fn read_gmx_marks(input_path: String) -> GmxMarks {
@@ -1591,6 +1782,7 @@ pub fn read_gmx_marks(input_path: String) -> GmxMarks {
         backup: false,
         sealed: false,
         lead_ms: -1,
+        reason: String::new(),
     };
     if !is_mp3(&input_path) {
         return empty;
@@ -1619,6 +1811,7 @@ pub fn read_gmx_marks(input_path: String) -> GmxMarks {
         backup: flag_on(&tag, KEY_BACKUP),
         sealed,
         lead_ms: opt_i32(&tag, KEY_LEAD),
+        reason: ext_text(&tag, KEY_REASON).unwrap_or_default(),
     };
     marks
 }
@@ -1740,10 +1933,24 @@ pub fn master_rewrite(
 
     // Recodifica solo si hay corte de verdad (≥ 50 ms), el LUFS se aleja más
     // de 0,5 dB, o el pico pasa de −1 dBTP. Si no, solo se escriben marcas.
+    // Un paquete MP3 rechazado deja el audio intacto: el PCM ya no es el archivo.
+    let decode_errors = measured.as_ref().map(|m| m.decode_errors).unwrap_or(0);
+    let blocked = decode_errors > 0;
     let peak = measured.as_ref().map(|m| m.true_peak).unwrap_or(0.0);
     let delta_lufs = (TARGET_LUFS - lufs).abs();
-    let lufs_encode = do_lufs && lufs >= -60.0 && (delta_lufs > 0.5 || peak > TP_CEILING);
-    let lufs_seal = do_lufs && lufs >= -60.0 && !lufs_encode;
+    let mut lufs_encode = do_lufs && lufs >= -60.0 && (delta_lufs > 0.5 || peak > TP_CEILING);
+    let mut lufs_seal = do_lufs && lufs >= -60.0 && !lufs_encode;
+    if blocked {
+        cut_head_ms = 0;
+        cut_tail_ms = 0;
+        if let Some(m) = &measured {
+            let (lead, tail) = edges_from(&m.mono_ms);
+            new_lead_ms = lead;
+            new_tail_ms = tail;
+        }
+        lufs_encode = false;
+        lufs_seal = false;
+    }
     let lufs_applied = lufs_encode;
     let gain = if lufs_encode { gain_for(lufs, true) } else { 1.0 };
 
@@ -1801,11 +2008,21 @@ pub fn master_rewrite(
         .and_then(|f| f.content().text())
         .map(num_from)
         .unwrap_or(0.0);
-    let bpm = detect_validated(&bpm_path, samples_for_bpm, rate_for_bpm, intro_bpm)
-        .or_else(|| fix_bpm_range(existing_bpm))
-        .unwrap_or(0.0);
+    // Con paquetes rotos el medido sale de un PCM incompleto: no pisa el TBPM.
+    let measured_bpm = if blocked {
+        None
+    } else {
+        detect_validated(
+            &bpm_path,
+            samples_for_bpm,
+            rate_for_bpm,
+            intro_bpm,
+            fix_bpm_range(existing_bpm),
+        )
+    };
+    let bpm = resolve_bpm(measured_bpm, existing_bpm);
 
-    if do_trim {
+    if do_trim && !blocked {
         set_ext(&mut tag, KEY_TRIM, cut_head_ms.to_string());
         set_ext(&mut tag, KEY_TRIM_TAIL, cut_tail_ms.to_string());
         set_ext(&mut tag, KEY_LEAD, new_lead_ms.to_string());
@@ -1829,6 +2046,11 @@ pub fn master_rewrite(
             KEY_BPM_SCOPE,
             if intro_bpm { "INTRO" } else { "FULL" }.to_string(),
         );
+    }
+    if blocked {
+        set_ext(&mut tag, KEY_REASON, format!("decode_errors={decode_errors}"));
+    } else {
+        tag.remove_extended_text(Some(KEY_REASON), None);
     }
     set_ext(&mut tag, KEY_V, SCHEMA_V2.to_string());
 
@@ -2428,6 +2650,160 @@ mod gapless_tests {
 
     fn rate_window(len: usize) -> usize {
         len.min(44100)
+    }
+}
+
+#[cfg(test)]
+mod master_guard_tests {
+    use super::*;
+
+    #[test]
+    fn el_tbpm_previo_gana_si_el_medido_es_alias() {
+        assert_eq!(resolve_bpm(Some(144.0), 108.0), 108.0);
+        assert_eq!(resolve_bpm(Some(147.0), 110.0), 110.0);
+        assert_eq!(resolve_bpm(Some(140.0), 105.0), 105.0);
+        assert_eq!(resolve_bpm(Some(81.0), 108.0), 108.0);
+        assert_eq!(resolve_bpm(Some(180.0), 90.0), 90.0);
+        assert_eq!(resolve_bpm(Some(90.0), 180.0), 180.0);
+        // 3 % ya no es el alias: se queda el medido.
+        assert_eq!(resolve_bpm(Some(148.4), 108.0), 148.4);
+        assert_eq!(resolve_bpm(Some(120.0), 108.0), 120.0);
+        assert_eq!(resolve_bpm(None, 108.0), 108.0);
+        assert_eq!(resolve_bpm(Some(144.0), 0.0), 144.0);
+    }
+
+    #[test]
+    fn el_lag_4_3_se_queda_con_el_tbpm_previo() {
+        let env_rate = 200.0;
+        let lag_144 = ((60.0 * env_rate / 144.0) as f64).round() as usize;
+        let lag_108 = ((60.0 * env_rate / 108.0) as f64).round() as usize;
+        let mut scores = vec![0.0; lag_108 + 8];
+        scores[lag_144] = 10.0;
+        scores[lag_108] = 4.0;
+        let picked = lag_matching_prior(
+            lag_144 as f64,
+            &scores,
+            env_rate,
+            20,
+            lag_108 + 4,
+            108.0,
+        )
+        .unwrap();
+        let bpm = 60.0 * env_rate / picked;
+        assert!(
+            near_bpm(bpm, 108.0),
+            "eligió {bpm} (lag {picked}) en vez del TBPM 108"
+        );
+        assert!(bpm < 120.0, "no debía quedarse en 144");
+    }
+
+    fn id3v2(payload: usize) -> Vec<u8> {
+        let mut v = vec![b'I', b'D', b'3', 4, 0, 0];
+        let s = payload;
+        v.push(((s >> 21) & 0x7f) as u8);
+        v.push(((s >> 14) & 0x7f) as u8);
+        v.push(((s >> 7) & 0x7f) as u8);
+        v.push((s & 0x7f) as u8);
+        v.extend(std::iter::repeat(0xAB).take(payload));
+        v
+    }
+
+    fn ape_footer() -> [u8; 32] {
+        let mut f = [0u8; 32];
+        f[0..8].copy_from_slice(b"APETAGEX");
+        f[8..12].copy_from_slice(&2000u32.to_le_bytes());
+        f[12..16].copy_from_slice(&32u32.to_le_bytes());
+        f
+    }
+
+    #[test]
+    fn el_kbps_ignora_id3_y_ape_y_no_sube_del_frame() {
+        let secs = 10.0;
+        let samples = (44100.0 * secs) as u64;
+        let audio_len = 200_000usize;
+        let mut audio = vec![0u8; audio_len];
+        audio[0..4].copy_from_slice(&[0xFF, 0xFB, 0xA0, 0x00]);
+        let mut file = id3v2(140_000);
+        file.extend_from_slice(&audio);
+        file.extend_from_slice(&ape_footer());
+        file.extend_from_slice(b"TAG");
+        file.extend(std::iter::repeat(0u8).take(125));
+
+        let (start, end) = audio_byte_range(&file);
+        assert_eq!(end - start, audio_len);
+        let from_audio = kbps_of_audio((end - start) as u64, samples, 44100);
+        assert_eq!(from_audio, 160);
+        let naive = kbps_of_audio(file.len() as u64, samples, 44100);
+        assert!(naive > 250, "con la carátula el promedio inflado es {naive}");
+        let capped = cap_kbps(from_audio, mpeg_bitrate_kbps(&file[start..end]));
+        assert_eq!(capped, 160);
+        assert!(matches!(
+            bitrate_at_most(capped),
+            mp3lame_encoder::Bitrate::Kbps160
+        ));
+        assert!(matches!(
+            bitrate_at_most(naive),
+            mp3lame_encoder::Bitrate::Kbps256
+        ));
+        // El frame dice 160: un promedio inflado no puede subir a 256.
+        assert_eq!(cap_kbps(naive, Some(160)), 160);
+        // Tampoco se sube un promedio más bajo hasta el frame.
+        assert_eq!(cap_kbps(128, Some(160)), 128);
+    }
+
+    #[test]
+    fn un_paquete_roto_no_recodifica_y_deja_el_motivo() {
+        let dir = std::env::temp_dir().join(format!("gmx_badpack_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rota.mp3");
+        let path_s = path.to_string_lossy().to_string();
+        let rate = 44100u32;
+        let mut pcm = vec![0f32; rate as usize];
+        for (i, s) in pcm.iter_mut().enumerate() {
+            *s = (i as f32 * 0.07).sin() * 0.4;
+        }
+        let mut sink = Mp3Sink::new(&path_s, rate, false, 160).unwrap();
+        sink.push(&pcm, 1).unwrap();
+        sink.finish().unwrap();
+
+        let mut bytes = std::fs::read(&path_s).unwrap();
+        let (a0, a1) = audio_byte_range(&bytes);
+        let audio_before = bytes[a0..a1].to_vec();
+        let mid = a0 + (a1 - a0) / 2;
+        let end = (mid + 400).min(a1);
+        for b in &mut bytes[mid..end] {
+            *b = 0;
+        }
+        std::fs::write(&path_s, &bytes).unwrap();
+
+        let skipped = decode_frames(&path_s, |_r, _n, _s| Ok(())).unwrap();
+        assert!(skipped > 0, "el MP3 roto no produjo DecodeError");
+
+        let mut tag = Tag::new();
+        tag.set_text("TBPM", "108");
+        tag.write_to_path(&path_s, Version::Id3v24).unwrap();
+        let before = std::fs::read(&path_s).unwrap();
+        let (b0, b1) = audio_byte_range(&before);
+        let audio_tagged = before[b0..b1].to_vec();
+
+        let rw = master_rewrite(path_s.clone(), true, true, false, -1, -1).unwrap();
+        assert!(!rw.rewritten, "no debía recodificar");
+        assert_eq!(rw.trim_head_ms, 0);
+        assert!(!rw.lufs_applied);
+
+        let after = std::fs::read(&path_s).unwrap();
+        let (c0, c1) = audio_byte_range(&after);
+        assert_eq!(&after[c0..c1], audio_tagged.as_slice());
+        let marks = read_gmx_marks(path_s.clone());
+        assert!(
+            marks.reason.starts_with("decode_errors="),
+            "motivo={}",
+            marks.reason
+        );
+        assert_eq!(marks.trim_ms, -1, "no se sella un corte que no se hizo");
+        assert!(!marks.lufs_done);
+        let _ = audio_before;
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

@@ -595,6 +595,14 @@ class DspNlpWorkspace extends ConsumerWidget {
                   },
                 );
                 currentPath = outcome.path;
+                if (outcome.detail.contains('decode_errors')) {
+                  pipe.updateProgress(
+                    finished + 1,
+                    total,
+                    originalName,
+                    'Audio intacto · ${outcome.detail}',
+                  );
+                }
                 if (stopAll || checkAbort()) {
                   stopAll = true;
                   return;
@@ -1568,7 +1576,7 @@ class DspNlpWorkspace extends ConsumerWidget {
       );
       final buffer = StringBuffer();
       buffer.writeln(
-        'ARCHIVO;TIPO;NOMBRE;LETRA;CORTE;SHIFT;BPM;LUFS;CUES;K;BACKUP',
+        'ARCHIVO;TIPO;NOMBRE;LETRA;CORTE;SHIFT;BPM;LUFS;CUES;K;BACKUP;MOTIVO',
       );
       for (final SongAudit row in rows) {
         buffer.writeln(row.csvLine());
@@ -1997,6 +2005,7 @@ class DspNlpWorkspace extends ConsumerWidget {
               lrcManual: manual,
               lrcShiftFile: lrcShiftMs(lrcText) != null,
               hasManualCue: meta?.isManualCue ?? false,
+              reason: marks.reason,
               karaokeFile: File(kPath).existsSync() || marks.karaoke,
               allowKaraoke: allowKaraoke,
               megamixBySize: file.lengthSync() > MasterTrack.megamixBytes,
@@ -2168,6 +2177,7 @@ class DspNlpWorkspace extends ConsumerWidget {
                 h('Cues'),
                 h('_K'),
                 h('Respaldo'),
+                h('Motivo'),
               ],
             ),
             for (final SongAudit row in rows)
@@ -2184,6 +2194,7 @@ class DspNlpWorkspace extends ConsumerWidget {
                   c(auditGlyph(row.cues)),
                   c(auditGlyph(row.karaoke)),
                   c(auditGlyph(row.backup)),
+                  c(row.reason),
                 ],
               ),
           ],

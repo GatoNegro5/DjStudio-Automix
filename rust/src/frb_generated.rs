@@ -1077,6 +1077,7 @@ impl SseDecode for crate::api::core_dsp::GmxMarks {
         let mut var_backup = <bool>::sse_decode(deserializer);
         let mut var_sealed = <bool>::sse_decode(deserializer);
         let mut var_leadMs = <i32>::sse_decode(deserializer);
+        let mut var_reason = <String>::sse_decode(deserializer);
         return crate::api::core_dsp::GmxMarks {
             version: var_version,
             track_type: var_trackType,
@@ -1095,6 +1096,7 @@ impl SseDecode for crate::api::core_dsp::GmxMarks {
             backup: var_backup,
             sealed: var_sealed,
             lead_ms: var_leadMs,
+            reason: var_reason,
         };
     }
 }
@@ -1336,6 +1338,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::core_dsp::GmxMarks {
             self.backup.into_into_dart().into_dart(),
             self.sealed.into_into_dart().into_dart(),
             self.lead_ms.into_into_dart().into_dart(),
+            self.reason.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -1457,6 +1460,7 @@ impl SseEncode for crate::api::core_dsp::GmxMarks {
         <bool>::sse_encode(self.backup, serializer);
         <bool>::sse_encode(self.sealed, serializer);
         <i32>::sse_encode(self.lead_ms, serializer);
+        <String>::sse_encode(self.reason, serializer);
     }
 }
 

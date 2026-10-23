@@ -223,6 +223,9 @@ class GmxMarks {
   final bool sealed;
   final int leadMs;
 
+  /// Vacío, o `decode_errors=N` si el audio no se recodificó.
+  final String reason;
+
   const GmxMarks({
     required this.version,
     required this.trackType,
@@ -241,6 +244,7 @@ class GmxMarks {
     required this.backup,
     required this.sealed,
     required this.leadMs,
+    required this.reason,
   });
 
   @override
@@ -261,7 +265,8 @@ class GmxMarks {
       karaoke.hashCode ^
       backup.hashCode ^
       sealed.hashCode ^
-      leadMs.hashCode;
+      leadMs.hashCode ^
+      reason.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -284,7 +289,8 @@ class GmxMarks {
           karaoke == other.karaoke &&
           backup == other.backup &&
           sealed == other.sealed &&
-          leadMs == other.leadMs;
+          leadMs == other.leadMs &&
+          reason == other.reason;
 }
 
 /// Resultado de reescribir una pista. `trim_head_ms` es lo cortado EN ESTA

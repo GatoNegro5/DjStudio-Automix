@@ -1071,8 +1071,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   GmxMarks dco_decode_gmx_marks(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 17)
-      throw Exception('unexpected arr length: expect 17 but see ${arr.length}');
+    if (arr.length != 18)
+      throw Exception('unexpected arr length: expect 18 but see ${arr.length}');
     return GmxMarks(
       version: dco_decode_String(arr[0]),
       trackType: dco_decode_String(arr[1]),
@@ -1091,6 +1091,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       backup: dco_decode_bool(arr[14]),
       sealed: dco_decode_bool(arr[15]),
       leadMs: dco_decode_i_32(arr[16]),
+      reason: dco_decode_String(arr[17]),
     );
   }
 
@@ -1221,6 +1222,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_backup = sse_decode_bool(deserializer);
     var var_sealed = sse_decode_bool(deserializer);
     var var_leadMs = sse_decode_i_32(deserializer);
+    var var_reason = sse_decode_String(deserializer);
     return GmxMarks(
       version: var_version,
       trackType: var_trackType,
@@ -1239,6 +1241,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       backup: var_backup,
       sealed: var_sealed,
       leadMs: var_leadMs,
+      reason: var_reason,
     );
   }
 
@@ -1384,6 +1387,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self.backup, serializer);
     sse_encode_bool(self.sealed, serializer);
     sse_encode_i_32(self.leadMs, serializer);
+    sse_encode_String(self.reason, serializer);
   }
 
   @protected

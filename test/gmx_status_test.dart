@@ -65,6 +65,14 @@ void main() {
     expect(auditGlyph(row.karaoke), '—');
   });
 
+  test('el motivo de paquetes rotos queda en el informe', () {
+    final SongAudit row = _row(
+      const GmxSnapshot(reason: 'decode_errors=4'),
+    );
+    expect(row.reason, 'decode_errors=4');
+    expect(row.csvLine(), endsWith(';decode_errors=4'));
+  });
+
   test('RETRY de letra es un faltante, no un megamix', () {
     final SongAudit row = _row(
       const GmxSnapshot(lyr: 'RETRY', lrcExists: true),

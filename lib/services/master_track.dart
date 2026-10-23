@@ -125,6 +125,9 @@ class MasterTrack {
 
     onStage?.call('WATERMARK_ID3');
     final after = await rust_dsp.readGmxMarks(inputPath: current);
+    if (after.reason.isNotEmpty) {
+      detail = detail.isEmpty ? after.reason : '$detail · ${after.reason}';
+    }
     final bool lyricsOk = mega ||
         after.lyr == 'SYNC' ||
         after.lyr == 'PLAIN' ||
