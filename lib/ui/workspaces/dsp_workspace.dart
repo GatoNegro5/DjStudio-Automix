@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:convert';
 import 'package:flutter/material.dart';
@@ -569,27 +570,40 @@ class DspNlpWorkspace extends ConsumerWidget {
               }
               (checkpoint['processed'] as List).add(originalName);
             } else {
-              final outcome = await MasterTrack.run(
-                ref: ref,
-                path: currentPath,
-                withLyrics: true,
-                onStage: (String stage) {
-                  currentStage = stage;
-                  pipe.updateProgress(
-                    finished + 1,
-                    total,
-                    originalName,
-                    _masterStageLabel(stage),
-                  );
-                },
-              );
-              currentPath = outcome.path;
-              if (stopAll || checkAbort()) {
-                stopAll = true;
-                return;
-              }
-              if (outcome.lyric != LyricStatus.retry) {
-                (checkpoint['processed'] as List).add(originalName);
+              currentStage = 'METADATA_CLEANUP';
+              final Timer tick = Timer.periodic(const Duration(seconds: 1), (_) {
+                pipe.updateProgress(
+                  finished + 1,
+                  total,
+                  originalName,
+                  '${_masterStageLabel(currentStage)} · ${trackClock.elapsed.inSeconds}s',
+                );
+              });
+              try {
+                final outcome = await MasterTrack.run(
+                  ref: ref,
+                  path: currentPath,
+                  withLyrics: true,
+                  onStage: (String stage) {
+                    currentStage = stage;
+                    pipe.updateProgress(
+                      finished + 1,
+                      total,
+                      originalName,
+                      '${_masterStageLabel(stage)} · ${trackClock.elapsed.inSeconds}s',
+                    );
+                  },
+                );
+                currentPath = outcome.path;
+                if (stopAll || checkAbort()) {
+                  stopAll = true;
+                  return;
+                }
+                if (outcome.lyric != LyricStatus.retry) {
+                  (checkpoint['processed'] as List).add(originalName);
+                }
+              } finally {
+                tick.cancel();
               }
             }
             consecutiveErrors = 0;
@@ -910,6 +924,32 @@ class DspNlpWorkspace extends ConsumerWidget {
     WidgetRef ref,
     String targetPath,
   ) async {
+    final bool? go = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF121212),
+        title: const Text(
+          'Reset de fábrica',
+          style: TextStyle(color: Colors.white, fontSize: 16),
+        ),
+        content: const Text(
+          'Reset no devuelve el audio original; para eso use Restaurar.',
+          style: TextStyle(color: Colors.white70, fontSize: 13),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('CANCELAR'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('SEGUIR'),
+          ),
+        ],
+      ),
+    );
+    if (go != true) return;
+
     final pipe = ref.read(pipelineProvider.notifier);
     bool checkAbort() => ref.read(pipelineProvider).isAborted;
 
@@ -1267,7 +1307,8 @@ class DspNlpWorkspace extends ConsumerWidget {
             ),
           ),
           // 🛠️ TARJETA MUTANTE: Se transforma y muestra el porcentaje al activarse
-          _buildActionCard(
+          if (MasterProfile.current().allowKaraoke)
+            _buildActionCard(
             title: aiState.isRunning
                 ? "IA TRABAJANDO..."
                 : "EXTRACCIÓN KARAOKE IA",
@@ -1398,15 +1439,10 @@ class DspNlpWorkspace extends ConsumerWidget {
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Expanded(flex: 2, child: cardNodes[0]),
-                    const SizedBox(width: 15),
-                    Expanded(flex: 2, child: cardNodes[1]),
-                    const SizedBox(width: 15),
-                    Expanded(flex: 2, child: cardNodes[2]),
-                    const SizedBox(width: 15),
-                    Expanded(flex: 2, child: cardNodes[3]),
-                    const SizedBox(width: 15),
-                    Expanded(flex: 2, child: cardNodes[4]),
+                    for (int i = 0; i < cardNodes.length; i++) ...[
+                      if (i > 0) const SizedBox(width: 15),
+                      Expanded(flex: 2, child: cardNodes[i]),
+                    ],
                   ],
                 ),
               ),
@@ -1426,7 +1462,7 @@ class DspNlpWorkspace extends ConsumerWidget {
     VoidCallback? onTap,
     Widget? footer,
   }) {
-    final bool isDisabled = onTap == null && footer == null;
+    final bool isDisabled = onTap == null;
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(16),

@@ -300,6 +300,10 @@ class MasterRewrite {
   final int bitrateKbps;
   final bool rewritten;
 
+  /// Ms que el decodificador añade al inicio si ignora el tag LAME.
+  /// Con el tag escrito queda en 0: libmpv se lo salta.
+  final int residualMs;
+
   const MasterRewrite({
     required this.trimHeadMs,
     required this.trimTailMs,
@@ -310,6 +314,7 @@ class MasterRewrite {
     required this.lufsApplied,
     required this.bitrateKbps,
     required this.rewritten,
+    required this.residualMs,
   });
 
   @override
@@ -322,6 +327,7 @@ class MasterRewrite {
       lufs.hashCode ^
       lufsApplied.hashCode ^
       bitrateKbps.hashCode ^
+      residualMs.hashCode ^
       rewritten.hashCode;
 
   @override
@@ -337,7 +343,8 @@ class MasterRewrite {
           lufs == other.lufs &&
           lufsApplied == other.lufsApplied &&
           bitrateKbps == other.bitrateKbps &&
-          rewritten == other.rewritten;
+          rewritten == other.rewritten &&
+          residualMs == other.residualMs;
 }
 
 /// Resultado leído de las etiquetas de una pista (sin decodificar).

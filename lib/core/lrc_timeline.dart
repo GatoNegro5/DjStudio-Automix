@@ -34,6 +34,11 @@ bool lrcIsManual(String content) => _manualMark.hasMatch(content);
 
 bool lrcIsPlain(String content) => _plainMark.hasMatch(content);
 
+/// Letra que Letras no puede borrar ni reescribir: ajustada a mano o ya
+/// rearmada por un corte / un retardo de encoder.
+bool lrcIsProtected(String content) =>
+    lrcIsManual(content) || lrcShiftMs(content) != null;
+
 /// Milisegundos ya restados, o null si la letra no tiene la marca.
 int? lrcShiftMs(String content) {
   final Match? m = _shiftMark.firstMatch(content);
@@ -63,10 +68,13 @@ String _mapStamps(String content, int deltaMs) {
   });
 }
 
-/// Resta [trimMs] a cada sello de tiempo y anota `[gmx_shift:ms]`.
-/// Una letra manual o ya rearmada se devuelve igual.
-LrcShift shiftLrcText(String content, int trimMs) {
-  if (trimMs <= 0) {
+/// Mueve cada sello por el neto `trimMs - extraDelayMs`.
+/// El corte adelanta la letra; el retardo residual del encoder (si el
+/// reproductor no honra el tag) la atrasa. La marca guarda ese neto, que
+/// puede ser negativo. Una letra manual o ya rearmada se devuelve igual.
+LrcShift shiftLrcText(String content, int trimMs, {int extraDelayMs = 0}) {
+  final int net = trimMs - extraDelayMs;
+  if (net == 0) {
     return LrcShift(
       text: content,
       changed: false,
@@ -90,22 +98,25 @@ LrcShift shiftLrcText(String content, int trimMs) {
       alreadyShifted: true,
     );
   }
-  final String shifted = _mapStamps(content, -trimMs);
+  final String shifted = _mapStamps(content, -net);
   return LrcShift(
-    text: '[gmx_shift:$trimMs]\n$shifted',
+    text: '[gmx_shift:$net]\n$shifted',
     changed: true,
     skippedManual: false,
     alreadyShifted: false,
   );
 }
 
-/// Al restaurar el original se suma el mismo corte y se quita la marca.
+/// Al restaurar se deshace el neto guardado en `[gmx_shift:]`.
+/// Si la marca no está, se usa [trimMs].
 String unshiftLrcText(String content, int trimMs) {
-  if (trimMs <= 0 || lrcIsManual(content)) return content;
+  if (lrcIsManual(content)) return content;
+  final int delta = lrcShiftMs(content) ?? trimMs;
+  if (delta == 0) return content;
   final String without = content
       .replaceAll(_shiftMark, '')
       .replaceFirst(RegExp(r'^\s*\n'), '');
-  return _mapStamps(without, trimMs);
+  return _mapStamps(without, delta);
 }
 
 /// Primer verso real, en ms. Ignora sellos vacíos, marcas gmx y basura.

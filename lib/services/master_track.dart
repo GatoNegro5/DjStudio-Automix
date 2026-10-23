@@ -101,8 +101,16 @@ class MasterTrack {
         forceTailMs: -1,
       );
       trimHead = rw.trimHeadMs;
+      final int residual = rw.residualMs;
+      if (trimHead > 0 || residual > 0) {
+        await _shiftLyricsAndCues(
+          ref,
+          current,
+          trimHead,
+          extraDelayMs: residual,
+        );
+      }
       if (trimHead > 0) {
-        await _shiftLyricsAndCues(ref, current, trimHead);
         await _trimKaraokeTwin(current, trimHead, rw.trimTailMs);
       }
     }
@@ -164,21 +172,38 @@ class MasterTrack {
     final marks = await rust_dsp.readGmxMarks(inputPath: mp3Path);
     final int trim = marks.trimMs < 0 ? 0 : marks.trimMs;
     final File lrc = File(_lrcPath(mp3Path));
-    if (trim > 0 && lrc.existsSync()) {
-      final String back = unshiftLrcText(await lrc.readAsString(), trim);
-      await lrc.writeAsString(back);
+    var undo = trim;
+    if (lrc.existsSync()) {
+      final String content = await lrc.readAsString();
+      final int? stored = lrcShiftMs(content);
+      if (stored != null) undo = stored;
+      if (!lrcIsManual(content) && stored != null && stored != 0) {
+        await lrc.writeAsString(unshiftLrcText(content, stored));
+      } else if (trim > 0 && !lrcIsManual(content) && stored == null) {
+        await lrc.writeAsString(unshiftLrcText(content, trim));
+      }
     }
-    if (trim > 0) {
+    if (undo != 0) {
       final db = ref.read(dbServiceProvider);
       final meta = await db.getTrackMetadata(mp3Path);
       if (meta != null) {
+        int? cue = meta.cueInMs;
+        int? mix = meta.mixOutMs;
+        if (cue != null) {
+          final int next = cue + undo;
+          cue = next < 0 ? 0 : next;
+        }
+        if (mix != null) {
+          final int next = mix + undo;
+          mix = next < 0 ? 0 : next;
+        }
         await db.saveTrackMetadata(
           path: mp3Path,
           mixProfile: meta.mixProfile,
           durationMs: meta.mixDurationMs,
           genre: meta.genreAssigned,
-          cueInMs: meta.cueInMs == null ? null : meta.cueInMs! + trim,
-          mixOutMs: meta.mixOutMs == null ? null : meta.mixOutMs! + trim,
+          cueInMs: cue,
+          mixOutMs: mix,
           hasLyrics: meta.hasLyrics,
           hasBpm: meta.hasBpm,
           hasCurve: meta.hasCurve,
@@ -228,13 +253,23 @@ class MasterTrack {
     await src.copy(dest.path);
   }
 
-  static Future<void> _shiftLyricsAndCues(WidgetRef ref, String path, int trimMs) async {
+  static Future<void> _shiftLyricsAndCues(
+    WidgetRef ref,
+    String path,
+    int trimMs, {
+    int extraDelayMs = 0,
+  }) async {
+    final int net = trimMs - extraDelayMs;
     final File lrc = File(_lrcPath(path));
     if (lrc.existsSync()) {
       final String text = await lrc.readAsString();
       final bool manual = lrcIsManual(text) || !_lrcIsAuto(lrc.path);
       if (!manual) {
-        final LrcShift shifted = shiftLrcText(text, trimMs);
+        final LrcShift shifted = shiftLrcText(
+          text,
+          trimMs,
+          extraDelayMs: extraDelayMs,
+        );
         if (shifted.changed) {
           await lrc.writeAsString(shifted.text);
           await _mark(path, 'GMX_LRC_SHIFT', '1');
@@ -246,8 +281,14 @@ class MasterTrack {
     if (meta == null) return;
     int? cue = meta.cueInMs;
     int? mix = meta.mixOutMs;
-    if (cue != null) cue = cue - trimMs < 0 ? 0 : cue - trimMs;
-    if (mix != null) mix = mix - trimMs < 0 ? 0 : mix - trimMs;
+    if (cue != null) {
+      final int next = cue - net;
+      cue = next < 0 ? 0 : next;
+    }
+    if (mix != null) {
+      final int next = mix - net;
+      mix = next < 0 ? 0 : mix;
+    }
     await db.saveTrackMetadata(
       path: path,
       mixProfile: meta.mixProfile,

@@ -5,7 +5,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'pipeline_provider.dart';
 import 'package:flutter/foundation.dart';
 import 'package:gatomix/src/rust/api/core_dsp.dart' as rust_dsp;
+import '../core/lrc_timeline.dart';
 import 'db_provider.dart'; // 🛠️ Requerido para inyectar Cues a la BD
+
+bool _enCarpetaOriginal(String path) {
+  final String p = path.replaceAll('\\', '/').toLowerCase();
+  return p.contains('/.gatomix_original/') || p.endsWith('/.gatomix_original');
+}
 
 final nlpWorkerProvider = Provider((ref) => NlpWorker(ref));
 
@@ -169,6 +175,7 @@ class NlpWorker {
         .listSync(recursive: true)
         .whereType<File>()
         .where((f) => f.path.toLowerCase().endsWith('.mp3'))
+        .where((f) => !_enCarpetaOriginal(f.path))
         .toList();
 
     int total = files.length;
@@ -181,6 +188,7 @@ class NlpWorker {
       }
 
       final file = files[i];
+      if (_enCarpetaOriginal(file.path)) continue;
       final filename = file.uri.pathSegments.last;
 
       final lrcPath = file.path.replaceAll(
@@ -191,6 +199,7 @@ class NlpWorker {
 
       if (lrcFile.existsSync()) {
         final content = await lrcFile.readAsString();
+        if (lrcIsProtected(content)) continue;
         if (!content.contains('Letra no encontrada') &&
             !content.contains('Error de conexión') &&
             !content.contains('Error Auto-Healing') &&
@@ -598,6 +607,7 @@ class NlpWorker {
     } catch (_) {}
     for (final folder in folders) {
       if (isCancelled != null && isCancelled()) break;
+      if (_enCarpetaOriginal(folder)) continue;
       final reg = _readAuto(folder);
       if (reg.isEmpty) continue;
       final keep = <String, dynamic>{};
@@ -605,8 +615,13 @@ class NlpWorker {
         final f = File('$folder${Platform.pathSeparator}$name');
         try {
           if (f.existsSync() && f.lengthSync() == (size as num).toInt()) {
-            f.deleteSync();
-            removed++;
+            final String text = f.readAsStringSync();
+            if (lrcIsProtected(text)) {
+              keep[name] = size;
+            } else {
+              f.deleteSync();
+              removed++;
+            }
           } else if (f.existsSync()) {
             keep[name] = size; // editada: ya no es automática, se respeta
           }
@@ -629,6 +644,7 @@ class NlpWorker {
   /// ok = letra nueva · kept = ya tenía una letra válida (no se toca) ·
   /// noMatch = sin coincidencia segura · failed = error / pista inexistente.
   Future<LyricStatus> processSingleFile(String filePath) async {
+    if (_enCarpetaOriginal(filePath)) return LyricStatus.kept;
     final file = File(filePath);
     if (!file.existsSync()) return LyricStatus.failed;
 
@@ -641,6 +657,9 @@ class NlpWorker {
     if (lrcFile.existsSync()) {
       try {
         final content = await lrcFile.readAsString();
+        if (lrcIsProtected(content)) {
+          return LyricStatus.kept;
+        }
         if (content.contains('Letra no encontrada') ||
             content.contains('Error de conexión') ||
             content.contains('Error Auto-Healing') ||
@@ -681,6 +700,7 @@ class NlpWorker {
         .listSync(recursive: true)
         .whereType<File>()
         .where((f) {
+          if (_enCarpetaOriginal(f.path)) return false;
           final p = f.path.toLowerCase();
           return p.endsWith('.mp3') && !p.endsWith('_k.mp3');
         })
@@ -690,6 +710,7 @@ class NlpWorker {
     for (int i = 0; i < total; i++) {
       if (isCancelled != null && isCancelled()) break;
       final f = files[i];
+      if (_enCarpetaOriginal(f.path)) continue;
       final name = f.uri.pathSegments.last;
       pipe.updateProgress(i + 1, total, name, "📝 Letras");
       // Mix pesado (> 16 MB): no tiene letra.

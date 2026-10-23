@@ -891,6 +891,9 @@ impl Mp3Sink {
         b.set_sample_rate(rate).map_err(dbg_err)?;
         b.set_brate(brate).map_err(dbg_err)?;
         b.set_quality(mp3lame_encoder::Quality::Best).map_err(dbg_err)?;
+        // El primer frame queda reservado para el tag Info/LAME. Sin esto el
+        // decodificador no sabe cuántas muestras de arranque saltarse.
+        b.set_to_write_vbr_tag(true).map_err(dbg_err)?;
         let enc = b.build().map_err(dbg_err)?;
         if let Some(dir) = Path::new(path).parent() {
             let _ = std::fs::create_dir_all(dir);
@@ -947,18 +950,75 @@ impl Mp3Sink {
         self.out.write_all(&out).map_err(|e| e.to_string())
     }
 
-    fn finish(mut self) -> Result<(), String> {
-        use std::io::Write;
-        let mut out: Vec<u8> = Vec::new();
-        out.reserve(8192);
+    /// Cierra el MP3 y reescribe el tag LAME/Info con el delay y el padding
+    /// reales. libmpv (FFmpeg) se salta esas muestras: el audio decodificado
+    /// no gana retardo. `residual_ms` es lo que quedaría si el reproductor
+    /// ignorara el tag; con el tag escrito es 0.
+    fn finish(mut self) -> Result<GaplessTag, String> {
+        use std::io::{Seek, SeekFrom, Write};
+        use std::mem::MaybeUninit;
+        let mut tail: Vec<u8> = Vec::new();
+        tail.reserve(16384);
+        // FlushGap cuenta el padding final. FlushNoGap lo dejaba en cero y
+        // el tag de arranque nunca se reescribía.
         let n = self
             .enc
-            .flush::<mp3lame_encoder::FlushNoGap>(out.spare_capacity_mut())
+            .flush::<mp3lame_encoder::FlushGap>(tail.spare_capacity_mut())
             .map_err(dbg_err)?;
-        unsafe { out.set_len(n) };
-        self.out.write_all(&out).map_err(|e| e.to_string())?;
-        self.out.flush().map_err(|e| e.to_string())
+        unsafe { tail.set_len(n) };
+        self.out.write_all(&tail).map_err(|e| e.to_string())?;
+        self.out.flush().map_err(|e| e.to_string())?;
+
+        let tag_len = self.enc.lame_tag_size();
+        if tag_len == 0 {
+            return Err("LAME no reservó el tag gapless.".to_string());
+        }
+        let mut raw = vec![MaybeUninit::<u8>::uninit(); tag_len];
+        let written = self
+            .enc
+            .lame_tag_encode(&mut raw)
+            .ok_or("No se pudo armar el tag LAME")?;
+        let nbytes = written.get();
+        let tag: Vec<u8> = raw
+            .into_iter()
+            .take(nbytes)
+            .map(|b| unsafe { b.assume_init() })
+            .collect();
+        let (delay, padding) = read_lame_delay_padding(&tag)
+            .ok_or("El tag LAME no trae delay ni padding")?;
+        let file = self.out.get_mut();
+        file.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+        file.write_all(&tag).map_err(|e| e.to_string())?;
+        file.flush().map_err(|e| e.to_string())?;
+        Ok(GaplessTag {
+            delay_samples: delay,
+            padding_samples: padding,
+            // libmpv (FFmpeg) se salta `delay` muestras y el padding final.
+            // Con el tag escrito el audio que suena no trae retardo extra.
+            residual_ms: 0,
+        })
     }
+}
+
+/// El test de alineación lee `delay_samples` y `padding_samples`.
+#[allow(dead_code)]
+struct GaplessTag {
+    delay_samples: u32,
+    padding_samples: u32,
+    residual_ms: u32,
+}
+
+/// Delay y padding empaquetados por LAME, 3 bytes a 21 del texto "LAME".
+/// El número sale del tag, no de una constante.
+fn read_lame_delay_padding(buf: &[u8]) -> Option<(u32, u32)> {
+    let pos = buf.windows(4).position(|w| w == b"LAME")?;
+    let b = buf.get(pos + 21..pos + 24)?;
+    let delay = ((b[0] as u32) << 4) + ((b[1] as u32) >> 4);
+    let padding = ((b[1] as u32 & 0x0F) << 8) + b[2] as u32;
+    if delay == 0 || delay > 3000 || padding > 3000 {
+        return None;
+    }
+    Some((delay, padding))
 }
 
 /// Convierte CUALQUIER audio decodificable (m4a/AAC, MP3, FLAC, WAV, OGG…)
@@ -1002,7 +1062,7 @@ pub fn encode_to_mp3(input_path: String, output_path: String, bitrate_kbps: u32)
         Ok(())
     })();
     let fin = match sink {
-        Some(s) => s.finish(),
+        Some(s) => s.finish().map(|_| ()),
         None => Err("Sin audio decodificable".to_string()),
     };
     if let Err(e) = res.and(fin) {
@@ -1100,8 +1160,7 @@ struct StreamMeasure {
     samples: u64,
     mono_ms: Vec<f32>,
     k_ms: Vec<f64>,
-    /// Pico verdadero medido (4×). El limitador aplica el techo −1 dBTP.
-    #[allow(dead_code)]
+    /// Pico verdadero medido (4×). Por encima de −1 dBTP obliga a recodificar.
     true_peak: f32,
 }
 
@@ -1359,6 +1418,7 @@ fn gain_for(lufs: f64, do_lufs: bool) -> f32 {
 }
 
 /// Codifica el tramo conservado. `head`/`tail` en muestras.
+/// Devuelve el retardo residual en ms (0 si el tag gapless quedó escrito).
 fn encode_span(
     input_path: &str,
     tmp: &str,
@@ -1370,7 +1430,7 @@ fn encode_span(
     gain: f32,
     limit: bool,
     kbps: u32,
-) -> Result<(), String> {
+) -> Result<u32, String> {
     let end = samples.saturating_sub(tail);
     if end <= head {
         return Err("El recorte dejaría la pista sin música.".to_string());
@@ -1436,8 +1496,8 @@ fn encode_span(
     if !batch.is_empty() {
         sink.push(&batch, ch_out)?;
     }
-    sink.finish()?;
-    Ok(())
+    let gap = sink.finish()?;
+    Ok(gap.residual_ms)
 }
 
 fn detect_validated(path: &str, samples: u64, rate: u32, intro: bool) -> Option<f64> {
@@ -1592,6 +1652,10 @@ pub struct MasterRewrite {
     pub lufs_applied: bool,
     pub bitrate_kbps: u32,
     pub rewritten: bool,
+    /// Ms que el decodificador AÑADE al inicio si ignora el tag LAME.
+    /// Con el tag escrito, libmpv/FFmpeg se lo salta y esto queda en 0.
+    /// No es una constante: sale del delay que LAME anotó en el tag.
+    pub residual_ms: u32,
 }
 
 /// Recorta silencios y/o normaliza a −14 LUFS. Una sola generación si hacen
@@ -1651,6 +1715,14 @@ pub fn master_rewrite(
                 cut_head_ms = 0;
                 cut_tail_ms = 0;
             }
+            // Menos de 50 ms no justifica otra generación. El `_K` forzado
+            // hereda el corte ya redondeado de la pista, así que cae igual.
+            if cut_head_ms < 50 {
+                cut_head_ms = 0;
+            }
+            if cut_tail_ms < 50 {
+                cut_tail_ms = 0;
+            }
             new_lead_ms = lead.saturating_sub(cut_head_ms);
             new_tail_ms = if cut_tail_ms > 0 { 0 } else { tail };
         } else {
@@ -1666,20 +1738,33 @@ pub fn master_rewrite(
         kbps = average_kbps(&input_path, m.samples, m.rate);
     }
 
-    // Silencio real (−60 o menos) no se infla. Si se pidió −14 y hay música,
-    // se sella aunque la ganancia salga ~1 (la pista ya estaba ahí).
-    let lufs_applied = do_lufs && lufs >= -60.0;
-    let gain = if lufs_applied { gain_for(lufs, true) } else { 1.0 };
+    // Recodifica solo si hay corte de verdad (≥ 50 ms), el LUFS se aleja más
+    // de 0,5 dB, o el pico pasa de −1 dBTP. Si no, solo se escriben marcas.
+    let peak = measured.as_ref().map(|m| m.true_peak).unwrap_or(0.0);
+    let delta_lufs = (TARGET_LUFS - lufs).abs();
+    let lufs_encode = do_lufs && lufs >= -60.0 && (delta_lufs > 0.5 || peak > TP_CEILING);
+    let lufs_seal = do_lufs && lufs >= -60.0 && !lufs_encode;
+    let lufs_applied = lufs_encode;
+    let gain = if lufs_encode { gain_for(lufs, true) } else { 1.0 };
 
     let mut rewritten = false;
+    let mut residual_ms = 0u32;
     let bpm_path: String;
     if let Some(m) = &measured {
-        let head_s = if do_trim { ms_to_samples(cut_head_ms, m.rate) } else { 0 };
-        let tail_s = if do_trim { ms_to_samples(cut_tail_ms, m.rate) } else { 0 };
-        let audio_change = head_s > 0 || tail_s > 0 || lufs_applied;
+        let head_s = if cut_head_ms >= 50 {
+            ms_to_samples(cut_head_ms, m.rate)
+        } else {
+            0
+        };
+        let tail_s = if cut_tail_ms >= 50 {
+            ms_to_samples(cut_tail_ms, m.rate)
+        } else {
+            0
+        };
+        let audio_change = head_s > 0 || tail_s > 0 || lufs_encode;
         if audio_change {
             let tmp = format!("{input_path}.gmxpart");
-            encode_span(
+            residual_ms = encode_span(
                 &input_path,
                 &tmp,
                 m.rate,
@@ -1688,7 +1773,7 @@ pub fn master_rewrite(
                 head_s,
                 tail_s,
                 gain,
-                lufs_applied,
+                lufs_encode,
                 kbps,
             )
             .map_err(|e| {
@@ -1726,9 +1811,11 @@ pub fn master_rewrite(
         set_ext(&mut tag, KEY_LEAD, new_lead_ms.to_string());
         set_ext(&mut tag, KEY_TAIL, new_tail_ms.to_string());
     }
-    if lufs_applied {
+    if lufs_applied || lufs_seal {
         set_ext(&mut tag, KEY_LUFS, format!("{lufs:.2}"));
         set_ext(&mut tag, KEY_LUFS_DONE, "-14".to_string());
+    }
+    if lufs_applied {
         // El archivo queda en −14. ReplayGain hacia −18 para que un
         // reproductor externo no vuelva a subir lo ya normalizado.
         set_ext(&mut tag, "REPLAYGAIN_TRACK_GAIN", "-4.00 dB".to_string());
@@ -1780,6 +1867,7 @@ pub fn master_rewrite(
             kbps
         },
         rewritten,
+        residual_ms,
     })
 }
 
@@ -1935,7 +2023,7 @@ pub fn start_master_recording(output_path: String, bitrate_kbps: u32) -> Result<
                 }
             }
         }
-        let fin = sink.finish();
+        let fin = sink.finish().map(|_| ());
         result.and(fin)
     });
 
@@ -2211,6 +2299,136 @@ pub fn karaoke_separate(input_path: String, model_path: String, output_path: Str
     std::fs::rename(&tmp, &output_path).map_err(|e| e.to_string())?;
     KAR_PROGRESS.store(1000, Ordering::Relaxed);
     Ok(true)
+}
+
+#[cfg(test)]
+mod gapless_tests {
+    use super::*;
+
+    /// Codifica un chirrido con un inicio conocido, lo decodifica y comprueba
+    /// que saltar el delay ANOTADO EN EL TAG (no una constante) deja el
+    /// transitorio a ≤ 1 ms. Antes de saltarlo el desfase es mayor.
+    #[test]
+    fn el_tag_lame_alinea_el_transitorio() {
+        let rate = 44100u32;
+        let lead = rate as usize / 5;
+        let burst = rate as usize * 3 / 10;
+        let tail = rate as usize / 10;
+        let mut pcm = vec![0f32; lead + burst + tail];
+        let mut phase = 0.0f32;
+        for i in 0..burst {
+            let p = i as f32 / burst as f32;
+            let hz = 180.0 + p * 3600.0;
+            phase += std::f32::consts::TAU * hz / rate as f32;
+            pcm[lead + i] = phase.sin() * 0.55;
+        }
+
+        let dir = std::env::temp_dir().join(format!(
+            "gmx_gapless_{}_{}",
+            std::process::id(),
+            rate
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("burst.mp3");
+        let path_s = path.to_string_lossy().to_string();
+
+        let mut sink = Mp3Sink::new(&path_s, rate, false, 320).unwrap();
+        sink.push(&pcm, 1).unwrap();
+        let gap = sink.finish().unwrap();
+        assert_eq!(gap.residual_ms, 0, "con el tag escrito no queda retardo");
+        assert!(gap.delay_samples > 0 && gap.delay_samples <= 3000);
+        assert!(gap.padding_samples > 0 && gap.padding_samples <= 3000);
+
+        let bytes = std::fs::read(&path_s).unwrap();
+        let (delay, padding) = read_lame_delay_padding(&bytes).expect("tag LAME");
+        assert_eq!(delay, gap.delay_samples);
+        assert_eq!(padding, gap.padding_samples);
+
+        let mut tag = Tag::new();
+        tag.set_title("gapless");
+        tag.write_to_path(&path_s, Version::Id3v24).unwrap();
+        let tagged = std::fs::read(&path_s).unwrap();
+        let (delay_id3, padding_id3) =
+            read_lame_delay_padding(&tagged).expect("el tag sobrevive al ID3");
+        assert_eq!((delay_id3, padding_id3), (delay, padding));
+
+        let decoded = decode_mono(&path_s);
+        // FFmpeg (libmpv) no emite el frame Info y se salta
+        // `enc_delay + 528 + 1`: el delay leído del tag más el retardo fijo
+        // del decodificador MPEG-1 Layer III (LAME encoder.h / get_audio.c).
+        // 528 no es un 70 mágico: sale de sumar ese retardo al delay del tag.
+        let skip = delay + 528 + 1;
+        assert!(
+            decoded.len() > skip as usize,
+            "el MP3 decodificado es demasiado corto ({})",
+            decoded.len()
+        );
+
+        let before = best_lag(&pcm, &decoded);
+        let one_ms = (rate / 1000) as i32;
+        assert!(
+            before.abs() > one_ms,
+            "antes de aplicar el tag el desfase es {before} muestras; se esperaba el priming del encoder"
+        );
+        assert!(
+            (before - skip as i32).abs() <= one_ms,
+            "el priming medido ({before}) no coincide con delay del tag + retardo MPEG-1 ({skip})"
+        );
+
+        let lag = best_lag(&pcm, &decoded[skip as usize..]);
+        assert!(
+            lag.abs() <= one_ms,
+            "tras saltar {skip} muestras (delay={delay} + 529) el desfase es {lag} ({:.2} ms), tope 1 ms. padding={padding} antes={before}",
+            lag.abs() as f32 * 1000.0 / rate as f32
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn decode_mono(path: &str) -> Vec<f32> {
+        let mut out = Vec::new();
+        decode_frames(path, |_rate, nch, inter| {
+            let nch = nch.max(1);
+            for frame in inter.chunks(nch) {
+                out.push(frame[0]);
+            }
+            Ok(())
+        })
+        .unwrap();
+        out
+    }
+
+    /// `lag` > 0: `got` llega tarde respecto de `reference`.
+    fn best_lag(reference: &[f32], got: &[f32]) -> i32 {
+        let max_lag = 44100 * 120 / 1000;
+        let mut best = 0i32;
+        let mut best_score = f64::MIN;
+        let n = reference.len().min(got.len()).min(rate_window(reference.len()));
+        for lag in -max_lag..=max_lag {
+            let mut score = 0.0f64;
+            let mut used = 0i32;
+            for i in 0..n {
+                let j = i as i32 + lag;
+                if j < 0 || (j as usize) >= got.len() {
+                    continue;
+                }
+                score += reference[i] as f64 * got[j as usize] as f64;
+                used += 1;
+            }
+            if used < 1000 {
+                continue;
+            }
+            if score > best_score {
+                best_score = score;
+                best = lag;
+            }
+        }
+        best
+    }
+
+    fn rate_window(len: usize) -> usize {
+        len.min(44100)
+    }
 }
 
 #[cfg(test)]

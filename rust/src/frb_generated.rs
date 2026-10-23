@@ -1142,6 +1142,7 @@ impl SseDecode for crate::api::core_dsp::MasterRewrite {
         let mut var_lufsApplied = <bool>::sse_decode(deserializer);
         let mut var_bitrateKbps = <u32>::sse_decode(deserializer);
         let mut var_rewritten = <bool>::sse_decode(deserializer);
+        let mut var_residualMs = <u32>::sse_decode(deserializer);
         return crate::api::core_dsp::MasterRewrite {
             trim_head_ms: var_trimHeadMs,
             trim_tail_ms: var_trimTailMs,
@@ -1152,6 +1153,7 @@ impl SseDecode for crate::api::core_dsp::MasterRewrite {
             lufs_applied: var_lufsApplied,
             bitrate_kbps: var_bitrateKbps,
             rewritten: var_rewritten,
+            residual_ms: var_residualMs,
         };
     }
 }
@@ -1362,6 +1364,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::core_dsp::MasterRewrite {
             self.lufs_applied.into_into_dart().into_dart(),
             self.bitrate_kbps.into_into_dart().into_dart(),
             self.rewritten.into_into_dart().into_dart(),
+            self.residual_ms.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -1496,6 +1499,7 @@ impl SseEncode for crate::api::core_dsp::MasterRewrite {
         <bool>::sse_encode(self.lufs_applied, serializer);
         <u32>::sse_encode(self.bitrate_kbps, serializer);
         <bool>::sse_encode(self.rewritten, serializer);
+        <u32>::sse_encode(self.residual_ms, serializer);
     }
 }
 

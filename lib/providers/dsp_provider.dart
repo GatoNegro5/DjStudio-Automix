@@ -8,6 +8,11 @@ import '../core/bpm_range.dart';
 import 'pipeline_provider.dart';
 import 'db_provider.dart'; // 🛠️ FIX: Enlace al controlador de ISAR
 
+bool _enCarpetaOriginal(String path) {
+  final String p = path.replaceAll('\\', '/').toLowerCase();
+  return p.contains('/.gatomix_original/') || p.endsWith('/.gatomix_original');
+}
+
 final dspWorkerProvider = Provider((ref) => DspWorker(ref));
 
 class DspWorker {
@@ -319,6 +324,7 @@ class DspWorker {
       })) {
         if (entity is File) {
           final lowerPath = entity.path.toLowerCase();
+          if (_enCarpetaOriginal(entity.path)) continue;
           // 🛠️ REGLA ESTRICTA: Filtrar únicamente MP3
           if (lowerPath.endsWith('.mp3')) {
             files.add(entity);
@@ -373,6 +379,7 @@ class DspWorker {
       })) {
         if (entity is File) {
           final lowerPath = entity.path.toLowerCase();
+          if (_enCarpetaOriginal(entity.path)) continue;
           if (lowerPath.endsWith('.mp3')) {
             files.add(entity);
           }

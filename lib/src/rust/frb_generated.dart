@@ -1116,8 +1116,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   MasterRewrite dco_decode_master_rewrite(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 9)
-      throw Exception('unexpected arr length: expect 9 but see ${arr.length}');
+    if (arr.length != 10)
+      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
     return MasterRewrite(
       trimHeadMs: dco_decode_u_32(arr[0]),
       trimTailMs: dco_decode_u_32(arr[1]),
@@ -1128,6 +1128,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       lufsApplied: dco_decode_bool(arr[6]),
       bitrateKbps: dco_decode_u_32(arr[7]),
       rewritten: dco_decode_bool(arr[8]),
+      residualMs: dco_decode_u_32(arr[9]),
     );
   }
 
@@ -1278,6 +1279,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_lufsApplied = sse_decode_bool(deserializer);
     var var_bitrateKbps = sse_decode_u_32(deserializer);
     var var_rewritten = sse_decode_bool(deserializer);
+    var var_residualMs = sse_decode_u_32(deserializer);
     return MasterRewrite(
       trimHeadMs: var_trimHeadMs,
       trimTailMs: var_trimTailMs,
@@ -1288,6 +1290,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       lufsApplied: var_lufsApplied,
       bitrateKbps: var_bitrateKbps,
       rewritten: var_rewritten,
+      residualMs: var_residualMs,
     );
   }
 
@@ -1420,6 +1423,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self.lufsApplied, serializer);
     sse_encode_u_32(self.bitrateKbps, serializer);
     sse_encode_bool(self.rewritten, serializer);
+    sse_encode_u_32(self.residualMs, serializer);
   }
 
   @protected
