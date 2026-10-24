@@ -1,17 +1,55 @@
+import 'dart:convert';
 import 'dart:io';
+import 'package:gatomix/core/master_profile.dart';
 import 'package:gatomix/services/karaoke_engine.dart';
+import 'package:gatomix/services/master_track.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:media_kit/media_kit.dart';
+import '../../core/lrc_timeline.dart';
 import '../../core/net/safe_download.dart';
+import '../../core/track_name_clean.dart';
 
 import 'package:gatomix/src/rust/api/core_dsp.dart' as rust_dsp;
-import '../../providers/metadata_provider.dart';
 import '../../providers/nlp_provider.dart';
 import '../../providers/dsp_provider.dart';
 import '../../providers/db_provider.dart';
+
+/// Bitrate de la transcodificación AAC→MP3. Una fuente de 128 no se infla a 320.
+int mp3KbpsForSource(int sourceKbps) {
+  if (sourceKbps <= 0) return 192;
+  if (sourceKbps <= 160) return 192;
+  if (sourceKbps >= 256) return 320;
+  return 256;
+}
+
+/// Letra bajada por la app. `[gmx_manual:1]` se queda manual y no se desplaza.
+bool ytLyricCountsAsAuto(String content) =>
+    content.trim().isNotEmpty && !lrcIsManual(content);
+
+void registerYtAutoLyric(String lrcPath) {
+  final File f = File(lrcPath);
+  if (!f.existsSync()) return;
+  if (!ytLyricCountsAsAuto(f.readAsStringSync())) return;
+  final File reg = File(
+    '${f.parent.path}${Platform.pathSeparator}_lyrics_auto.json',
+  );
+  final Map<String, dynamic> map = <String, dynamic>{};
+  if (reg.existsSync()) {
+    try {
+      final dynamic decoded = jsonDecode(reg.readAsStringSync());
+      if (decoded is Map) {
+        decoded.forEach((dynamic k, dynamic v) {
+          map['$k'] = v;
+        });
+      }
+    } catch (_) {}
+  }
+  map[f.uri.pathSegments.last] = f.lengthSync();
+  reg.writeAsStringSync(jsonEncode(map));
+}
 
 // =====================================================================
 // MÓDULO 2: BÚSQUEDA, EXTRACCIÓN Y AUTO-MASTER YT
@@ -163,6 +201,7 @@ class _YoutubeSearchAndDownloadWorkspaceState
     );
   }
 
+  // ignore: unused_element
   Future<int> _getAudioDurationMs(String path) async {
     try {
       // Rust/symphonia: sin ffprobe, igual en las 4 plataformas.
@@ -172,6 +211,23 @@ class _YoutubeSearchAndDownloadWorkspaceState
     }
   }
 
+  String _ytStageLabel(String stage) {
+    switch (stage) {
+      case 'METADATA_CLEANUP':
+        return '⚙️ Arreglando el nombre...';
+      case 'LYRICS':
+        return '📝 Bajando y confirmando la letra...';
+      case 'DSP_ANALYSIS':
+        return '🔊 Quitando silencios, BPM y −14 LUFS...';
+      case 'WATERMARK_ID3':
+        return '🔐 Guardando marcas...';
+      default:
+        return '⚙️ Masterizando...';
+    }
+  }
+
+  // El pipeline desplaza con los ms exactos de Rust (MasterTrack).
+  // ignore: unused_element
   Future<void> _offsetLrcTimeline(String lrcPath, int trimmedMs) async {
     final file = File(lrcPath);
     if (!file.existsSync() || trimmedMs <= 0) return;
@@ -389,19 +445,29 @@ class _YoutubeSearchAndDownloadWorkspaceState
       final safeTitle = video.title
           .replaceAll(RegExp(r'[\\/:*?"<>|]'), '')
           .trim();
+      final CleanTrackName cleaned = cleanTrackFileName(safeTitle);
+      final String stemRaw =
+          cleaned.stem.trim().isEmpty ? safeTitle : cleaned.stem.trim();
+      final String safeStem = stemRaw
+          .replaceAll(RegExp(r'[\\/:*?"<>|]'), '')
+          .trim();
+      final String trackStem = safeStem.isEmpty ? 'Pista' : safeStem;
 
       final tempDir = Directory.systemTemp;
-      final tempRawPath =
-          '${tempDir.path}${Platform.pathSeparator}raw_vr_audio.m4a';
-      final tempMp3Path =
-          '${tempDir.path}${Platform.pathSeparator}$safeTitle.mp3';
+      final String sep = Platform.pathSeparator;
+      final tempRawPath = '${tempDir.path}$sep' 'raw_vr_audio.m4a';
+      final tempM4aPath = '${tempDir.path}$sep$trackStem.m4a';
+      final tempMp3Path = '${tempDir.path}$sep$trackStem.mp3';
+      final tempLrcPath = '${tempDir.path}$sep$trackStem.lrc';
 
       if (File(tempRawPath).existsSync()) File(tempRawPath).deleteSync();
+      if (File(tempM4aPath).existsSync()) File(tempM4aPath).deleteSync();
 
       setState(
         () => _statusText = "Descargando stream crudo de máxima calidad...",
       );
 
+      var sourceKbps = 0;
       if (Platform.isAndroid || Platform.isIOS) {
         // Móvil: no se pueden ejecutar binarios (yt-dlp → "permission
         // denied"). Se baja el AAC/M4A con youtube_explode_dart.
@@ -413,6 +479,7 @@ class _YoutubeSearchAndDownloadWorkspaceState
           throw Exception("Sin stream AAC/M4A disponible para este video.");
         }
         m4a.sort((a, b) => b.bitrate.compareTo(a.bitrate));
+        sourceKbps = (m4a.first.bitrate.bitsPerSecond / 1000).round();
         final sink = File(tempRawPath).openWrite();
         await _yt.videos.streamsClient.get(m4a.first).pipe(sink);
         if (!File(tempRawPath).existsSync() ||
@@ -425,13 +492,18 @@ class _YoutubeSearchAndDownloadWorkspaceState
           '-f',
           // De mejor a peor calidad entre los AAC/M4A que Rust decodifica.
           'bestaudio[ext=m4a]/141/140/bestaudio',
+          '--print',
+          '%(abr)s',
           '-o',
           tempRawPath,
           targetUrl,
         ]);
 
         String errorTrace = "";
-        process.stdout.listen((_) {});
+        String abrOut = "";
+        process.stdout.listen((bytes) {
+          abrOut += String.fromCharCodes(bytes);
+        });
         process.stderr.listen((bytes) {
           errorTrace += String.fromCharCodes(bytes);
         });
@@ -441,30 +513,25 @@ class _YoutubeSearchAndDownloadWorkspaceState
         if (exitCode != 0 || !File(tempRawPath).existsSync()) {
           throw Exception("Fallo CLI Extractor. Traza: $errorTrace");
         }
+        final List<String> abrLines = abrOut
+            .split(RegExp(r'\s+'))
+            .map((String s) => s.trim())
+            .where((String s) => s.isNotEmpty)
+            .toList();
+        if (abrLines.isNotEmpty) {
+          sourceKbps = double.tryParse(abrLines.last)?.round() ?? 0;
+        }
       }
 
-      setState(() => _statusText = "Codificando a MP3 320k (motor Rust/LAME)...");
-
-      try {
-        await rust_dsp.encodeToMp3(
-          inputPath: tempRawPath,
-          outputPath: tempMp3Path,
-          bitrateKbps: 320,
-        );
-      } catch (e) {
-        throw Exception("Fallo en el codificador MP3: $e");
+      if (tempRawPath != tempM4aPath) {
+        if (File(tempM4aPath).existsSync()) File(tempM4aPath).deleteSync();
+        File(tempRawPath).renameSync(tempM4aPath);
       }
-
-      try {
-        if (File(tempRawPath).existsSync()) File(tempRawPath).deleteSync();
-      } catch (_) {}
 
       setState(
-        () => _statusText = "Extrayendo metadatos y letras preliminares...",
+        () => _statusText = "Buscando letra con el nombre limpio...",
       );
-      final tempLrcPath = tempMp3Path.replaceAll('.mp3', '.lrc');
-
-      await ref.read(nlpWorkerProvider).processSingleFile(tempMp3Path);
+      await ref.read(nlpWorkerProvider).processSingleFile(tempM4aPath);
       if (!File(tempLrcPath).existsSync()) {
         await _extractLyricsFromYoutube(targetUrl, tempMp3Path);
       }
@@ -479,20 +546,39 @@ class _YoutubeSearchAndDownloadWorkspaceState
         context: context,
         barrierDismissible: false,
         builder: (ctx) => PreIngestModal(
-          initialTitle: safeTitle,
+          initialTitle: trackStem,
           initialLrc: prelimLrc,
-          audioPath: tempMp3Path,
+          audioPath: tempM4aPath,
         ),
       );
 
       if (result == null) {
         try {
+          if (File(tempM4aPath).existsSync()) File(tempM4aPath).deleteSync();
           if (File(tempMp3Path).existsSync()) File(tempMp3Path).deleteSync();
           if (File(tempLrcPath).existsSync()) File(tempLrcPath).deleteSync();
         } catch (_) {}
         setState(() => _statusText = "Descarga descartada por el usuario.");
         return;
       }
+
+      final int kbps = mp3KbpsForSource(sourceKbps);
+      setState(
+        () => _statusText = "Codificando a MP3 ${kbps}k (motor Rust/LAME)...",
+      );
+      try {
+        await rust_dsp.encodeToMp3(
+          inputPath: tempM4aPath,
+          outputPath: tempMp3Path,
+          bitrateKbps: kbps,
+          master: _autoMasterize,
+        );
+      } catch (e) {
+        throw Exception("Fallo en el codificador MP3: $e");
+      }
+      try {
+        if (File(tempM4aPath).existsSync()) File(tempM4aPath).deleteSync();
+      } catch (_) {}
 
       setState(() => _statusText = "Inyectando archivo final al destino...");
       final cleanName = result['fileName']!
@@ -508,9 +594,14 @@ class _YoutubeSearchAndDownloadWorkspaceState
       File(tempMp3Path).renameSync(finalMp3Path);
       if (finalLrcContent.trim().isNotEmpty) {
         File(finalLrcPath).writeAsStringSync(finalLrcContent);
+        registerYtAutoLyric(finalLrcPath);
       } else {
         if (File(finalLrcPath).existsSync()) File(finalLrcPath).deleteSync();
       }
+
+      try {
+        if (File(tempLrcPath).existsSync()) File(tempLrcPath).deleteSync();
+      } catch (_) {}
 
       _searchController.clear();
 
@@ -636,57 +727,42 @@ class _YoutubeSearchAndDownloadWorkspaceState
     String currentPath = initialPath;
 
     try {
-      setState(() => _statusText = "⚙️ Limpieza de metadatos...");
-      currentPath = await ref
-          .read(metadataWorkerProvider)
-          .processSingleFile(currentPath);
+      setState(() => _statusText = "⚙️ Nombre, letra, corte y −14 LUFS...");
+      final outcome = await MasterTrack.run(
+        ref: ref,
+        path: currentPath,
+        withLyrics: true,
+        writeCues: false,
+        onStage: (String stage) {
+          if (!mounted) return;
+          setState(() => _statusText = _ytStageLabel(stage));
+        },
+      );
+      currentPath = outcome.path;
+      if (outcome.detail.isNotEmpty && mounted) {
+        setState(() => _statusText = outcome.detail);
+      }
 
-      // 🧠 LÓGICA DE BYPASS POR PESO FÍSICO (REMIX/MEGAMIX)
+      // Megamix (>16 MB): corte + −14 + BPM de entrada. Sin letra y sin _K.
       final double fileSizeMB = File(currentPath).lengthSync() / (1024 * 1024);
-      final bool isHeavyMix = fileSizeMB > 16.0; // > 7 minutos a 320kbps
+      final bool isHeavyMix = fileSizeMB > 16.0;
 
       final lrcPath = currentPath.replaceAll(
         RegExp(r'\.mp3$|\.webm$', caseSensitive: false),
         '.lrc',
       );
-      final hasPreIngestedLrc = File(lrcPath).existsSync();
 
-      if (isHeavyMix) {
-        setState(
-          () => _statusText =
-              "⏭️ Mix Pesado detectado (${fileSizeMB.toStringAsFixed(1)}MB). Omitiendo NLP...",
-        );
-        debugPrint(
-          "🟢 [TRACKER] Mix/Remix detectado. Bypass de NLP y Karaoke activado.",
-        );
-        await Future.delayed(const Duration(seconds: 1));
-      } else {
-        if (!hasPreIngestedLrc) {
-          setState(() => _statusText = "📝 Scraping LRCLIB (NLP)...");
-          await ref.read(nlpWorkerProvider).processSingleFile(currentPath);
-        } else {
-          debugPrint(
-            "🟢 [TRACKER PIPELINE] NLP Omitido. Procesando letra verificada por el usuario.",
-          );
-        }
+      final marks = await rust_dsp.readGmxMarks(inputPath: currentPath);
+      final bool lyricsOk = isHeavyMix ||
+          marks.lyr == 'SYNC' ||
+          marks.lyr == 'PLAIN' ||
+          marks.lyr == 'MANUAL' ||
+          marks.lyr == 'NA' ||
+          marks.lyr == 'NONE';
+      if (marks.trimMs >= 0 && marks.lufsDone && marks.bpmOk && lyricsOk) {
+        setState(() => _statusText = "🔐 Inyectando Sello Watermark...");
+        await rust_dsp.injectWatermark(inputPath: currentPath);
       }
-
-      setState(() => _statusText = "🔊 Aplicando DSP (C++) & Trim...");
-      final durationBeforeMs = await _getAudioDurationMs(currentPath);
-      await ref.read(dspWorkerProvider).processSingleFile(currentPath);
-      final durationAfterMs = await _getAudioDurationMs(currentPath);
-      final trimmedMs = durationBeforeMs - durationAfterMs;
-
-      if (trimmedMs > 50) {
-        setState(
-          () => _statusText =
-              "⏱️ Realineando vector de subtítulos (-$trimmedMs ms)...",
-        );
-        await _offsetLrcTimeline(lrcPath, trimmedMs);
-      }
-
-      setState(() => _statusText = "🔐 Inyectando Sello Watermark...");
-      await rust_dsp.injectWatermark(inputPath: currentPath);
 
       setState(() => _statusText = "🎛️ Asignando Curvas ISAR...");
       final rawGenre = await rust_dsp.readAudioGenre(inputPath: currentPath);
@@ -793,12 +869,17 @@ class _YoutubeSearchAndDownloadWorkspaceState
       await ref.read(dspWorkerProvider).generateStaticBpmCache(parentDir);
 
       // 🛠️ INYECCIÓN KRAEOKE FIRE-AND-FORGET POST-MASTERIZACIÓN (BYPASS APLICADO)
-      if (!isHeavyMix) {
+      if (!isHeavyMix && MasterProfile.current().allowKaraoke) {
         setState(
           () => _statusText =
               "✅ Automix listo. 🤖 Generando Karaoke en 2do plano...",
         );
         KaraokeAIEngine.spawnBackgroundExtraction(currentPath);
+      } else if (!isHeavyMix) {
+        setState(
+          () => _statusText =
+              "✅ Automix listo. Karaoke _K solo en Windows y Mac.",
+        );
       } else {
         setState(
           () => _statusText = "✅ Automix listo. (Karaoke IA omitido por peso)",

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../core/lyric_files.dart';
 import '../../services/tv_sync_server.dart';
 import '../../services/tv_adb_deployment_service.dart';
 
@@ -176,6 +177,7 @@ class _KaraokeWorkspaceState extends ConsumerState<KaraokeWorkspace> {
     _fetchTvSyncUrl();
 
     KaraokeCore().currentSingerNotifier.addListener(_onSingerChanged);
+    _lrcSub = lrcChanges.listen(_onLrcChanged);
     KaraokeCore().queueNotifier.addListener(_onQueueChanged);
     KaraokeCore().votesNotifier.addListener(_pushStageState);
     ref.read(tvSyncProvider).onTvMessage = _onTvMessage;
@@ -574,6 +576,7 @@ class _KaraokeWorkspaceState extends ConsumerState<KaraokeWorkspace> {
   @override
   void dispose() {
     _scoreboardTimer?.cancel();
+    _lrcSub?.cancel();
     _lyricClock?.cancel();
     _preloadTimer?.cancel();
     KaraokeCore().currentSingerNotifier.removeListener(_onSingerChanged);
@@ -585,6 +588,16 @@ class _KaraokeWorkspaceState extends ConsumerState<KaraokeWorkspace> {
     } catch (_) {}
     _lrcScrollController.dispose();
     super.dispose();
+  }
+
+  StreamSubscription<String>? _lrcSub;
+
+  /// Buscar letra / Deshacer / Restaurar cambiaron el `.lrc`: si es el tema
+  /// abierto, se relee.
+  void _onLrcChanged(String audioPath) {
+    if (!mounted) return;
+    final String? song = KaraokeCore().currentSingerNotifier.value['song'];
+    if (sameAudioPath(song, audioPath)) _loadLrc(song!);
   }
 
   void _onSingerChanged() {

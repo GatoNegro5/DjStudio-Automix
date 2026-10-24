@@ -19,6 +19,15 @@ Directory ensureBrandDataDir(String base) {
   return next;
 }
 
+/// True si [path] está dentro de la carpeta de laboratorio.
+bool pathIsLab(String path) {
+  final String legacy = '${legacyBrand}_LAB';
+  for (final String part in path.replaceAll('\\', '/').split('/')) {
+    if (part == 'GatoMix_LAB' || part == legacy) return true;
+  }
+  return false;
+}
+
 /// Carpeta de laboratorio junto a [base]. Migra el directorio anterior.
 String labFolder(String base) {
   final sep = Platform.pathSeparator;

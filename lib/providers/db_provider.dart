@@ -66,6 +66,26 @@ class DatabaseService {
     return await isar.trackMetadatas.getByFilePath(path);
   }
 
+  /// La pista cambió de ruta (nombre nuevo). Las cues siguen a ese archivo.
+  Future<void> retargetTrackMetadata(String oldPath, String newPath) async {
+    if (oldPath == newPath) return;
+    final existing = await getTrackMetadata(oldPath);
+    if (existing == null) return;
+    await saveTrackMetadata(
+      path: newPath,
+      mixProfile: existing.mixProfile,
+      durationMs: existing.mixDurationMs,
+      genre: existing.genreAssigned,
+      cueInMs: existing.cueInMs,
+      mixOutMs: existing.mixOutMs,
+      hasLyrics: existing.hasLyrics,
+      hasBpm: existing.hasBpm,
+      hasCurve: existing.hasCurve,
+      isManualCue: existing.isManualCue,
+    );
+    await deleteTrackMetadata(oldPath);
+  }
+
   Future<void> deleteTrackMetadata(String path) async {
     final isar = await ref.read(isarInitProvider.future);
     await isar.writeTxn(() async {

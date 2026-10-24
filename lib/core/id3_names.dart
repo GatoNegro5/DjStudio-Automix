@@ -1,12 +1,13 @@
 import 'dart:convert';
 
-/// TIT2 (título) y TPE1 (artista) de un bloque ID3v2 ya leído.
-/// ID3v2.2 usa TT2 / TP1, el mismo dato con el id corto.
+/// TIT2 (título), TPE1 (artista) y TALB (álbum) de un bloque ID3v2 ya leído.
+/// ID3v2.2 usa TT2 / TP1 / TAL, el mismo dato con el id corto.
 class Id3Names {
   final String title;
   final String artist;
+  final String album;
 
-  const Id3Names({this.title = '', this.artist = ''});
+  const Id3Names({this.title = '', this.artist = '', this.album = ''});
 }
 
 int _syncsafe(List<int> b, int o) =>
@@ -84,7 +85,7 @@ String _decodeTextFrame(List<int> data) {
   return text.trim();
 }
 
-/// Lee TIT2 y TPE1 de los bytes de la etiqueta (cabecera incluida).
+/// Lee TIT2, TPE1 y TALB de los bytes de la etiqueta (cabecera incluida).
 /// No decodifica audio. Si el bloque no es ID3v2, devuelve cadenas vacías.
 Id3Names parseId3Names(List<int> bytes) {
   if (bytes.length < 10) return const Id3Names();
@@ -115,8 +116,10 @@ Id3Names parseId3Names(List<int> bytes) {
 
   String title = '';
   String artist = '';
+  String album = '';
   final int hdrLen = ver == 2 ? 6 : 10;
-  while (pos + hdrLen <= body.length && (title.isEmpty || artist.isEmpty)) {
+  while (pos + hdrLen <= body.length &&
+      (title.isEmpty || artist.isEmpty || album.isEmpty)) {
     if (body[pos] == 0) break;
     final int idLen = ver == 2 ? 3 : 4;
     final String id = latin1.decode(
@@ -145,7 +148,8 @@ Id3Names parseId3Names(List<int> bytes) {
 
     final bool isTitle = id == 'TIT2' || id == 'TT2';
     final bool isArtist = id == 'TPE1' || id == 'TP1';
-    if (isTitle || isArtist) {
+    final bool isAlbum = id == 'TALB' || id == 'TAL';
+    if (isTitle || isArtist || isAlbum) {
       var skip = 0;
       var compressed = false;
       var encrypted = false;
@@ -166,10 +170,11 @@ Id3Names parseId3Names(List<int> bytes) {
         if (text.isNotEmpty) {
           if (isTitle && title.isEmpty) title = text;
           if (isArtist && artist.isEmpty) artist = text;
+          if (isAlbum && album.isEmpty) album = text;
         }
       }
     }
     pos = dataStart + frameSize;
   }
-  return Id3Names(title: title, artist: artist);
+  return Id3Names(title: title, artist: artist, album: album);
 }

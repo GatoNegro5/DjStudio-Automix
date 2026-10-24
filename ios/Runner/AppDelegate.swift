@@ -12,5 +12,16 @@ import UIKit
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
+    let thermal = FlutterMethodChannel(
+      name: "gatomix/thermal",
+      binaryMessenger: engineBridge.applicationRegistrar.messenger()
+    )
+    thermal.setMethodCallHandler { call, result in
+      if call.method == "status" {
+        result(ProcessInfo.processInfo.thermalState.rawValue)
+      } else {
+        result(FlutterMethodNotImplemented)
+      }
+    }
   }
 }

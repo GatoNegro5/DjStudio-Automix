@@ -67,7 +67,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => -378390165;
+  int get rustContentHash => 1784870712;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -104,6 +104,7 @@ abstract class RustLibApi extends BaseApi {
     required String inputPath,
     required String outputPath,
     required int bitrateKbps,
+    required bool master,
   });
 
   Future<BigInt> crateApiCoreDspExactDurationMs({required String inputPath});
@@ -118,12 +119,27 @@ abstract class RustLibApi extends BaseApi {
 
   Future<void> crateApiCoreDspKaraokeCancel();
 
+  Future<void> crateApiCoreDspMasterArm();
+
+  Future<void> crateApiCoreDspMasterCancel();
+
+  Future<String> crateApiCoreDspMasterPriority();
+
   Future<double> crateApiCoreDspKaraokeProgress();
 
   Future<bool> crateApiCoreDspKaraokeSeparate({
     required String inputPath,
     required String modelPath,
     required String outputPath,
+  });
+
+  Future<MasterRewrite> crateApiCoreDspMasterRewrite({
+    required String inputPath,
+    required bool doTrim,
+    required bool doLufs,
+    required bool introBpm,
+    required int forceHeadMs,
+    required int forceTailMs,
   });
 
   Future<bool> crateApiCoreDspNormalizeLufs({required String inputPath});
@@ -146,7 +162,15 @@ abstract class RustLibApi extends BaseApi {
 
   Future<String> crateApiCoreDspReadAudioGenre({required String inputPath});
 
+  Future<GmxMarks> crateApiCoreDspReadGmxMarks({required String inputPath});
+
   Future<MasterTags> crateApiCoreDspReadMasterTags({required String inputPath});
+
+  Future<bool> crateApiCoreDspSetGmxMark({
+    required String inputPath,
+    required String key,
+    required String value,
+  });
 
   Future<void> crateApiCoreDspStartMasterRecording({
     required String outputPath,
@@ -339,6 +363,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required String inputPath,
     required String outputPath,
     required int bitrateKbps,
+    required bool master,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -347,6 +372,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_String(inputPath, serializer);
           sse_encode_String(outputPath, serializer);
           sse_encode_u_32(bitrateKbps, serializer);
+          sse_encode_bool(master, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -359,7 +385,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_String,
         ),
         constMeta: kCrateApiCoreDspEncodeToMp3ConstMeta,
-        argValues: [inputPath, outputPath, bitrateKbps],
+        argValues: [inputPath, outputPath, bitrateKbps, master],
         apiImpl: this,
       ),
     );
@@ -367,7 +393,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   TaskConstMeta get kCrateApiCoreDspEncodeToMp3ConstMeta => const TaskConstMeta(
     debugName: "encode_to_mp3",
-    argNames: ["inputPath", "outputPath", "bitrateKbps"],
+    argNames: ["inputPath", "outputPath", "bitrateKbps", "master"],
   );
 
   @override
@@ -547,6 +573,87 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "karaoke_cancel", argNames: []);
 
   @override
+  Future<void> crateApiCoreDspMasterArm() {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 27,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiCoreDspMasterArmConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiCoreDspMasterArmConstMeta =>
+      const TaskConstMeta(debugName: "master_arm", argNames: []);
+
+  @override
+  Future<void> crateApiCoreDspMasterCancel() {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 28,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiCoreDspMasterCancelConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiCoreDspMasterCancelConstMeta =>
+      const TaskConstMeta(debugName: "master_cancel", argNames: []);
+
+  @override
+  Future<String> crateApiCoreDspMasterPriority() {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 29,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiCoreDspMasterPriorityConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiCoreDspMasterPriorityConstMeta =>
+      const TaskConstMeta(debugName: "master_priority", argNames: []);
+
+  @override
   Future<double> crateApiCoreDspKaraokeProgress() {
     return handler.executeNormal(
       NormalTask(
@@ -611,6 +718,63 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<MasterRewrite> crateApiCoreDspMasterRewrite({
+    required String inputPath,
+    required bool doTrim,
+    required bool doLufs,
+    required bool introBpm,
+    required int forceHeadMs,
+    required int forceTailMs,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(inputPath, serializer);
+          sse_encode_bool(doTrim, serializer);
+          sse_encode_bool(doLufs, serializer);
+          sse_encode_bool(introBpm, serializer);
+          sse_encode_i_32(forceHeadMs, serializer);
+          sse_encode_i_32(forceTailMs, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 15,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_master_rewrite,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiCoreDspMasterRewriteConstMeta,
+        argValues: [
+          inputPath,
+          doTrim,
+          doLufs,
+          introBpm,
+          forceHeadMs,
+          forceTailMs,
+        ],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiCoreDspMasterRewriteConstMeta =>
+      const TaskConstMeta(
+        debugName: "master_rewrite",
+        argNames: [
+          "inputPath",
+          "doTrim",
+          "doLufs",
+          "introBpm",
+          "forceHeadMs",
+          "forceTailMs",
+        ],
+      );
+
+  @override
   Future<bool> crateApiCoreDspNormalizeLufs({required String inputPath}) {
     return handler.executeNormal(
       NormalTask(
@@ -620,7 +784,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 15,
+            funcId: 16,
             port: port_,
           );
         },
@@ -652,7 +816,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 16,
+            funcId: 17,
             port: port_,
           );
         },
@@ -683,7 +847,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 17,
+            funcId: 18,
             port: port_,
           );
         },
@@ -718,7 +882,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 18,
+            funcId: 19,
             port: port_,
           );
         },
@@ -751,7 +915,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 19,
+            funcId: 20,
             port: port_,
           );
         },
@@ -782,7 +946,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 20,
+            funcId: 21,
             port: port_,
           );
         },
@@ -804,6 +968,34 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<GmxMarks> crateApiCoreDspReadGmxMarks({required String inputPath}) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(inputPath, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 22,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_gmx_marks,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiCoreDspReadGmxMarksConstMeta,
+        argValues: [inputPath],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiCoreDspReadGmxMarksConstMeta =>
+      const TaskConstMeta(debugName: "read_gmx_marks", argNames: ["inputPath"]);
+
+  @override
   Future<MasterTags> crateApiCoreDspReadMasterTags({
     required String inputPath,
   }) {
@@ -815,7 +1007,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 21,
+            funcId: 23,
             port: port_,
           );
         },
@@ -837,6 +1029,42 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<bool> crateApiCoreDspSetGmxMark({
+    required String inputPath,
+    required String key,
+    required String value,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(inputPath, serializer);
+          sse_encode_String(key, serializer);
+          sse_encode_String(value, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 24,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_bool,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiCoreDspSetGmxMarkConstMeta,
+        argValues: [inputPath, key, value],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiCoreDspSetGmxMarkConstMeta => const TaskConstMeta(
+    debugName: "set_gmx_mark",
+    argNames: ["inputPath", "key", "value"],
+  );
+
+  @override
   Future<void> crateApiCoreDspStartMasterRecording({
     required String outputPath,
     required int bitrateKbps,
@@ -850,7 +1078,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 22,
+            funcId: 25,
             port: port_,
           );
         },
@@ -880,7 +1108,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 23,
+            funcId: 26,
             port: port_,
           );
         },
@@ -930,6 +1158,40 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  GmxMarks dco_decode_gmx_marks(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 18)
+      throw Exception('unexpected arr length: expect 18 but see ${arr.length}');
+    return GmxMarks(
+      version: dco_decode_String(arr[0]),
+      trackType: dco_decode_String(arr[1]),
+      nameOk: dco_decode_bool(arr[2]),
+      lyr: dco_decode_String(arr[3]),
+      lyrStartMs: dco_decode_i_32(arr[4]),
+      trimMs: dco_decode_i_32(arr[5]),
+      trimTailMs: dco_decode_i_32(arr[6]),
+      lrcShift: dco_decode_bool(arr[7]),
+      bpm: dco_decode_f_64(arr[8]),
+      bpmOk: dco_decode_bool(arr[9]),
+      bpmScope: dco_decode_String(arr[10]),
+      lufs: dco_decode_f_64(arr[11]),
+      lufsDone: dco_decode_bool(arr[12]),
+      karaoke: dco_decode_bool(arr[13]),
+      backup: dco_decode_bool(arr[14]),
+      sealed: dco_decode_bool(arr[15]),
+      leadMs: dco_decode_i_32(arr[16]),
+      reason: dco_decode_String(arr[17]),
+    );
+  }
+
+  @protected
+  int dco_decode_i_32(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw as int;
+  }
+
+  @protected
   List<String> dco_decode_list_String(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_String).toList();
@@ -939,6 +1201,26 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as Uint8List;
+  }
+
+  @protected
+  MasterRewrite dco_decode_master_rewrite(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 10)
+      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
+    return MasterRewrite(
+      trimHeadMs: dco_decode_u_32(arr[0]),
+      trimTailMs: dco_decode_u_32(arr[1]),
+      leadMs: dco_decode_u_32(arr[2]),
+      tailMs: dco_decode_u_32(arr[3]),
+      bpm: dco_decode_f_64(arr[4]),
+      lufs: dco_decode_f_64(arr[5]),
+      lufsApplied: dco_decode_bool(arr[6]),
+      bitrateKbps: dco_decode_u_32(arr[7]),
+      rewritten: dco_decode_bool(arr[8]),
+      residualMs: dco_decode_u_32(arr[9]),
+    );
   }
 
   @protected
@@ -1011,6 +1293,55 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  GmxMarks sse_decode_gmx_marks(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_version = sse_decode_String(deserializer);
+    var var_trackType = sse_decode_String(deserializer);
+    var var_nameOk = sse_decode_bool(deserializer);
+    var var_lyr = sse_decode_String(deserializer);
+    var var_lyrStartMs = sse_decode_i_32(deserializer);
+    var var_trimMs = sse_decode_i_32(deserializer);
+    var var_trimTailMs = sse_decode_i_32(deserializer);
+    var var_lrcShift = sse_decode_bool(deserializer);
+    var var_bpm = sse_decode_f_64(deserializer);
+    var var_bpmOk = sse_decode_bool(deserializer);
+    var var_bpmScope = sse_decode_String(deserializer);
+    var var_lufs = sse_decode_f_64(deserializer);
+    var var_lufsDone = sse_decode_bool(deserializer);
+    var var_karaoke = sse_decode_bool(deserializer);
+    var var_backup = sse_decode_bool(deserializer);
+    var var_sealed = sse_decode_bool(deserializer);
+    var var_leadMs = sse_decode_i_32(deserializer);
+    var var_reason = sse_decode_String(deserializer);
+    return GmxMarks(
+      version: var_version,
+      trackType: var_trackType,
+      nameOk: var_nameOk,
+      lyr: var_lyr,
+      lyrStartMs: var_lyrStartMs,
+      trimMs: var_trimMs,
+      trimTailMs: var_trimTailMs,
+      lrcShift: var_lrcShift,
+      bpm: var_bpm,
+      bpmOk: var_bpmOk,
+      bpmScope: var_bpmScope,
+      lufs: var_lufs,
+      lufsDone: var_lufsDone,
+      karaoke: var_karaoke,
+      backup: var_backup,
+      sealed: var_sealed,
+      leadMs: var_leadMs,
+      reason: var_reason,
+    );
+  }
+
+  @protected
+  int sse_decode_i_32(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return deserializer.buffer.getInt32();
+  }
+
+  @protected
   List<String> sse_decode_list_String(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
@@ -1027,6 +1358,33 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var len_ = sse_decode_i_32(deserializer);
     return deserializer.buffer.getUint8List(len_);
+  }
+
+  @protected
+  MasterRewrite sse_decode_master_rewrite(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_trimHeadMs = sse_decode_u_32(deserializer);
+    var var_trimTailMs = sse_decode_u_32(deserializer);
+    var var_leadMs = sse_decode_u_32(deserializer);
+    var var_tailMs = sse_decode_u_32(deserializer);
+    var var_bpm = sse_decode_f_64(deserializer);
+    var var_lufs = sse_decode_f_64(deserializer);
+    var var_lufsApplied = sse_decode_bool(deserializer);
+    var var_bitrateKbps = sse_decode_u_32(deserializer);
+    var var_rewritten = sse_decode_bool(deserializer);
+    var var_residualMs = sse_decode_u_32(deserializer);
+    return MasterRewrite(
+      trimHeadMs: var_trimHeadMs,
+      trimTailMs: var_trimTailMs,
+      leadMs: var_leadMs,
+      tailMs: var_tailMs,
+      bpm: var_bpm,
+      lufs: var_lufs,
+      lufsApplied: var_lufsApplied,
+      bitrateKbps: var_bitrateKbps,
+      rewritten: var_rewritten,
+      residualMs: var_residualMs,
+    );
   }
 
   @protected
@@ -1074,12 +1432,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  int sse_decode_i_32(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return deserializer.buffer.getInt32();
-  }
-
-  @protected
   void sse_encode_String(String self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_list_prim_u_8_strict(utf8.encoder.convert(self), serializer);
@@ -1106,6 +1458,35 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_gmx_marks(GmxMarks self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.version, serializer);
+    sse_encode_String(self.trackType, serializer);
+    sse_encode_bool(self.nameOk, serializer);
+    sse_encode_String(self.lyr, serializer);
+    sse_encode_i_32(self.lyrStartMs, serializer);
+    sse_encode_i_32(self.trimMs, serializer);
+    sse_encode_i_32(self.trimTailMs, serializer);
+    sse_encode_bool(self.lrcShift, serializer);
+    sse_encode_f_64(self.bpm, serializer);
+    sse_encode_bool(self.bpmOk, serializer);
+    sse_encode_String(self.bpmScope, serializer);
+    sse_encode_f_64(self.lufs, serializer);
+    sse_encode_bool(self.lufsDone, serializer);
+    sse_encode_bool(self.karaoke, serializer);
+    sse_encode_bool(self.backup, serializer);
+    sse_encode_bool(self.sealed, serializer);
+    sse_encode_i_32(self.leadMs, serializer);
+    sse_encode_String(self.reason, serializer);
+  }
+
+  @protected
+  void sse_encode_i_32(int self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    serializer.buffer.putInt32(self);
+  }
+
+  @protected
   void sse_encode_list_String(List<String> self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.length, serializer);
@@ -1122,6 +1503,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.length, serializer);
     serializer.buffer.putUint8List(self);
+  }
+
+  @protected
+  void sse_encode_master_rewrite(MasterRewrite self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_32(self.trimHeadMs, serializer);
+    sse_encode_u_32(self.trimTailMs, serializer);
+    sse_encode_u_32(self.leadMs, serializer);
+    sse_encode_u_32(self.tailMs, serializer);
+    sse_encode_f_64(self.bpm, serializer);
+    sse_encode_f_64(self.lufs, serializer);
+    sse_encode_bool(self.lufsApplied, serializer);
+    sse_encode_u_32(self.bitrateKbps, serializer);
+    sse_encode_bool(self.rewritten, serializer);
+    sse_encode_u_32(self.residualMs, serializer);
   }
 
   @protected
@@ -1157,11 +1553,5 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   @protected
   void sse_encode_unit(void self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
-  }
-
-  @protected
-  void sse_encode_i_32(int self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    serializer.buffer.putInt32(self);
   }
 }

@@ -16,6 +16,8 @@ import '../core/audio/tempo_drift.dart';
 import '../djiphone/iphone_library.dart';
 import '../core/audio/dj_audio_handler.dart';
 
+import '../core/lyric_files.dart';
+import '../core/lyric_match.dart';
 import 'db_provider.dart';
 import 'nlp_provider.dart';
 import 'equalizer_provider.dart';
@@ -193,7 +195,12 @@ class AutomixNotifier extends Notifier<AutomixState> {
     globalAudioHandler.onPrevious = () => _osStep(-1);
     globalAudioHandler.onSeek = (pos) => seek(pos);
 
+    final StreamSubscription<String> lrcSub = lrcChanges.listen(
+      (String path) => unawaited(reloadLyrics(path)),
+    );
+
     ref.onDispose(() {
+      lrcSub.cancel();
       _cancelOutroProbe();
       _positionSub?.cancel();
       _durationSub?.cancel();
@@ -1666,6 +1673,25 @@ class AutomixNotifier extends Notifier<AutomixState> {
     }
   }
 
+  /// El `.lrc` de [audioPath] cambió fuera de Automix: olvida la letra en
+  /// memoria y la relee si es la pista actual o la siguiente.
+  Future<void> reloadLyrics(String audioPath) async {
+    _lyricPrime.removeWhere((String k, _) => sameAudioPath(k, audioPath));
+    final String? current = state.currentTrackPath;
+    final String? next = state.nextTrackPath;
+    // Sin _fetchLyricsAsync: un Deshacer que borra la letra no la vuelve a bajar.
+    if (sameAudioPath(current, audioPath)) {
+      final List<LyricLine> parsed = await _parseLyricsFile(current!);
+      _lyricPrime[current] = parsed;
+      if (state.currentTrackPath != current) return;
+      _shownLyricsPath = current;
+      state = state.copyWith(lyrics: parsed, activeLyricIndex: -1);
+      _lastLyricIndex = -2;
+    } else if (sameAudioPath(next, audioPath)) {
+      _lyricPrime[next!] = await _parseLyricsFile(next);
+    }
+  }
+
   Future<void> _primeLyrics(String audioPath) async {
     if (_lyricPrime.containsKey(audioPath)) return;
     final parsed = await _parseLyricsFile(audioPath);
@@ -1704,73 +1730,18 @@ class AutomixNotifier extends Notifier<AutomixState> {
     } catch (_) {}
   }
 
-  bool _lrclibHitMatches(String audioPath, dynamic hit) {
-    if (hit is! Map) return false;
-    String norm(String raw) =>
-        raw.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), ' ').trim();
-    final stem = norm(
-      audioPath
-          .replaceAll('\\', '/')
-          .split('/')
-          .last
-          .replaceAll(RegExp(r'\.(mp3|webm|m4a)$', caseSensitive: false), ''),
-    );
-    final track = norm((hit['trackName'] ?? '').toString());
-    if (stem.isEmpty || track.isEmpty) return false;
-    if (track.length < 4 && stem != track) return false;
-    return stem.contains(track) || track.contains(stem);
-  }
-
   Future<void> _fetchLyricsAsync(String audioPath, String lrcPath) async {
+    if (!lyricMayDownload(lrcExists: File(lrcPath).existsSync())) return;
     try {
-      String rawFilename = audioPath
-          .replaceAll('\\', '/')
-          .split('/')
-          .last
-          .replaceAll(
-            RegExp(r'\.mp3$|\.webm$|\.m4a$', caseSensitive: false),
-            '',
-          );
-      String cleanQuery = rawFilename
-          .replaceAll(RegExp(r'\[.*?\]|\(.*?\)', caseSensitive: false), '')
-          .replaceAll(
-            RegExp(
-              r'\b(official|video|audio|lyric|lyrics|remix|live|kbps|hd|hq)\b',
-              caseSensitive: false,
-            ),
-            '',
-          )
-          .replaceAll(RegExp(r'\s+'), ' ')
-          .trim();
-      if (cleanQuery.isEmpty) cleanQuery = rawFilename;
-
-      final uri = Uri.parse(
-        'https://lrclib.net/api/search?q=${Uri.encodeComponent(cleanQuery)}',
-      );
-      final response = await http.get(uri);
-
-      if (response.statusCode == 200) {
-        final List<dynamic> data = jsonDecode(response.body);
-        if (data.isNotEmpty) {
-          data.sort((a, b) {
-            final aSync = a['syncedLyrics']?.toString().isNotEmpty ?? false;
-            final bSync = b['syncedLyrics']?.toString().isNotEmpty ?? false;
-            if (aSync && !bSync) return -1;
-            if (!aSync && bSync) return 1;
-            return 0;
-          });
-
-          if (data[0]['syncedLyrics'] != null &&
-              data[0]['syncedLyrics'].toString().isNotEmpty &&
-              _lrclibHitMatches(audioPath, data[0]) &&
-              !File(lrcPath).existsSync()) {
-            await File(lrcPath).writeAsString(data[0]['syncedLyrics']);
-            _lyricPrime.remove(audioPath);
-            if (state.currentTrackPath == audioPath) {
-              await _loadLyrics(audioPath);
-            }
-          }
-        }
+      final LyricChoice choice = await ref
+          .read(nlpWorkerProvider)
+          .lookupSafeLyric(audioPath);
+      if (!choice.hasText) return;
+      if (!lyricMayDownload(lrcExists: File(lrcPath).existsSync())) return;
+      await File(lrcPath).writeAsString(choice.fileText);
+      _lyricPrime.remove(audioPath);
+      if (state.currentTrackPath == audioPath) {
+        await _loadLyrics(audioPath);
       }
     } catch (_) {}
   }

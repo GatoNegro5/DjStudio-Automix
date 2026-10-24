@@ -19,6 +19,17 @@ class AfCaps {
   static bool _probed = false;
   static Future<void>? _running;
 
+  /// Cadena completa que el libmpv de Windows aceptó como limitador.
+  /// Vacía si ninguna sonda pasó: no se inventa un filtro.
+  static String windowsSafetyLimiter = '';
+
+  /// Solo se prueban en Windows, y solo si `alimiter=level=disabled` falla.
+  static const List<String> _windowsFallbacks = [
+    'alimiter=limit=0.95:level=0',
+    'acompressor=threshold=-1dB:ratio=20:attack=5:release=100:makeup=1:knee=1.5',
+    'compand=attacks=0:decays=0.3:points=-80/-80|-12/-12|-1/-1|20/-1',
+  ];
+
   static bool has(String name) => _ok.contains(name);
 
   /// Deja solo los filtros soportados de una cadena `a,b,c`.
@@ -65,10 +76,30 @@ class AfCaps {
         _ok.remove('equalizer');
       }
       for (final f in _optional) {
-        if (await accepts('$f=limit=0.95:level=disabled', f)) _ok.add(f);
+        final String chain = '$f=limit=0.95:level=disabled';
+        if (await accepts(chain, f)) {
+          _ok.add(f);
+          if (defaultTargetPlatform == TargetPlatform.windows) {
+            windowsSafetyLimiter = chain;
+          }
+        }
+      }
+      if (defaultTargetPlatform == TargetPlatform.windows &&
+          windowsSafetyLimiter.isEmpty) {
+        for (final String chain in _windowsFallbacks) {
+          final String name = chain.split('=').first.trim();
+          if (await accepts(chain, name)) {
+            _ok.add(name);
+            windowsSafetyLimiter = chain;
+            break;
+          }
+        }
       }
       _probed = true;
-      debugPrint('🎚️ [AF CAPS] soportados: $_ok');
+      debugPrint(
+        '🎚️ [AF CAPS] soportados: $_ok'
+        '${windowsSafetyLimiter.isEmpty ? '' : ' | windows=$windowsSafetyLimiter'}',
+      );
     } catch (e) {
       debugPrint('🔴 [AF CAPS] sin sonda ($e), solo equalizer');
     } finally {

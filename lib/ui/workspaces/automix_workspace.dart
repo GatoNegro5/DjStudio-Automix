@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/bpm_range.dart';
 import '../../core/brand_paths.dart';
 import '../../djiphone/iphone_library.dart';
 import '../../providers/directory_provider.dart';
@@ -310,12 +311,26 @@ class FolderContentPanel extends ConsumerWidget {
     });
 
     double getTrackBpm(String filename) {
-      if (bpmCache.containsKey(filename)) return bpmCache[filename]!;
+      double? raw;
+      if (bpmCache.containsKey(filename)) {
+        raw = bpmCache[filename];
+      } else {
+        final String slash = filename.replaceAll('\\', '/');
+        for (final MapEntry<String, double> entry in bpmCache.entries) {
+          final String key = entry.key.replaceAll('\\', '/');
+          if (key == slash || key.endsWith('/$slash')) {
+            raw = entry.value;
+            break;
+          }
+        }
+      }
+      if (raw != null && raw > 0) return fixBpmRange(raw) ?? 0.0;
       final match = RegExp(
         r'(?:\b|_|-)(\d{2,3}(?:\.\d+)?)\s*bpm\b',
         caseSensitive: false,
       ).firstMatch(filename);
-      return match != null ? double.parse(match.group(1)!) : 0.0;
+      if (match == null) return 0.0;
+      return fixBpmRange(double.parse(match.group(1)!)) ?? 0.0;
     }
 
     return Column(
@@ -717,12 +732,26 @@ class AutomixPanel extends ConsumerWidget {
     );
 
     double getTrackBpm(String filename) {
-      if (bpmCache.containsKey(filename)) return bpmCache[filename]!;
+      double? raw;
+      if (bpmCache.containsKey(filename)) {
+        raw = bpmCache[filename];
+      } else {
+        final String slash = filename.replaceAll('\\', '/');
+        for (final MapEntry<String, double> entry in bpmCache.entries) {
+          final String key = entry.key.replaceAll('\\', '/');
+          if (key == slash || key.endsWith('/$slash')) {
+            raw = entry.value;
+            break;
+          }
+        }
+      }
+      if (raw != null && raw > 0) return fixBpmRange(raw) ?? 0.0;
       final match = RegExp(
         r'(?:\b|_|-)(\d{2,3}(?:\.\d+)?)\s*bpm\b',
         caseSensitive: false,
       ).firstMatch(filename);
-      return match != null ? double.parse(match.group(1)!) : 0.0;
+      if (match == null) return 0.0;
+      return fixBpmRange(double.parse(match.group(1)!)) ?? 0.0;
     }
 
     if (mixStrategy == MixStrategy.random) {
