@@ -1,20 +1,27 @@
 import 'dart:io';
 import 'dart:convert';
 import 'package:gatomix/core/brand_paths.dart';
+import 'package:gatomix/core/id3_names.dart';
+import 'package:gatomix/core/lyric_files.dart';
+import 'package:gatomix/core/lyric_match.dart';
+import 'package:gatomix/core/track_name_clean.dart';
+import 'package:gatomix/djiphone/iphone_library.dart';
+import 'package:gatomix/services/id3_title_artist.dart';
 import 'package:gatomix/services/karaoke_engine.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import '../../core/net/safe_download.dart';
 
 import 'package:gatomix/src/rust/api/core_dsp.dart' as rust_dsp;
-import '../../providers/automix_provider.dart';
 import '../../providers/metadata_provider.dart';
 import '../../providers/dsp_provider.dart';
 import '../../providers/db_provider.dart';
 import '../../providers/nlp_provider.dart';
 import '../../providers/directory_provider.dart';
 import '../../providers/theme_provider.dart';
+import 'lab_lyric_search.dart';
 
 class LabWorkspace extends ConsumerStatefulWidget {
   const LabWorkspace({super.key});
@@ -49,17 +56,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
   }
 
   void _initLabEnvironment() {
-    String baseMusicPath = '';
-    if (Platform.isWindows) {
-      final userProfile = Platform.environment['USERPROFILE'];
-      baseMusicPath = userProfile != null ? '$userProfile\\Music' : 'C:\\Music';
-    } else if (Platform.isMacOS || Platform.isLinux) {
-      baseMusicPath = '${Platform.environment['HOME']}/Music';
-    } else {
-      baseMusicPath = '/storage/emulated/0/Music';
-    }
-
-    final labDir = Directory(labFolder(baseMusicPath));
+    final labDir = Directory(labFolder(_musicBase()));
     if (!labDir.existsSync()) {
       labDir.createSync(recursive: true);
     }
@@ -113,9 +110,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
         '.lrc',
       );
 
-      String baseMusicPath = Platform.isWindows
-          ? '${Platform.environment['USERPROFILE'] ?? 'C:'}\\Music'
-          : '${Platform.environment['HOME'] ?? '/storage/emulated/0'}/Music';
+      String baseMusicPath = _musicBase();
 
       final labDir = Directory(labFolder(baseMusicPath));
       final lrcFile = File(
@@ -143,11 +138,32 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
     }
   }
 
+  String _musicBase() {
+    if (Platform.isWindows) {
+      final String? userProfile = Platform.environment['USERPROFILE'];
+      return userProfile != null ? '$userProfile\\Music' : 'C:\\Music';
+    }
+    if (Platform.isIOS && IphoneLibrary.musicRoot.isNotEmpty) {
+      return IphoneLibrary.musicRoot;
+    }
+    if (Platform.isMacOS || Platform.isLinux) {
+      return '${Platform.environment['HOME']}/Music';
+    }
+    if (Platform.isAndroid) return '/storage/emulated/0/Music';
+    final String? home = Platform.environment['HOME'];
+    return home != null ? '$home/Music' : '/tmp/Music';
+  }
+
+  String _lrcPathOf(String fileName) {
+    return '$_labPath${Platform.pathSeparator}${fileName.replaceAll(RegExp(r'\.(mp3|m4a|webm|wav|flac)$', caseSensitive: false), '.lrc')}';
+  }
+
   void _saveLrc() {
     if (_selectedFileForEdit == null) return;
-    final lrcFile = File(
-      '$_labPath${Platform.pathSeparator}${_selectedFileForEdit!.replaceAll(RegExp(r'\.mp3$|\.webm$', caseSensitive: false), '.lrc')}',
-    );
+    final lrcFile = File(_lrcPathOf(_selectedFileForEdit!));
+    if (lrcFile.existsSync()) {
+      lrcFile.copySync('${lrcFile.path}.bak');
+    }
     lrcFile.writeAsStringSync(_lrcController.text);
 
     ScaffoldMessenger.of(context).showSnackBar(
@@ -253,149 +269,84 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
     }
   }
 
-  void _openWebBrowser(String url) {
+  Future<void> _openWebBrowser(String url) async {
+    final Uri? uri = Uri.tryParse(url);
+    if (uri != null) {
+      try {
+        final bool ok = await launchUrl(
+          uri,
+          mode: LaunchMode.externalApplication,
+        );
+        if (ok) return;
+      } catch (_) {}
+    }
     if (Platform.isWindows) {
-      Process.run('start', [url], runInShell: true);
+      await Process.run('start', [url], runInShell: true);
     } else if (Platform.isMacOS) {
-      Process.run('open', [url]);
+      await Process.run('open', [url]);
     } else if (Platform.isLinux) {
-      Process.run('xdg-open', [url]);
+      await Process.run('xdg-open', [url]);
     }
   }
 
-  Future<void> _searchInternalLrclib() async {
-    final query = _searchQueryController.text.trim();
-    if (query.isEmpty) return;
-
-    showDialog(
+  Future<void> _openLyricSearch() async {
+    if (_selectedFileForEdit == null) return;
+    final String audio =
+        '$_labPath${Platform.pathSeparator}$_selectedFileForEdit';
+    final Id3Names id3 = await loadId3TitleArtist(audio);
+    final int sec = ((await _getAudioDurationMs(audio)) / 1000).round();
+    final List<LyricIdentity> ids = lyricIdentities(
+      path: audio,
+      id3Artist: id3.artist,
+      id3Title: id3.title,
+      id3Album: id3.album,
+      durationSec: sec,
+    );
+    final LyricIdentity id = ids.first;
+    if (!mounted) return;
+    final LyricSearchResult? result = await showDialog<LyricSearchResult>(
       context: context,
-      barrierDismissible: false,
-      builder: (ctx) => const Center(
-        child: CircularProgressIndicator(color: Colors.orangeAccent),
+      builder: (BuildContext ctx) => LabLyricSearch(
+        audioPath: audio,
+        artist: id.artist,
+        title: id.title,
+        durationSec: sec,
+        medley: id.medley,
+        fileQuery: cleanTrackFileName(_selectedFileForEdit!).stem,
       ),
     );
-
-    try {
-      final results = await ref
-          .read(automixProvider.notifier)
-          .searchLyrics(query);
-      if (!mounted) return;
-      Navigator.pop(context);
-
-      final syncedResults = results
-          .where(
-            (r) =>
-                r['syncedLyrics'] != null &&
-                r['syncedLyrics'].toString().isNotEmpty,
-          )
-          .toList();
-
-      showDialog(
-        context: context,
-        builder: (ctx) {
-          final isMobile = MediaQuery.of(ctx).size.width < 600;
-          return AlertDialog(
-            backgroundColor: const Color(0xFF121212),
-            shape: RoundedRectangleBorder(
-              side: const BorderSide(color: Colors.orangeAccent),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            title: const Text(
-              "Resultados Internos (LRCLIB)",
-              style: TextStyle(color: Colors.orangeAccent, fontSize: 14),
-            ),
-            content: SizedBox(
-              width: isMobile ? MediaQuery.of(ctx).size.width * 0.9 : 500,
-              height: isMobile ? MediaQuery.of(ctx).size.height * 0.7 : 400,
-              child: syncedResults.isEmpty
-                  ? const Center(
-                      child: Text(
-                        "No se encontraron letras sincronizadas en el API.",
-                        style: TextStyle(color: Colors.white54),
-                        textAlign: TextAlign.center,
-                      ),
-                    )
-                  : ListView.builder(
-                      itemCount: syncedResults.length,
-                      itemBuilder: (context, index) {
-                        final track = syncedResults[index];
-                        final int durationSec =
-                            (track['duration'] as num?)?.toInt() ?? 0;
-                        final durMin = (durationSec ~/ 60).toString().padLeft(
-                          2,
-                          '0',
-                        );
-                        final durSec = (durationSec % 60).toString().padLeft(
-                          2,
-                          '0',
-                        );
-
-                        return ListTile(
-                          contentPadding: isMobile
-                              ? EdgeInsets.zero
-                              : const EdgeInsets.symmetric(horizontal: 16),
-                          leading: const Icon(
-                            Icons.check_circle,
-                            color: Color(0xFF39FF14),
-                          ),
-                          title: Text(
-                            "${track['artistName']} - ${track['trackName']}",
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: isMobile ? 12 : 13,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          subtitle: Text(
-                            "Álbum: ${track['albumName']} • Duración: $durMin:$durSec",
-                            style: TextStyle(
-                              color: Colors.white54,
-                              fontSize: isMobile ? 10 : 11,
-                            ),
-                          ),
-                          trailing: ElevatedButton(
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.white10,
-                              foregroundColor: Colors.orangeAccent,
-                            ),
-                            child: Text(
-                              "IMPORTAR",
-                              style: TextStyle(fontSize: isMobile ? 10 : 12),
-                            ),
-                            onPressed: () {
-                              setState(() {
-                                _lrcController.text = track['syncedLyrics'];
-                              });
-                              Navigator.pop(ctx);
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text(
-                                    "Letra importada al editor. Dale a 'Guardar en Disco'.",
-                                  ),
-                                  backgroundColor: Colors.orangeAccent,
-                                ),
-                              );
-                            },
-                          ),
-                        );
-                      },
-                    ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text(
-                  "Cerrar",
-                  style: TextStyle(color: Colors.white54),
-                ),
-              ),
-            ],
-          );
-        },
-      );
-    } catch (e) {
-      if (mounted) Navigator.pop(context);
-    }
+    if (result == null || !mounted) return;
+    final String lrcPath = _lrcPathOf(_selectedFileForEdit!);
+    final bool hadBak = await commitLyricSearch(
+      ref: ref,
+      lrcPath: lrcPath,
+      result: result,
+    );
+    setState(() => _lrcController.text = result.text);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          result.noLyric
+              ? 'Marcada sin letra. El proceso automático no la reintenta.'
+              : 'Letra aplicada. La anterior quedó en .lrc.bak.',
+        ),
+        backgroundColor: Colors.orangeAccent,
+        action: hadBak
+            ? SnackBarAction(
+                label: 'Deshacer',
+                textColor: Colors.black,
+                onPressed: () async {
+                  final bool ok = await restoreLrcBak(lrcPath);
+                  if (!ok || !mounted) return;
+                  setState(() {
+                    _lrcController.text = File(lrcPath).readAsStringSync();
+                  });
+                },
+              )
+            : null,
+      ),
+    );
   }
 
   Future<int> _getAudioDurationMs(String path) async {
@@ -613,7 +564,8 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
         }
 
         if (targetLrcFile.existsSync()) {
-          debugPrint("🟢 [LAB TRACKER FS] Purgando LRC antiguo desfasado.");
+          debugPrint("🟢 [LAB TRACKER FS] La letra vieja queda en .lrc.bak.");
+          await targetLrcFile.copy('${targetLrcFile.path}.bak');
           targetLrcFile.deleteSync();
         }
 
@@ -718,10 +670,19 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
                   }
                 }
                 if (lrcBuffer.isNotEmpty) {
-                  await targetLrcFile.writeAsString(lrcBuffer.toString());
-                  debugPrint(
-                    "🟢 [LAB TRACKER I/O] Letra VTT generada y blindada.",
-                  );
+                  final int durSec =
+                      ((await _getAudioDurationMs(finalPath)) / 1000).round();
+                  final String vtt = lrcBuffer.toString();
+                  if (durSec > 0 && lrcEndsWithAudio(vtt, durSec)) {
+                    await targetLrcFile.writeAsString(vtt);
+                    debugPrint(
+                      "🟢 [LAB TRACKER I/O] Letra VTT generada y blindada.",
+                    );
+                  } else {
+                    debugPrint(
+                      "⚠️ [LAB TRACKER NLP] VTT fuera de la duración, no se usa.",
+                    );
+                  }
                 }
               }
               yt.close();
@@ -1255,9 +1216,11 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
                   ),
                   const SizedBox(width: 10),
                   ElevatedButton.icon(
-                    onPressed: _searchInternalLrclib,
-                    icon: const Icon(Icons.api, size: 16),
-                    label: const Text("Buscar LRCLIB"),
+                    onPressed: _selectedFileForEdit == null
+                        ? null
+                        : _openLyricSearch,
+                    icon: const Icon(Icons.search, size: 16),
+                    label: const Text("🔎 Buscar letra"),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFF00FFFF),
                       foregroundColor: Colors.black,

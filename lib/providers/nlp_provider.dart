@@ -5,7 +5,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'pipeline_provider.dart';
 import 'package:flutter/foundation.dart';
 import 'package:gatomix/src/rust/api/core_dsp.dart' as rust_dsp;
+import '../core/brand_paths.dart';
 import '../core/lrc_timeline.dart';
+import '../core/lyric_files.dart';
 import '../core/lyric_match.dart';
 import '../services/id3_title_artist.dart';
 import 'db_provider.dart'; // 🛠️ Requerido para inyectar Cues a la BD
@@ -28,8 +30,7 @@ class NlpWorker {
 
   Future<http.Response> _resilientGet(String targetUrl) async {
     final directUri = Uri.parse(targetUrl);
-    int maxRetries = 3;
-    int baseDelayMs = 1500;
+    final int maxRetries = kLyricHttpTries;
 
     for (int attempt = 0; attempt < maxRetries; attempt++) {
       try {
@@ -41,12 +42,12 @@ class NlpWorker {
 
         // 🛠️ EXPONENTIAL BACKOFF: Si es Rate Limit (429) o Server Error (5xx), esperamos y reintentamos.
         // 429 / 503 / 5xx: reintento. No es "no hay letra".
-        if (res.statusCode == 429 || res.statusCode == 503 || res.statusCode >= 500) {
+        if (lyricHttpTransient(res.statusCode)) {
           if (attempt == maxRetries - 1) {
             return res;
           }
 
-          final delay = baseDelayMs * (1 << attempt); // 1.5s -> 3s -> 6s
+          final delay = lyricRetryDelayMs(attempt);
           debugPrint(
             "🟡 [NLP Rate Limit] HTTP ${res.statusCode}. Pausando hilo $delay ms (Intento ${attempt + 1})...",
           );
@@ -63,7 +64,7 @@ class NlpWorker {
           break;
         }
         await Future.delayed(
-          Duration(milliseconds: baseDelayMs * (1 << attempt)),
+          Duration(milliseconds: lyricRetryDelayMs(attempt)),
         );
       }
     }
@@ -348,9 +349,7 @@ class NlpWorker {
         if (parsed is List) return (items: parsed, serverDown: false);
         return (items: const [], serverDown: false);
       }
-      if (response.statusCode == 429 ||
-          response.statusCode == 503 ||
-          response.statusCode >= 500) {
+      if (lyricHttpTransient(response.statusCode)) {
         lastDetail = 'LRCLIB respondió HTTP ${response.statusCode}';
         return (items: const [], serverDown: true);
       }
@@ -363,56 +362,134 @@ class NlpWorker {
   }
 
   /// La misma búsqueda que Automix. No escribe el archivo.
+  /// Si el ID3 contradice al nombre, prueba los dos y se queda con la duración.
   Future<LyricChoice> lookupSafeLyric(String audioPath) async {
     final id3 = await loadId3TitleArtist(audioPath);
     final int localSec = await _getLocalDurationSec(audioPath);
-    final LyricIdentity id = lyricIdentity(
+    final List<LyricIdentity> ids = lyricIdentities(
       path: audioPath,
       id3Artist: id3.artist,
       id3Title: id3.title,
       id3Album: id3.album,
       durationSec: localSec,
     );
-    if (id.artist.isEmpty || id.title.isEmpty || localSec <= 0) {
+    if (ids.every((LyricIdentity e) => e.artist.isEmpty || e.title.isEmpty) ||
+        localSec <= 0) {
       lastDetail = 'Sin coincidencia segura';
       return const LyricChoice.none();
     }
 
-    Map<String, dynamic>? direct;
+    final List<Map<String, dynamic>> pool = <Map<String, dynamic>>[];
     var serverDown = false;
-    try {
-      final response = await _resilientGet(lrclibGetUri(id).toString());
-      if (response.statusCode == 200) {
-        final parsed = jsonDecode(response.body);
-        if (parsed is Map) direct = Map<String, dynamic>.from(parsed);
-      } else if (response.statusCode == 429 ||
-          response.statusCode == 503 ||
-          response.statusCode >= 500) {
+    for (final LyricIdentity id in ids) {
+      try {
+        final response = await _resilientGet(lrclibGetUri(id).toString());
+        if (response.statusCode == 200) {
+          final parsed = jsonDecode(response.body);
+          if (parsed is Map) pool.add(Map<String, dynamic>.from(parsed));
+        } else if (lyricHttpTransient(response.statusCode)) {
+          serverDown = true;
+          lastDetail = 'LRCLIB respondió HTTP ${response.statusCode}';
+        }
+      } catch (e) {
         serverDown = true;
-        lastDetail = 'LRCLIB respondió HTTP ${response.statusCode}';
+        lastDetail = 'LRCLIB no responde: $e';
       }
-    } catch (e) {
-      serverDown = true;
-      lastDetail = 'LRCLIB no responde: $e';
+      final found = await _lrclibSearch(lrclibSearchUri(id).toString());
+      if (found.serverDown) serverDown = true;
+      for (final dynamic raw in found.items) {
+        if (raw is Map) pool.add(Map<String, dynamic>.from(raw));
+      }
     }
-
-    final LyricChoice fromGet = chooseLrclibLyric(id, direct: direct);
-    if (fromGet.kind == LyricKind.synced) return fromGet;
-
-    final found = await _lrclibSearch(lrclibSearchUri(id).toString());
-    if (found.serverDown) serverDown = true;
     final LyricChoice choice = chooseLrclibLyric(
-      id,
-      direct: direct,
-      searched: found.items,
+      ids.first,
+      also: ids.length > 1 ? ids.sublist(1) : const <LyricIdentity>[],
+      searched: pool,
     );
     if (choice.hasText) return choice;
-    if (serverDown) {
+    if (lyricFailureIsRetry(serverDown: serverDown, hasText: false)) {
       lastDetail = lastDetail.isEmpty ? 'Servidor de letras caído' : lastDetail;
       return const LyricChoice.down();
     }
     lastDetail = 'Sin coincidencia segura';
     return const LyricChoice.none();
+  }
+
+  /// Búsqueda manual del Laboratorio: /api/get, /api/search y /api/search?q=.
+  /// Si las tres siguen en 503 o 429, [unavailable] queda en true.
+  Future<({List<LyricCandidate> rows, bool unavailable})> searchManualLyrics({
+    required String artist,
+    required String title,
+    required int durationSec,
+    String query = '',
+    bool medley = false,
+  }) async {
+    final LyricIdentity id = LyricIdentity(
+      artist: artist,
+      title: title,
+      durationSec: durationSec,
+      medley: medley,
+    );
+    final List<Uri> uris = lrclibManualUris(
+      artist: artist,
+      title: title,
+      durationSec: durationSec,
+      query: query,
+    );
+    final List<({String? body, int status, bool down})> got =
+        await Future.wait(uris.map((Uri uri) async {
+      try {
+        final response = await _resilientGet(uri.toString());
+        return (
+          body: response.body,
+          status: response.statusCode,
+          down: lyricHttpTransient(response.statusCode),
+        );
+      } catch (e) {
+        lastDetail = 'LRCLIB no responde: $e';
+        return (body: null, status: 0, down: true);
+      }
+    }));
+    final List<Map<String, dynamic>> pool = <Map<String, dynamic>>[];
+    var hits = 0;
+    var transient = 0;
+    for (final ({String? body, int status, bool down}) one in got) {
+      if (one.status == 200 && one.body != null) {
+        hits++;
+        final parsed = jsonDecode(one.body!);
+        if (parsed is Map) {
+          pool.add(Map<String, dynamic>.from(parsed));
+        } else if (parsed is List) {
+          for (final dynamic raw in parsed) {
+            if (raw is Map) pool.add(Map<String, dynamic>.from(raw));
+          }
+        }
+      } else if (one.down) {
+        transient++;
+        if (one.status != 0) {
+          lastDetail = 'LRCLIB respondió HTTP ${one.status}';
+        }
+      }
+    }
+    final bool unavailable = hits == 0 && transient == uris.length;
+    return (
+      rows: rankLyricCandidates(id: id, rows: pool),
+      unavailable: unavailable,
+    );
+  }
+
+  Future<void> rememberManualLyric(String lrcPath, {int? lrclibId}) async {
+    try {
+      final File f = File(lrcPath);
+      final String folder = f.parent.path;
+      final Map<String, dynamic> reg = _readAuto(folder);
+      reg[f.uri.pathSegments.last] = <String, dynamic>{
+        'bytes': f.existsSync() ? f.lengthSync() : 0,
+        'id': lrclibId,
+        'manual': true,
+      };
+      await _autoRegistry(folder).writeAsString(jsonEncode(reg));
+    } catch (_) {}
   }
 
   /// Letra sincronizada, plana, sin coincidencia, o servidor caído (reintento).
@@ -525,9 +602,14 @@ class NlpWorker {
       reg.forEach((name, size) {
         final f = File('$folder${Platform.pathSeparator}$name');
         try {
-          if (f.existsSync() && f.lengthSync() == (size as num).toInt()) {
+          if (_autoIsManual(size)) {
+            keep[name] = size;
+            return;
+          }
+          final int? bytes = _autoBytes(size);
+          if (f.existsSync() && bytes != null && f.lengthSync() == bytes) {
             final String text = f.readAsStringSync();
-            if (lrcIsProtected(text)) {
+            if (lrcIsProtected(text) || lrcIsNoRetry(text)) {
               keep[name] = size;
             } else {
               f.deleteSync();
@@ -568,20 +650,24 @@ class NlpWorker {
     if (lrcFile.existsSync()) {
       try {
         final content = await lrcFile.readAsString();
-        if (lrcIsProtected(content)) {
+        if (lrcIsNoRetry(content) || lrcIsManual(content)) {
           return LyricStatus.kept;
         }
-        if (content.contains('Letra no encontrada') ||
+        final bool residual =
+            content.contains('Letra no encontrada') ||
             content.contains('Error de conexión') ||
             content.contains('Error Auto-Healing') ||
-            lrcFile.lengthSync() <= 20) {
+            (lrcFile.lengthSync() <= 20 && !lrcIsDoubtful(content));
+        if (residual) {
           debugPrint(
             "♻️ [NLP Auto-Healing] Letra residual/inválida detectada. Purgando para reintento: $lrcPath",
           );
           await lrcFile.delete();
-        } else {
-          // Letra válida (descargada o arreglada por Gabriel): INTOCABLE.
+        } else if (!pathIsLab(filePath)) {
+          // Fuera del Laboratorio la letra que ya existe no se toca.
           return LyricStatus.kept;
+        } else {
+          return await _reviewLabLrc(filePath, lrcPath, content);
         }
       } catch (e) {
         debugPrint(
@@ -596,6 +682,84 @@ class NlpWorker {
     } catch (e) {
       debugPrint("🔴 [NLP Scraper Fatal Error]: $e");
       return LyricStatus.failed;
+    }
+  }
+
+  List<String> _siblingLrcs(String lrcPath) {
+    final File self = File(lrcPath);
+    final Directory dir = self.parent;
+    if (!dir.existsSync()) return const <String>[];
+    final String name = self.uri.pathSegments.last.toLowerCase();
+    final List<String> out = <String>[];
+    for (final FileSystemEntity e in dir.listSync()) {
+      if (e is! File) continue;
+      final String n = e.uri.pathSegments.last.toLowerCase();
+      if (!n.endsWith('.lrc') || n.endsWith('.bak') || n == name) continue;
+      try {
+        out.add(e.readAsStringSync());
+      } catch (_) {}
+    }
+    return out;
+  }
+
+  /// En GatoMix_LAB: si la letra no cuadra y hay una mejor, la vieja queda
+  /// en `.lrc.bak`. Si no hay mejor, se marca dudosa y se deja.
+  Future<LyricStatus> _reviewLabLrc(
+    String audioPath,
+    String lrcPath,
+    String content,
+  ) async {
+    final id3 = await loadId3TitleArtist(audioPath);
+    final int localSec = await _getLocalDurationSec(audioPath);
+    final List<LyricIdentity> ids = lyricIdentities(
+      path: audioPath,
+      id3Artist: id3.artist,
+      id3Title: id3.title,
+      id3Album: id3.album,
+      durationSec: localSec,
+    );
+    final LyricIdentity id = ids.first;
+    final List<String> siblings = _siblingLrcs(lrcPath);
+    final LyricFileVerdict verdict = assessLabLyric(
+      lrc: content,
+      artist: id.artist,
+      title: id.title,
+      durationSec: localSec,
+      siblingLrcs: siblings,
+    );
+    if (verdict.fits) return LyricStatus.kept;
+    final LyricChoice choice = await lookupSafeLyric(audioPath);
+    final bool same =
+        choice.hasText && lyricTextsMatch(choice.fileText, content);
+    final bool better =
+        choice.hasText && !same && !lyricDuplicates(choice.fileText, siblings);
+    final LabLyricAction action = decideLabLyric(
+      verdict: verdict,
+      serverDown: choice.serverDown,
+      hasBetter: better,
+      sameText: same,
+    );
+    switch (action) {
+      case LabLyricAction.keep:
+        return LyricStatus.kept;
+      case LabLyricAction.retry:
+        return LyricStatus.retry;
+      case LabLyricAction.replace:
+        await writeLrcKeepingBak(lrcPath, choice.fileText);
+        await _markAuto(lrcPath);
+        if (choice.kind == LyricKind.synced) {
+          await _processVocalBoundingBox(audioPath, choice.body, localSec);
+          lastDetail = '';
+          return LyricStatus.ok;
+        }
+        lastDetail = 'Letra plana (sin tiempos)';
+        return LyricStatus.plain;
+      case LabLyricAction.doubt:
+        if (!lrcIsDoubtful(content)) {
+          await File(lrcPath).writeAsString(markLrcDoubtful(content));
+        }
+        lastDetail = 'Letra dudosa';
+        return LyricStatus.doubt;
     }
   }
 
@@ -637,4 +801,12 @@ class NlpWorker {
   }
 }
 
-enum LyricStatus { ok, kept, noMatch, failed, retry, plain }
+enum LyricStatus { ok, kept, noMatch, failed, retry, plain, doubt }
+
+int? _autoBytes(dynamic size) {
+  if (size is num) return size.toInt();
+  if (size is Map && size['bytes'] is num) return (size['bytes'] as num).toInt();
+  return null;
+}
+
+bool _autoIsManual(dynamic size) => size is Map && size['manual'] == true;

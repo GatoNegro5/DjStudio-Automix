@@ -17,11 +17,12 @@ import 'package:gatomix/providers/theme_provider.dart';
 import 'package:gatomix/services/audio_interruption.dart';import 'package:gatomix/ui/widgets/app_version_label.dart';
 import 'package:gatomix/ui/workspaces/automix_workspace.dart';
 import 'package:gatomix/ui/workspaces/dsp_workspace.dart';
+import 'package:gatomix/ui/workspaces/lab_workspace.dart';
 import 'package:gatomix/ui/workspaces/lan_sync_workspace.dart';
 import 'package:gatomix/ui/workspaces/livedj_workspace.dart';
 /// Entrada de DjIphone. No es lib/main.dart.
-/// Pantallas: Automix, Live DJ, Masterizar, LAN Sync.
-/// Índices iguales al player de escritorio (0, 5, 1, 4).
+/// Pantallas: Automix, Live DJ, Masterizar, LAN Sync, Laboratorio.
+/// Índices iguales al player de escritorio (0, 5, 1, 4, 3).
 const int _kRouteCount = 8;
 
 class DjIphoneRouter extends Notifier<int> {
@@ -42,7 +43,7 @@ class DjIphoneRouter extends Notifier<int> {
   void persistRoute() => _writeRoute(state);
 
   int _keep(int route) {
-    if (route == 0 || route == 1 || route == 4 || route == 5) {
+    if (route == 0 || route == 1 || route == 3 || route == 4 || route == 5) {
       return route;
     }
     return 0;
@@ -415,7 +416,7 @@ class _DjIphoneStage extends ConsumerWidget {
           AutomixWorkspace(),
           DspNlpWorkspace(),
           SizedBox.shrink(),
-          SizedBox.shrink(),
+          LabWorkspace(),
           LanSyncWorkspace(),
           LiveDjWorkspace(),
           SizedBox.shrink(),
@@ -431,6 +432,8 @@ String _title(int route) {
       return 'Automix';
     case 1:
       return 'Masterizar';
+    case 3:
+      return 'Laboratorio';
     case 4:
       return 'LAN Sync';
     case 5:
@@ -446,6 +449,8 @@ Color _accent(int route) {
       return GatoMixTheme.deckA;
     case 1:
       return GatoMixTheme.deckB;
+    case 3:
+      return Colors.orangeAccent;
     case 4:
       return GatoMixTheme.masterPeak;
     case 5:
@@ -553,6 +558,7 @@ class _DjIphoneNav extends ConsumerWidget {
         tile(icon: Icons.album, label: 'Automix', route: 0),
         tile(icon: Icons.radio, label: 'Live DJ', route: 5),
         tile(icon: Icons.settings, label: 'Masterizar', route: 1),
+        tile(icon: Icons.science, label: 'Laboratorio', route: 3),
         tile(icon: Icons.wifi_tethering, label: 'LAN Sync', route: 4),
         motor,
       ],

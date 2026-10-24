@@ -80,10 +80,11 @@ class MasterTrack {
         LyricStatus.noMatch => 'NONE',
         LyricStatus.failed => 'RETRY',
         LyricStatus.kept => null,
+        LyricStatus.doubt => null,
       };
-      if (lyrMark != null) {
+      if (lyric != LyricStatus.doubt && lyrMark != null) {
         await _mark(current, 'GMX_LYR', lyrMark);
-      } else {
+      } else if (lyric != LyricStatus.doubt) {
         final marks = await rust_dsp.readGmxMarks(inputPath: current);
         if (marks.lyr.isEmpty) {
           final String lrcPath = _lrcPath(current);

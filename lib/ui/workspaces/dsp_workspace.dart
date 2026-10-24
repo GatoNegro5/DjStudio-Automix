@@ -921,10 +921,11 @@ class DspNlpWorkspace extends ConsumerWidget {
         final int bad = counts[LyricStatus.failed] ?? 0;
         final int retry = counts[LyricStatus.retry] ?? 0;
         final int plain = counts[LyricStatus.plain] ?? 0;
+        final int doubt = counts[LyricStatus.doubt] ?? 0;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              "📝 Letras: $ok nuevas · $plain en texto · $kept ya estaban (intactas) · $none sin coincidencia segura · $retry para reintentar · $bad con error",
+              "📝 Letras: $ok nuevas · $plain en texto · $kept ya estaban (intactas) · $doubt dudosas · $none sin coincidencia segura · $retry para reintentar · $bad con error",
               style: const TextStyle(
                 fontWeight: FontWeight.bold,
                 color: Colors.black,
