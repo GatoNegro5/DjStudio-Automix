@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'track_name_clean.dart';
 
@@ -283,6 +284,118 @@ final RegExp _medleyMark = RegExp(
 bool lyricLooksRemixOrExtended(String raw) => _remixMark.hasMatch(raw);
 
 bool lyricLooksMedley(String raw) => _medleyMark.hasMatch(raw);
+
+/// Cuánto baja una versión que el audio no pidió. Fuerte: no empata con la normal.
+const double kLyricEditionPenalty = 80;
+
+/// Marca interna: la fila salió de /api/get. No se envía a LRCLIB.
+const String kLyricFromGetKey = '_gmxFromGet';
+
+const Set<String> _editionTokens = <String>{
+  'karaoke',
+  'instrumental',
+  'cover',
+  'tribute',
+  'remix',
+  'live',
+  'acustico',
+  'acoustic',
+};
+
+const List<String> _editionPhrases = <String>[
+  'in the style of',
+  'made famous by',
+  'en vivo',
+];
+
+/// Karaoke, Instrumental, Cover, Tribute, «in the style of», «made famous by»,
+/// Remix, Live o Acústico. Live y «en vivo» son la misma marca; Acústico y
+/// Acoustic también. Solo se mira el título, con los paréntesis puestos.
+Set<String> lyricEditionMarks(String title) {
+  final String loose = lyricNormLoose(title);
+  final Set<String> marks = <String>{};
+  if (loose.contains('en vivo') || _tokens(loose).contains('live')) {
+    marks.add('live');
+  }
+  if (_tokens(loose).contains('acustico') ||
+      _tokens(loose).contains('acoustic')) {
+    marks.add('acoustic');
+  }
+  for (final String phrase in _editionPhrases) {
+    if (phrase == 'en vivo') continue;
+    if (loose.contains(phrase)) marks.add(phrase);
+  }
+  for (final String tok in _tokens(loose)) {
+    if (tok == 'live' || tok == 'acustico' || tok == 'acoustic') continue;
+    if (_editionTokens.contains(tok)) marks.add(tok);
+  }
+  return marks;
+}
+
+/// Penaliza el título del candidato. Si el audio trae la misma marca, no.
+double lyricEditionPenalty(String audioTitle, String candidateTitle) {
+  final Set<String> audio = lyricEditionMarks(audioTitle);
+  for (final String mark in lyricEditionMarks(candidateTitle)) {
+    if (!audio.contains(mark)) return kLyricEditionPenalty;
+  }
+  return 0;
+}
+
+/// Inicio de la voz, en ms. Energía por ventana y el primer tramo que
+/// además es periódico en el rango de la voz (80–400 Hz) y se sostiene.
+/// Null si no hay una subida clara: el desempate pasa a /api/get.
+int? lyricVoiceOnsetMs(List<double> samples, int sampleRate) {
+  if (sampleRate < 4000 || samples.length < sampleRate) return null;
+  final int hop = math.max(1, (sampleRate * 0.02).round());
+  final int win = math.max(hop + 1, (sampleRate * 0.032).round());
+  final int lagMin = math.max(8, (sampleRate / 400).round());
+  final int lagMax = math.max(lagMin + 2, (sampleRate / 80).round());
+  const int need = 8;
+  var run = 0;
+  var runStart = 0;
+  for (var pos = 0; pos + win < samples.length; pos += hop) {
+    var energy = 0.0;
+    var mean = 0.0;
+    for (var i = 0; i < win; i++) {
+      final double s = samples[pos + i];
+      energy += s * s;
+      mean += s;
+    }
+    energy /= win;
+    mean /= win;
+    var voiced = false;
+    if (energy > 1e-4) {
+      var r0 = 0.0;
+      for (var i = 0; i < win; i++) {
+        final double d = samples[pos + i] - mean;
+        r0 += d * d;
+      }
+      if (r0 > 1e-8) {
+        var best = 0.0;
+        for (var lag = lagMin; lag <= lagMax; lag += 2) {
+          var r = 0.0;
+          final int n = win - lag;
+          for (var i = 0; i < n; i++) {
+            r += (samples[pos + i] - mean) * (samples[pos + i + lag] - mean);
+          }
+          final double ncc = r / r0;
+          if (ncc > best) best = ncc;
+        }
+        voiced = best >= 0.55;
+      }
+    }
+    if (voiced) {
+      if (run == 0) runStart = pos;
+      run++;
+      if (run >= need) {
+        return (runStart * 1000 / sampleRate).round();
+      }
+    } else {
+      run = 0;
+    }
+  }
+  return null;
+}
 
 final RegExp _audioExt = RegExp(
   r'\.(mp3|m4a|webm|flac|wav|ogg|aac)$',
@@ -635,6 +748,8 @@ class LyricCandidate {
   final String warning;
   final String body;
   final int? lrclibId;
+  final int? firstStampMs;
+  final bool fromGet;
 
   const LyricCandidate({
     required this.artist,
@@ -648,7 +763,28 @@ class LyricCandidate {
     this.warning = '',
     required this.body,
     this.lrclibId,
+    this.firstStampMs,
+    this.fromGet = false,
   });
+
+  LyricCandidate asFromGet() {
+    if (fromGet) return this;
+    return LyricCandidate(
+      artist: artist,
+      title: title,
+      album: album,
+      durationSec: durationSec,
+      deltaSec: deltaSec,
+      score: score,
+      synced: synced,
+      doubtful: doubtful,
+      warning: warning,
+      body: body,
+      lrclibId: lrclibId,
+      firstStampMs: firstStampMs,
+      fromGet: true,
+    );
+  }
 
   String get fileText {
     if (!synced) {
@@ -667,10 +803,45 @@ String lyricDeltaBand(int deltaSec) {
   return 'far';
 }
 
+bool _closeContender(LyricCandidate c) =>
+    c.synced &&
+    c.firstStampMs != null &&
+    c.deltaSec <= 3 &&
+    !c.doubtful;
+
+/// Empate: menor diferencia de duración, luego la primera línea contra el
+/// inicio de la voz. Si no se midió, manda /api/get.
+/// Varias candidatas en ±3 s y onset medido: manda la primera línea, así
+/// una duración exacta no gana si arranca lejos de la voz.
+int _candidateOrder(LyricCandidate a, LyricCandidate b, int? onset) {
+  final bool band =
+      onset != null && _closeContender(a) && _closeContender(b);
+  if (band) {
+    final int ae = (a.firstStampMs! - onset).abs();
+    final int be = (b.firstStampMs! - onset).abs();
+    if (ae != be) return ae.compareTo(be);
+    if (a.deltaSec != b.deltaSec) return a.deltaSec.compareTo(b.deltaSec);
+    if (a.fromGet != b.fromGet) return a.fromGet ? -1 : 1;
+    return b.score.compareTo(a.score);
+  }
+  final int byScore = b.score.compareTo(a.score);
+  if (byScore != 0) return byScore;
+  if (a.deltaSec != b.deltaSec) return a.deltaSec.compareTo(b.deltaSec);
+  if (onset != null && a.firstStampMs != null && b.firstStampMs != null) {
+    final int ae = (a.firstStampMs! - onset).abs();
+    final int be = (b.firstStampMs! - onset).abs();
+    if (ae != be) return ae.compareTo(be);
+  } else if (onset == null && a.fromGet != b.fromGet) {
+    return a.fromGet ? -1 : 1;
+  }
+  return 0;
+}
+
 /// Puntaje de la búsqueda manual. El mismo matcher, y las dudosas no se ocultan.
 List<LyricCandidate> rankLyricCandidates({
   required LyricIdentity id,
   required List<Map<String, dynamic>> rows,
+  int? voiceOnsetMs,
 }) {
   final Map<int, LyricCandidate> unique = <int, LyricCandidate>{};
   final List<LyricCandidate> rest = <LyricCandidate>[];
@@ -691,7 +862,13 @@ List<LyricCandidate> rankLyricCandidates({
     if (!hasSynced && !hasPlain) continue;
     final bool inside = hasSynced && lrcInsideAudio(syncedText, id.durationSec);
     final bool strong = artistOk && titleScore >= kLyricTitleStrong;
+    final double edition = lyricEditionPenalty(id.title, title);
     final List<String> warnings = <String>[];
+    if (edition > 0) {
+      warnings.add(
+        'Versión karaoke, instrumental, cover, tribute, remix, live o acústico',
+      );
+    }
     if (!artistOk || titleScore < kLyricTitleMin) {
       warnings.add('Artista o título no coinciden');
     }
@@ -715,8 +892,10 @@ List<LyricCandidate> rankLyricCandidates({
       score -= 10;
     }
     if (hasSynced && inside && (delta <= 2 || strong)) score += 5;
+    score -= edition;
     final String body = hasSynced ? syncedText : (plainText.isNotEmpty ? plainText : syncedText);
     final int? lid = (raw['id'] as num?)?.toInt();
+    final bool fromGet = raw[kLyricFromGetKey] == true;
     final LyricCandidate hit = LyricCandidate(
       artist: artist,
       title: title,
@@ -729,16 +908,25 @@ List<LyricCandidate> rankLyricCandidates({
       warning: warnings.join(' · '),
       body: body,
       lrclibId: lid,
+      firstStampMs: hasSynced ? firstLrcStampMs(syncedText) : null,
+      fromGet: fromGet,
     );
     if (lid != null) {
       final LyricCandidate? prev = unique[lid];
-      if (prev == null || hit.score > prev.score) unique[lid] = hit;
+      if (prev == null || hit.score > prev.score) {
+        unique[lid] = (prev?.fromGet ?? false) ? hit.asFromGet() : hit;
+      } else if (hit.fromGet && !prev.fromGet) {
+        unique[lid] = prev.asFromGet();
+      }
     } else {
       rest.add(hit);
     }
   }
   final List<LyricCandidate> all = <LyricCandidate>[...unique.values, ...rest];
-  all.sort((LyricCandidate a, LyricCandidate b) => b.score.compareTo(a.score));
+  all.sort(
+    (LyricCandidate a, LyricCandidate b) =>
+        _candidateOrder(a, b, voiceOnsetMs),
+  );
   return all;
 }
 

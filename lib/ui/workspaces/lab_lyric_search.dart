@@ -97,6 +97,7 @@ class _LabLyricSearchState extends ConsumerState<LabLyricSearch> {
       durationSec: widget.durationSec,
       query: widget.fileQuery,
       medley: widget.medley,
+      audioPath: widget.audioPath,
     );
     if (!mounted) return;
     setState(() {

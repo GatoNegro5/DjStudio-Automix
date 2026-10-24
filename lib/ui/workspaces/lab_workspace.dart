@@ -329,22 +329,27 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
         content: Text(
           result.noLyric
               ? 'Marcada sin letra. El proceso automático no la reintenta.'
-              : 'Letra aplicada. La anterior quedó en .lrc.bak.',
+              : hadBak
+              ? 'Letra aplicada. La anterior quedó en .lrc.bak.'
+              : 'Letra aplicada.',
         ),
         backgroundColor: Colors.orangeAccent,
-        action: hadBak
-            ? SnackBarAction(
-                label: 'Deshacer',
-                textColor: Colors.black,
-                onPressed: () async {
-                  final bool ok = await restoreLrcBak(lrcPath);
-                  if (!ok || !mounted) return;
-                  setState(() {
-                    _lrcController.text = File(lrcPath).readAsStringSync();
-                  });
-                },
-              )
-            : null,
+        action: SnackBarAction(
+          label: 'Deshacer',
+          textColor: Colors.black,
+          onPressed: () async {
+            final bool ok = await undoAppliedLrc(lrcPath);
+            if (!ok || !mounted) return;
+            final File f = File(lrcPath);
+            if (!f.existsSync()) {
+              await ref.read(nlpWorkerProvider).forgetLyricMark(lrcPath);
+            }
+            if (!mounted) return;
+            setState(() {
+              _lrcController.text = f.existsSync() ? f.readAsStringSync() : '';
+            });
+          },
+        ),
       ),
     );
   }

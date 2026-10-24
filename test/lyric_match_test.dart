@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gatomix/core/brand_paths.dart';
@@ -575,6 +576,212 @@ void main() {
     expect(lrc.readAsStringSync(), 'vieja');
     await dir.delete(recursive: true);
   });
+
+  test('Buscar letra penaliza karaoke y el resto de versiones', () {
+    const String audio = 'Hello';
+    expect(lyricEditionPenalty(audio, 'Hello'), 0);
+    expect(lyricEditionPenalty('Hello (Karaoke)', 'Hello (Karaoke)'), 0);
+    expect(lyricEditionPenalty('Hello (Live)', 'Hello (En Vivo)'), 0);
+    expect(lyricEditionPenalty('Hello (Acústico)', 'Hello (Acoustic)'), 0);
+    expect(lyricEditionPenalty('Hello (Live)', 'Hello (Karaoke)'), kLyricEditionPenalty);
+    for (final String bad in <String>[
+      'Hello - (Karaoke)',
+      'Hello (Instrumental)',
+      'Hello (Cover)',
+      'Hello (Tribute)',
+      'Hello (in the style of Lionel Richie)',
+      'Hello (made famous by Lionel Richie)',
+      'Hello (Remix)',
+      'Hello (Live)',
+      'Hello (Acústico)',
+    ]) {
+      expect(lyricEditionPenalty(audio, bad), kLyricEditionPenalty, reason: bad);
+    }
+
+    final List<LyricCandidate> ranked = rankLyricCandidates(
+      id: const LyricIdentity(artist: 'Lionel Richie', title: 'Hello', durationSec: 242),
+      voiceOnsetMs: 18000,
+      rows: <Map<String, dynamic>>[
+        _hit(
+          artist: 'Lionel Richie',
+          title: 'Hello - (Karaoke)',
+          duration: 242,
+          synced: _lrc(<(int, String)>[(18, 'karaoke'), (220, 'fin')]),
+          id: 1,
+        ),
+        _hit(
+          artist: 'Lionel Richie',
+          title: 'Hello',
+          duration: 242,
+          synced: _lrc(<(int, String)>[(21, 'voz'), (220, 'fin')]),
+          id: 2,
+        ),
+      ],
+    );
+    expect(ranked.first.title, 'Hello');
+    expect(ranked[1].title, contains('Karaoke'));
+    expect(ranked[1].doubtful, isTrue);
+    expect(ranked.first.score, greaterThan(ranked[1].score));
+  });
+
+  test('el empate de Take On Me usa duración, la primera línea y /api/get', () {
+    const LyricIdentity id = LyricIdentity(
+      artist: 'a-ha',
+      title: 'Take On Me',
+      durationSec: 223,
+    );
+    final String alineada = _lrc(<(int, String)>[(12, 'voz'), (210, 'fin')]);
+    final String desfasada = _lrc(<(int, String)>[(15, 'voz'), (213, 'fin')]);
+    final List<LyricCandidate> porDuracion = rankLyricCandidates(
+      id: id,
+      rows: <Map<String, dynamic>>[
+        _hit(
+          artist: 'a-ha',
+          title: 'Take On Me',
+          duration: 225,
+          synced: desfasada,
+          id: 10,
+        ),
+        _hit(
+          artist: 'a-ha',
+          title: 'Take On Me',
+          duration: 223,
+          synced: alineada,
+          id: 11,
+        ),
+      ],
+    );
+    expect(porDuracion.first.durationSec, 223);
+    expect(porDuracion.first.deltaSec, lessThan(porDuracion[1].deltaSec));
+
+    final List<LyricCandidate> porVoz = rankLyricCandidates(
+      id: const LyricIdentity(artist: 'a-ha', title: 'Take On Me', durationSec: 225),
+      voiceOnsetMs: 12000,
+      rows: <Map<String, dynamic>>[
+        _hit(
+          artist: 'a-ha',
+          title: 'Take On Me',
+          duration: 225,
+          synced: _lrc(<(int, String)>[(15, 'tarde'), (210, 'fin')]),
+          id: 12,
+        ),
+        _hit(
+          artist: 'a-ha',
+          title: 'Take On Me',
+          duration: 225,
+          synced: _lrc(<(int, String)>[(12, 'voz'), (207, 'fin')]),
+          id: 13,
+          fromGet: true,
+        ),
+      ],
+    );
+    expect(porVoz.first.lrclibId, 13);
+    expect((porVoz.first.firstStampMs! - 12000).abs(), lessThan(500));
+
+    final List<LyricCandidate> porGet = rankLyricCandidates(
+      id: const LyricIdentity(artist: 'a-ha', title: 'Take On Me', durationSec: 225),
+      rows: <Map<String, dynamic>>[
+        _hit(
+          artist: 'a-ha',
+          title: 'Take On Me',
+          duration: 225,
+          synced: desfasada,
+          id: 14,
+        ),
+        _hit(
+          artist: 'a-ha',
+          title: 'Take On Me',
+          duration: 225,
+          synced: alineada,
+          id: 15,
+          fromGet: true,
+        ),
+      ],
+    );
+    expect(porGet.first.fromGet, isTrue);
+    expect(porGet.first.lrclibId, 15);
+
+    final int? onset = lyricVoiceOnsetMs(_sineAfterSilence(), 8000);
+    expect(onset, isNotNull);
+    expect((onset! - 1000).abs(), lessThan(80));
+    expect(lyricVoiceOnsetMs(List<double>.filled(8000, 0), 8000), isNull);
+    expect(lyricVoiceOnsetMs(_noise(8000), 8000), isNull);
+  });
+
+  test('entre varias de ±3 s manda la primera línea, no la duración exacta', () {
+    const LyricIdentity hello = LyricIdentity(
+      artist: 'Lionel Richie',
+      title: 'Hello',
+      durationSec: 242,
+    );
+    final List<Map<String, dynamic>> rows = <Map<String, dynamic>>[
+      _hit(
+        artist: 'Lionel Richie',
+        title: 'Hello',
+        duration: 242,
+        synced: _lrc(<(int, String)>[(15, 'get'), (230, 'fin')]),
+        id: 20,
+        fromGet: true,
+      ),
+      _hit(
+        artist: 'Lionel Richie',
+        title: 'Hello',
+        duration: 240,
+        synced: _lrc(<(int, String)>[(18, 'mejor'), (228, 'fin')]),
+        id: 21,
+      ),
+    ];
+    final List<LyricCandidate> sinMedir = rankLyricCandidates(id: hello, rows: rows);
+    expect(sinMedir.first.fromGet, isTrue);
+    expect(sinMedir.first.durationSec, 242);
+
+    final List<LyricCandidate> medidas = rankLyricCandidates(
+      id: hello,
+      voiceOnsetMs: 18000,
+      rows: rows,
+    );
+    expect(medidas.first.lrclibId, 21);
+    expect(medidas.first.deltaSec, lessThanOrEqualTo(3));
+    expect(
+      (medidas.first.firstStampMs! - 18000).abs(),
+      lessThan((medidas[1].firstStampMs! - 18000).abs()),
+    );
+  });
+
+  test('Deshacer borra el .lrc si antes no había', () async {
+    final Directory dir = await Directory.systemTemp.createTemp('gmx_lrc_nuevo');
+    final File lrc = File('${dir.path}${Platform.pathSeparator}nuevo.lrc');
+    await writeLrcKeepingBak(lrc.path, 'nueva');
+    expect(File('${lrc.path}.bak').existsSync(), isFalse);
+    expect(lrc.readAsStringSync(), 'nueva');
+    expect(await undoAppliedLrc(lrc.path), isTrue);
+    expect(lrc.existsSync(), isFalse);
+
+    await lrc.writeAsString('vieja');
+    await writeLrcKeepingBak(lrc.path, 'nueva');
+    expect(await undoAppliedLrc(lrc.path), isTrue);
+    expect(lrc.readAsStringSync(), 'vieja');
+    await dir.delete(recursive: true);
+  });
+}
+
+List<double> _sineAfterSilence() {
+  const int sr = 8000;
+  final List<double> x = List<double>.filled(sr * 2, 0);
+  for (var i = sr; i < x.length; i++) {
+    x[i] = 0.4 * math.sin(2 * math.pi * 200 * i / sr);
+  }
+  return x;
+}
+
+List<double> _noise(int n) {
+  var state = 0x12345678;
+  final List<double> x = List<double>.filled(n, 0);
+  for (var i = 0; i < n; i++) {
+    state = (1664525 * state + 1013904223) & 0x7fffffff;
+    x[i] = (state / 0x3fffffff) - 1;
+  }
+  return x;
 }
 
 Map<String, dynamic> _hit({
@@ -584,6 +791,8 @@ Map<String, dynamic> _hit({
   String synced = '',
   String plain = '',
   String album = '',
+  int? id,
+  bool fromGet = false,
 }) {
   return <String, dynamic>{
     'artistName': artist,
@@ -592,6 +801,8 @@ Map<String, dynamic> _hit({
     'duration': duration,
     'syncedLyrics': synced,
     'plainLyrics': plain,
+    'id': ?id,
+    if (fromGet) kLyricFromGetKey: true,
   };
 }
 

@@ -17,4 +17,19 @@ Future<bool> restoreLrcBak(String lrcPath) async {
   return true;
 }
 
+/// Deshace un Aplicar. Si había `.lrc`, vuelve el `.bak`. Si no había, borra el nuevo.
+Future<bool> undoAppliedLrc(String lrcPath) async {
+  final File bak = File('$lrcPath.bak');
+  final File f = File(lrcPath);
+  if (bak.existsSync()) {
+    await bak.copy(lrcPath);
+    return true;
+  }
+  if (f.existsSync()) {
+    await f.delete();
+    return true;
+  }
+  return false;
+}
+
 bool lrcBakExists(String lrcPath) => File('$lrcPath.bak').existsSync();

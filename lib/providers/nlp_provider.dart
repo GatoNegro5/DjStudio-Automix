@@ -423,7 +423,9 @@ class NlpWorker {
     required int durationSec,
     String query = '',
     bool medley = false,
+    String audioPath = '',
   }) async {
+    final Future<int?> onsetFuture = _probeVoiceOnsetMs(audioPath);
     final LyricIdentity id = LyricIdentity(
       artist: artist,
       title: title,
@@ -453,15 +455,22 @@ class NlpWorker {
     final List<Map<String, dynamic>> pool = <Map<String, dynamic>>[];
     var hits = 0;
     var transient = 0;
-    for (final ({String? body, int status, bool down}) one in got) {
+    for (var i = 0; i < got.length; i++) {
+      final ({String? body, int status, bool down}) one = got[i];
+      final bool fromGet = i == 0;
       if (one.status == 200 && one.body != null) {
         hits++;
         final parsed = jsonDecode(one.body!);
+        void addRow(Map<dynamic, dynamic> raw) {
+          final Map<String, dynamic> row = Map<String, dynamic>.from(raw);
+          if (fromGet) row[kLyricFromGetKey] = true;
+          pool.add(row);
+        }
         if (parsed is Map) {
-          pool.add(Map<String, dynamic>.from(parsed));
+          addRow(parsed);
         } else if (parsed is List) {
           for (final dynamic raw in parsed) {
-            if (raw is Map) pool.add(Map<String, dynamic>.from(raw));
+            if (raw is Map) addRow(raw);
           }
         }
       } else if (one.down) {
@@ -472,10 +481,34 @@ class NlpWorker {
       }
     }
     final bool unavailable = hits == 0 && transient == uris.length;
+    final int? onset = await onsetFuture;
     return (
-      rows: rankLyricCandidates(id: id, rows: pool),
+      rows: rankLyricCandidates(id: id, rows: pool, voiceOnsetMs: onset),
       unavailable: unavailable,
     );
+  }
+
+  /// Energía y onset de la voz en los primeros 40 s. Null si no se puede medir.
+  Future<int?> _probeVoiceOnsetMs(String audioPath) async {
+    if (audioPath.isEmpty) return null;
+    try {
+      final Uint8List pcm = await rust_dsp.decodeMonoPcm(
+        inputPath: audioPath,
+        startSecs: 0,
+        lengthSecs: 40,
+        targetRate: 8000,
+      );
+      final int n = pcm.length ~/ 2;
+      if (n < 8000) return null;
+      final ByteData data = ByteData.sublistView(pcm);
+      final List<double> samples = List<double>.filled(n, 0);
+      for (var i = 0; i < n; i++) {
+        samples[i] = data.getInt16(i * 2, Endian.little) / 32768.0;
+      }
+      return lyricVoiceOnsetMs(samples, 8000);
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<void> rememberManualLyric(String lrcPath, {int? lrclibId}) async {
@@ -565,6 +598,8 @@ class NlpWorker {
       await _autoRegistry(folder).writeAsString(jsonEncode(reg));
     } catch (_) {}
   }
+
+  Future<void> forgetLyricMark(String lrcPath) => _unmarkAuto(lrcPath);
 
   Future<void> _unmarkAuto(String lrcPath) async {
     try {
