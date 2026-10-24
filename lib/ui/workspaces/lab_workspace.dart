@@ -165,10 +165,15 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
       lrcFile.copySync('${lrcFile.path}.bak');
     }
     lrcFile.writeAsStringSync(_lrcController.text);
+    notifyLrcChanged(
+      '$_labPath${Platform.pathSeparator}$_selectedFileForEdit',
+    );
 
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
         content: Text("✅ Letra sincronizada (.lrc) guardada en disco."),
+        duration: Duration(seconds: 10),
+        persist: false,
         backgroundColor: Color(0xFF39FF14),
         behavior: SnackBarBehavior.floating,
       ),
@@ -201,16 +206,14 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
 
         file.renameSync(originalPath);
 
-        final lrcFile = File(
-          '$_labPath${Platform.pathSeparator}${fileName.replaceAll(RegExp(r'\.mp3$|\.webm$', caseSensitive: false), '.lrc')}',
-        );
-        if (lrcFile.existsSync()) {
-          final originalLrcPath = originalPath.replaceAll(
-            RegExp(r'\.mp3$|\.webm$', caseSensitive: false),
+        final LabLrcRestore lrcMove = await moveLabLrcToOrigin(
+          labLrcPath: _lrcPathOf(fileName),
+          originLrcPath: originalPath.replaceAll(
+            RegExp(r'\.(mp3|m4a|webm|wav|flac)$', caseSensitive: false),
             '.lrc',
-          );
-          lrcFile.renameSync(originalLrcPath);
-        }
+          ),
+        );
+        notifyLrcChanged(originalPath);
 
         _registry.remove(fileName);
         final registryFile = File(
@@ -229,7 +232,13 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text("✅ Restaurado: $fileName a su origen."),
+              content: Text(
+                lrcMove == LabLrcRestore.keptOrigin
+                    ? "✅ Restaurado: $fileName. En origen ya había .lrc: no se tocó y la letra del LAB quedó en el LAB."
+                    : "✅ Restaurado: $fileName a su origen.",
+              ),
+              duration: const Duration(seconds: 10),
+              persist: false,
               backgroundColor: const Color(0xFF39FF14),
               behavior: SnackBarBehavior.floating,
             ),
@@ -322,6 +331,7 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
       lrcPath: lrcPath,
       result: result,
     );
+    notifyLrcChanged(audio);
     setState(() => _lrcController.text = result.text);
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -334,11 +344,14 @@ class _LabWorkspaceState extends ConsumerState<LabWorkspace> {
               : 'Letra aplicada.',
         ),
         backgroundColor: Colors.orangeAccent,
+        duration: const Duration(seconds: 10),
+        persist: false,
         action: SnackBarAction(
           label: 'Deshacer',
           textColor: Colors.black,
           onPressed: () async {
             final bool ok = await undoAppliedLrc(lrcPath);
+            if (ok) notifyLrcChanged(audio);
             if (!ok || !mounted) return;
             final File f = File(lrcPath);
             if (!f.existsSync()) {

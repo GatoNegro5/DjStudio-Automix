@@ -16,6 +16,7 @@ import '../core/audio/tempo_drift.dart';
 import '../djiphone/iphone_library.dart';
 import '../core/audio/dj_audio_handler.dart';
 
+import '../core/lyric_files.dart';
 import '../core/lyric_match.dart';
 import 'db_provider.dart';
 import 'nlp_provider.dart';
@@ -194,7 +195,12 @@ class AutomixNotifier extends Notifier<AutomixState> {
     globalAudioHandler.onPrevious = () => _osStep(-1);
     globalAudioHandler.onSeek = (pos) => seek(pos);
 
+    final StreamSubscription<String> lrcSub = lrcChanges.listen(
+      (String path) => unawaited(reloadLyrics(path)),
+    );
+
     ref.onDispose(() {
+      lrcSub.cancel();
       _cancelOutroProbe();
       _positionSub?.cancel();
       _durationSub?.cancel();
@@ -1664,6 +1670,25 @@ class AutomixNotifier extends Notifier<AutomixState> {
       return parsedLyrics;
     } catch (_) {
       return const [];
+    }
+  }
+
+  /// El `.lrc` de [audioPath] cambió fuera de Automix: olvida la letra en
+  /// memoria y la relee si es la pista actual o la siguiente.
+  Future<void> reloadLyrics(String audioPath) async {
+    _lyricPrime.removeWhere((String k, _) => sameAudioPath(k, audioPath));
+    final String? current = state.currentTrackPath;
+    final String? next = state.nextTrackPath;
+    // Sin _fetchLyricsAsync: un Deshacer que borra la letra no la vuelve a bajar.
+    if (sameAudioPath(current, audioPath)) {
+      final List<LyricLine> parsed = await _parseLyricsFile(current!);
+      _lyricPrime[current] = parsed;
+      if (state.currentTrackPath != current) return;
+      _shownLyricsPath = current;
+      state = state.copyWith(lyrics: parsed, activeLyricIndex: -1);
+      _lastLyricIndex = -2;
+    } else if (sameAudioPath(next, audioPath)) {
+      _lyricPrime[next!] = await _parseLyricsFile(next);
     }
   }
 

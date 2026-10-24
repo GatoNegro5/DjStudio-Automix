@@ -3004,11 +3004,25 @@ mod nice_priority {
 
     fn errno_clear() {
         unsafe {
-            *__errno_location() = 0;
+            *errno_ptr() = 0;
         }
     }
 
+    // Bionic (Android) exporta __errno; glibc (Linux) __errno_location.
+    #[cfg(target_os = "android")]
+    unsafe fn errno_ptr() -> *mut i32 {
+        __errno()
+    }
+
+    #[cfg(not(target_os = "android"))]
+    unsafe fn errno_ptr() -> *mut i32 {
+        __errno_location()
+    }
+
     extern "C" {
+        #[cfg(target_os = "android")]
+        fn __errno() -> *mut i32;
+        #[cfg(not(target_os = "android"))]
         fn __errno_location() -> *mut i32;
         fn gettid() -> i32;
         fn getpriority(which: i32, who: i32) -> i32;
